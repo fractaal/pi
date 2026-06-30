@@ -716,13 +716,16 @@ export class AgentSession {
 	/** Extract text content from a message */
 	private _getUserMessageText(message: Message): string {
 		if (message.role !== "user") return "";
+		return this._getMessageText(message);
+	}
+
+	private _getMessageText(message: { content: string | (TextContent | ImageContent)[] }): string {
 		const content = message.content;
 		if (typeof content === "string") return content;
 		const textBlocks = content.filter((c) => c.type === "text");
 		return textBlocks.map((c) => (c as TextContent).text).join("");
 	}
 
-	/** Find the last assistant message in agent state (including aborted ones) */
 	private _findLastAssistantMessage(): AssistantMessage | undefined {
 		const messages = this.agent.state.messages;
 		for (let i = messages.length - 1; i >= 0; i--) {
@@ -1548,8 +1551,39 @@ export class AgentSession {
 	clearQueue(): { steering: string[]; followUp: string[] } {
 		const steering = [...this._steeringMessages];
 		const followUp = [...this._followUpMessages];
+		for (const entry of this._deferredCompactionMessages) {
+			if (entry.type === "user") {
+				if (entry.mode === "steer") {
+					steering.push(entry.text);
+				} else {
+					followUp.push(entry.text);
+				}
+				continue;
+			}
+
+			if (entry.type === "agentQueued") {
+				const text = entry.message.role === "user" ? this._getUserMessageText(entry.message) : "";
+				if (!text) continue;
+				if (entry.mode === "steer") {
+					steering.push(text);
+				} else {
+					followUp.push(text);
+				}
+				continue;
+			}
+
+			const customText = this._getMessageText(entry.message);
+			if (customText) {
+				if (entry.options?.deliverAs === "steer") {
+					steering.push(customText);
+				} else {
+					followUp.push(customText);
+				}
+			}
+		}
 		this._steeringMessages = [];
 		this._followUpMessages = [];
+		this._deferredCompactionMessages = [];
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };

@@ -26,8 +26,8 @@ export interface ProviderRetrySettings {
 
 export interface RetrySettings {
 	enabled?: boolean; // default: true
-	maxRetries?: number; // default: 3
-	baseDelayMs?: number; // default: 2000 (exponential backoff: 2s, 4s, 8s)
+	maxRetries?: number; // default: unbounded when unset
+	baseDelayMs?: number; // default: 2000 (exponential backoff capped at 10s)
 	provider?: ProviderRetrySettings;
 }
 

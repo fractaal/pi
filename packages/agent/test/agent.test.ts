@@ -465,16 +465,23 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
-	it("should drain queued steering and follow-up messages", () => {
+	it("should drain all queued steering and follow-up messages regardless of delivery mode", () => {
 		const agent = new Agent();
 		const steering = { role: "user" as const, content: "Steering message", timestamp: Date.now() };
-		const followUp = { role: "user" as const, content: "Follow-up message", timestamp: Date.now() + 1 };
+		const secondSteering = { role: "user" as const, content: "Second steering message", timestamp: Date.now() + 1 };
+		const followUp = { role: "user" as const, content: "Follow-up message", timestamp: Date.now() + 2 };
+		const secondFollowUp = { role: "user" as const, content: "Second follow-up message", timestamp: Date.now() + 3 };
 
 		agent.steer(steering);
+		agent.steer(secondSteering);
 		agent.followUp(followUp);
+		agent.followUp(secondFollowUp);
 
 		expect(agent.hasQueuedMessages()).toBe(true);
-		expect(agent.drainQueuedMessages()).toEqual({ steering: [steering], followUp: [followUp] });
+		expect(agent.drainQueuedMessages()).toEqual({
+			steering: [steering, secondSteering],
+			followUp: [followUp, secondFollowUp],
+		});
 		expect(agent.hasQueuedMessages()).toBe(false);
 		expect(agent.drainQueuedMessages()).toEqual({ steering: [], followUp: [] });
 	});

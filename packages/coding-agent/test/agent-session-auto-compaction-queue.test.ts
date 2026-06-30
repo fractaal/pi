@@ -415,6 +415,45 @@ describe("AgentSession auto-compaction queue resume", () => {
 		}
 	});
 
+	it("clearQueue should return and clear messages parked behind the compaction barrier", async () => {
+		const model = session.model!;
+		const overflowMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+			timestamp: Date.now(),
+		};
+		const queuedSteering = { role: "user" as const, content: "queued steer", timestamp: Date.now() + 1 };
+		const secondQueuedSteering = { role: "user" as const, content: "second queued steer", timestamp: Date.now() + 2 };
+		session.agent.steer(queuedSteering);
+		session.agent.steer(secondQueuedSteering);
+
+		const sessionPrivate = session as unknown as {
+			_handleAgentEvent: (event: AgentEvent) => Promise<void>;
+		};
+		await sessionPrivate._handleAgentEvent({ type: "message_end", message: overflowMessage });
+		await session.sendUserMessage("deferred follow-up");
+
+		expect(session.pendingMessageCount).toBe(3);
+		expect(session.clearQueue()).toEqual({
+			steering: ["queued steer", "second queued steer"],
+			followUp: ["deferred follow-up"],
+		});
+		expect(session.pendingMessageCount).toBe(0);
+	});
+
 	it("should not trigger threshold compaction for error messages when only kept pre-compaction usage exists", async () => {
 		const model = session.model!;
 		const preCompactionTimestamp = Date.now() - 10_000;

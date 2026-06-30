@@ -133,9 +133,7 @@ class PendingMessageQueue {
 
 	drain(): AgentMessage[] {
 		if (this.mode === "all") {
-			const drained = this.messages.slice();
-			this.messages = [];
-			return drained;
+			return this.drainAll();
 		}
 
 		const first = this.messages[0];
@@ -144,6 +142,12 @@ class PendingMessageQueue {
 		}
 		this.messages = this.messages.slice(1);
 		return [first];
+	}
+
+	drainAll(): AgentMessage[] {
+		const drained = this.messages.slice();
+		this.messages = [];
+		return drained;
 	}
 
 	clear(): void {
@@ -291,11 +295,11 @@ export class Agent {
 		this.clearFollowUpQueue();
 	}
 
-	/** Drain and return all queued steering and follow-up messages. */
+	/** Drain and return all queued steering and follow-up messages, ignoring one-at-a-time delivery mode. */
 	drainQueuedMessages(): QueuedAgentMessages {
 		return {
-			steering: this.steeringQueue.drain(),
-			followUp: this.followUpQueue.drain(),
+			steering: this.steeringQueue.drainAll(),
+			followUp: this.followUpQueue.drainAll(),
 		};
 	}
 
