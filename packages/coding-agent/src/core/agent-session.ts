@@ -21,6 +21,7 @@ import type {
 	AgentMessage,
 	AgentState,
 	AgentTool,
+	QueuedAgentMessages,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@earendil-works/pi-ai/compat";
@@ -146,7 +147,7 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 			errorMessage?: string;
 	  }
-	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+	| { type: "auto_retry_start"; attempt: number; maxAttempts: number | null; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string };
 
 /** Listener function for agent session events */
@@ -258,6 +259,23 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 
 /** Standard thinking levels */
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+/** Maximum agent-level retry backoff. Indefinite retry should keep trying, not sleep for days. */
+const MAX_AGENT_RETRY_DELAY_MS = 10000;
+
+type CompactionBarrier = {
+	reason: "overflow" | "threshold";
+	willRetry: boolean;
+	startedAt: number;
+};
+
+type DeferredCompactionMessage =
+	| { type: "user"; mode: "steer" | "followUp"; text: string; images?: ImageContent[] }
+	| { type: "agentQueued"; mode: "steer" | "followUp"; message: AgentMessage }
+	| {
+			type: "custom";
+			message: CustomMessage<unknown>;
+			options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
+	  };
 
 // ============================================================================
 // AgentSession Class
@@ -285,6 +303,9 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	/** Stop-the-world barrier: extension-triggered turns are deferred while core compacts/retries. */
+	private _compactionBarrier: CompactionBarrier | undefined = undefined;
+	private _deferredCompactionMessages: DeferredCompactionMessage[] = [];
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -481,11 +502,118 @@ export class AgentSession {
 		});
 	}
 
+	private _isCompactionBarrierActive(): boolean {
+		return this._compactionBarrier !== undefined;
+	}
+
+	private _enterCompactionBarrier(reason: "overflow" | "threshold", willRetry: boolean): void {
+		if (this._compactionBarrier) {
+			this._compactionBarrier.reason = reason;
+			this._compactionBarrier.willRetry = this._compactionBarrier.willRetry || willRetry;
+			return;
+		}
+		this._compactionBarrier = { reason, willRetry, startedAt: Date.now() };
+		this._drainAgentQueuesForCompaction();
+	}
+
+	private _exitCompactionBarrier(options: { flushDeferred?: boolean } = {}): void {
+		if (!this._compactionBarrier) return;
+		const flush = options.flushDeferred !== false;
+		this._compactionBarrier = undefined;
+		if (flush) {
+			this._flushDeferredCompactionMessages();
+		}
+		// If recovery failed/cancelled, keep deferred work parked instead of
+		// silently discarding it or replaying it into a still-overflowing context.
+		this._emitQueueUpdate();
+	}
+
+	private _drainAgentQueuesForCompaction(): void {
+		const queued: QueuedAgentMessages = this.agent.drainQueuedMessages();
+		for (const message of queued.steering) {
+			this._deferCompactionMessage({ type: "agentQueued", mode: "steer", message });
+		}
+		for (const message of queued.followUp) {
+			this._deferCompactionMessage({ type: "agentQueued", mode: "followUp", message });
+		}
+		if (queued.steering.length > 0) {
+			this._steeringMessages = [];
+		}
+		if (queued.followUp.length > 0) {
+			this._followUpMessages = [];
+		}
+	}
+
+	private _deferCompactionMessage(entry: DeferredCompactionMessage): void {
+		this._deferredCompactionMessages.push(entry);
+		this._emitQueueUpdate();
+	}
+
+	private _flushDeferredCompactionMessages(): void {
+		if (this._deferredCompactionMessages.length === 0) return;
+		const deferred = this._deferredCompactionMessages;
+		this._deferredCompactionMessages = [];
+		for (const entry of deferred) {
+			if (entry.type === "user") {
+				if (entry.mode === "steer") {
+					void this._queueSteer(entry.text, entry.images);
+				} else {
+					void this._queueFollowUp(entry.text, entry.images);
+				}
+				continue;
+			}
+
+			if (entry.type === "agentQueued") {
+				if (entry.mode === "steer") {
+					this.agent.steer(entry.message);
+				} else {
+					this.agent.followUp(entry.message);
+				}
+				continue;
+			}
+
+			const customMessage = entry.message;
+			if (entry.options?.deliverAs === "nextTurn") {
+				this._pendingNextTurnMessages.push(customMessage);
+			} else if (entry.options?.triggerTurn || entry.options?.deliverAs === "followUp") {
+				this.agent.followUp(customMessage);
+			} else if (entry.options?.deliverAs === "steer") {
+				this.agent.steer(customMessage);
+			} else {
+				this.agent.state.messages.push(customMessage);
+				this.sessionManager.appendCustomMessageEntry(
+					customMessage.customType,
+					customMessage.content,
+					customMessage.display,
+					customMessage.details,
+				);
+				this._emit({ type: "message_start", message: customMessage });
+				this._emit({ type: "message_end", message: customMessage });
+			}
+		}
+	}
+
+	private _shouldEnterOverflowBarrier(assistantMsg: AssistantMessage): boolean {
+		if (!this.settingsManager.getCompactionSettings().enabled) return false;
+		const contextWindow = this.model?.contextWindow ?? 0;
+		const sameModel =
+			this.model && assistantMsg.provider === this.model.provider && assistantMsg.model === this.model.id;
+		return !!sameModel && isContextOverflow(assistantMsg, contextWindow);
+	}
+
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = async (event: AgentEvent): Promise<void> => {
+		let preExtensionAssistantMessage: AssistantMessage | undefined;
+		if (event.type === "message_end" && event.message.role === "assistant") {
+			preExtensionAssistantMessage = structuredClone(event.message) as AssistantMessage;
+			if (this._shouldEnterOverflowBarrier(preExtensionAssistantMessage)) {
+				this._enterCompactionBarrier("overflow", preExtensionAssistantMessage.stopReason !== "stop");
+			}
+		}
+
 		// When a user message starts, check if it's from either queue and remove it BEFORE emitting
 		// This ensures the UI sees the updated queue state
 		if (event.type === "message_start" && event.message.role === "user") {
@@ -510,6 +638,17 @@ export class AgentSession {
 
 		// Emit to extensions first
 		await this._emitExtensionEvent(event);
+
+		// Once core has classified an assistant message as overflow, extension
+		// hooks may observe it but may not mask or replace it before core
+		// compaction/retry handles the failure.
+		if (
+			event.type === "message_end" &&
+			preExtensionAssistantMessage &&
+			this._shouldEnterOverflowBarrier(preExtensionAssistantMessage)
+		) {
+			this._replaceMessageInPlace(event.message, preExtensionAssistantMessage);
+		}
 
 		// Notify all listeners
 		this._emit(event.type === "agent_end" ? { ...event, willRetry: this._willRetryAfterAgentEnd(event) } : event);
@@ -537,9 +676,9 @@ export class AgentSession {
 
 			// Track assistant message for auto-compaction (checked on agent_end)
 			if (event.message.role === "assistant") {
-				this._lastAssistantMessage = event.message;
+				const assistantMsg = preExtensionAssistantMessage ?? (event.message as AssistantMessage);
+				this._lastAssistantMessage = assistantMsg;
 
-				const assistantMsg = event.message as AssistantMessage;
 				if (assistantMsg.stopReason !== "error") {
 					this._overflowRecoveryAttempted = false;
 				}
@@ -560,7 +699,8 @@ export class AgentSession {
 
 	private _willRetryAfterAgentEnd(event: Extract<AgentEvent, { type: "agent_end" }>): boolean {
 		const settings = this.settingsManager.getRetrySettings();
-		if (!settings.enabled || this._retryAttempt >= settings.maxRetries) {
+		const hasRetryLimit = Number.isFinite(settings.maxRetries);
+		if (!settings.enabled || (hasRetryLimit && this._retryAttempt >= settings.maxRetries)) {
 			return false;
 		}
 
@@ -981,6 +1121,10 @@ export class AgentSession {
 			return true;
 		}
 
+		if (this._isCompactionBarrierActive() && msg.stopReason !== "error") {
+			this._exitCompactionBarrier({ flushDeferred: true });
+		}
+
 		// The agent loop drains both queues before emitting agent_end. Any messages
 		// here were queued by agent_end extension handlers and need a continuation.
 		return this.agent.hasQueuedMessages();
@@ -1247,6 +1391,10 @@ export class AgentSession {
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
 	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
+		if (this._isCompactionBarrierActive()) {
+			this._deferCompactionMessage({ type: "user", mode: "steer", text, images });
+			return;
+		}
 		this._steeringMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1264,6 +1412,10 @@ export class AgentSession {
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
 	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
+		if (this._isCompactionBarrierActive()) {
+			this._deferCompactionMessage({ type: "user", mode: "followUp", text, images });
+			return;
+		}
 		this._followUpMessages.push(text);
 		this._emitQueueUpdate();
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -1316,6 +1468,10 @@ export class AgentSession {
 			details: message.details,
 			timestamp: Date.now(),
 		} satisfies CustomMessage<T>;
+		if (this._isCompactionBarrierActive()) {
+			this._deferCompactionMessage({ type: "custom", message: appMessage, options });
+			return;
+		}
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming) {
@@ -1370,6 +1526,11 @@ export class AgentSession {
 			if (images.length === 0) images = undefined;
 		}
 
+		if (this._isCompactionBarrierActive()) {
+			this._deferCompactionMessage({ type: "user", mode: options?.deliverAs ?? "followUp", text, images });
+			return;
+		}
+
 		// Use prompt() with expandPromptTemplates: false to skip command handling and template expansion
 		await this.prompt(text, {
 			expandPromptTemplates: false,
@@ -1396,7 +1557,7 @@ export class AgentSession {
 
 	/** Number of pending messages (includes both steering and follow-up) */
 	get pendingMessageCount(): number {
-		return this._steeringMessages.length + this._followUpMessages.length;
+		return this._steeringMessages.length + this._followUpMessages.length + this._deferredCompactionMessages.length;
 	}
 
 	/** Get pending steering messages (read-only) */
@@ -1855,6 +2016,7 @@ export class AgentSession {
 					errorMessage:
 						"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.",
 				});
+				this._exitCompactionBarrier({ flushDeferred: false });
 				return false;
 			}
 
@@ -1905,9 +2067,11 @@ export class AgentSession {
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		let started = false;
+		this._enterCompactionBarrier(reason, willRetry);
 
 		try {
 			if (!this.model) {
+				this._exitCompactionBarrier({ flushDeferred: false });
 				return false;
 			}
 
@@ -1917,6 +2081,7 @@ export class AgentSession {
 			if (this.agent.streamFn === streamSimple) {
 				const authResult = await this._modelRegistry.getApiKeyAndHeaders(this.model);
 				if (!authResult.ok || !authResult.apiKey) {
+					this._exitCompactionBarrier({ flushDeferred: false });
 					return false;
 				}
 				apiKey = authResult.apiKey;
@@ -1930,6 +2095,7 @@ export class AgentSession {
 
 			const preparation = prepareCompaction(pathEntries, settings);
 			if (!preparation) {
+				this._exitCompactionBarrier({ flushDeferred: false });
 				return false;
 			}
 
@@ -1959,6 +2125,7 @@ export class AgentSession {
 						aborted: true,
 						willRetry: false,
 					});
+					this._exitCompactionBarrier({ flushDeferred: false });
 					return false;
 				}
 
@@ -2006,6 +2173,7 @@ export class AgentSession {
 					aborted: true,
 					willRetry: false,
 				});
+				this._exitCompactionBarrier({ flushDeferred: false });
 				return false;
 			}
 
@@ -2048,11 +2216,13 @@ export class AgentSession {
 				return true;
 			}
 
+			this._exitCompactionBarrier({ flushDeferred: true });
 			// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 			// Continue once so queued messages are delivered.
 			return this.agent.hasQueuedMessages();
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "compaction failed";
+			this._exitCompactionBarrier({ flushDeferred: false });
 			if (started) {
 				this._emit({
 					type: "compaction_end",
@@ -2259,7 +2429,7 @@ export class AgentSession {
 			},
 			{
 				getModel: () => this.model,
-				isIdle: () => !this.isStreaming,
+				isIdle: () => !this.isStreaming && !this._isCompactionBarrierActive(),
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 				getSignal: () => this.agent.signal,
 				abort: () => {
@@ -2269,12 +2439,15 @@ export class AgentSession {
 					}
 					void this.abort();
 				},
-				hasPendingMessages: () => this.pendingMessageCount > 0,
+				hasPendingMessages: () => this.pendingMessageCount > 0 || this._isCompactionBarrierActive(),
 				shutdown: () => {
 					this._extensionShutdownHandler?.();
 				},
 				getContextUsage: () => this.getContextUsage(),
 				compact: (options) => {
+					if (this._isCompactionBarrierActive()) {
+						return;
+					}
 					void (async () => {
 						try {
 							const result = await this.compact(options?.customInstructions);
@@ -2499,18 +2672,20 @@ export class AgentSession {
 
 		this._retryAttempt++;
 
-		if (this._retryAttempt > settings.maxRetries) {
+		const hasRetryLimit = Number.isFinite(settings.maxRetries);
+		if (hasRetryLimit && this._retryAttempt > settings.maxRetries) {
 			// Preserve the completed attempt count so post-run handling can emit the final failure.
 			this._retryAttempt--;
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const uncappedDelayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = Math.min(uncappedDelayMs, MAX_AGENT_RETRY_DELAY_MS);
 
 		this._emit({
 			type: "auto_retry_start",
 			attempt: this._retryAttempt,
-			maxAttempts: settings.maxRetries,
+			maxAttempts: hasRetryLimit ? settings.maxRetries : null,
 			delayMs,
 			errorMessage: message.errorMessage || "Unknown error",
 		});

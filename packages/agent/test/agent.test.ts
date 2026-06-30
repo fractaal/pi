@@ -465,6 +465,20 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
+	it("should drain queued steering and follow-up messages", () => {
+		const agent = new Agent();
+		const steering = { role: "user" as const, content: "Steering message", timestamp: Date.now() };
+		const followUp = { role: "user" as const, content: "Follow-up message", timestamp: Date.now() + 1 };
+
+		agent.steer(steering);
+		agent.followUp(followUp);
+
+		expect(agent.hasQueuedMessages()).toBe(true);
+		expect(agent.drainQueuedMessages()).toEqual({ steering: [steering], followUp: [followUp] });
+		expect(agent.hasQueuedMessages()).toBe(false);
+		expect(agent.drainQueuedMessages()).toEqual({ steering: [], followUp: [] });
+	});
+
 	it("should handle abort controller", () => {
 		const agent = new Agent();
 

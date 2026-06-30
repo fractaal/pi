@@ -401,16 +401,70 @@ export function findCutPoint(
 		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
 	}
 
-	// Walk backwards from newest, accumulating estimated message sizes
+	const messageRole = (index: number): AgentMessage["role"] | undefined => {
+		const message = getMessageFromEntryForCompaction(entries[index]);
+		return message?.role;
+	};
+	const assistantToolCallIds = (index: number): string[] => {
+		const message = getMessageFromEntryForCompaction(entries[index]);
+		if (message?.role !== "assistant") {
+			return [];
+		}
+		const ids: string[] = [];
+		for (const block of message.content) {
+			if (block.type === "toolCall" && block.id.length > 0) {
+				ids.push(block.id);
+			}
+		}
+		return ids;
+	};
+	const assistantHasToolCall = (index: number): boolean => assistantToolCallIds(index).length > 0;
+	const toolResultCallId = (index: number): string | undefined => {
+		const message = getMessageFromEntryForCompaction(entries[index]);
+		if (message?.role !== "toolResult") {
+			return undefined;
+		}
+		return message.toolCallId.length > 0 ? message.toolCallId : undefined;
+	};
+	const toolCallIdAliases = (id: string): string[] => {
+		const pipeIndex = id.indexOf("|");
+		return pipeIndex > 0 ? [id, id.slice(0, pipeIndex)] : [id];
+	};
+	const toolCallIdMatches = (left: string, right: string): boolean => {
+		const rightAliases = new Set(toolCallIdAliases(right));
+		return toolCallIdAliases(left).some((alias) => rightAliases.has(alias));
+	};
+	const findAssistantToolCallIndex = (toolCallId: string, beforeIndex: number): number => {
+		for (let i = beforeIndex - 1; i >= startIndex; i--) {
+			if (assistantToolCallIds(i).some((id) => toolCallIdMatches(id, toolCallId))) {
+				return i;
+			}
+		}
+		return -1;
+	};
+	const previousMessageIndex = (beforeIndex: number): number => {
+		for (let i = beforeIndex - 1; i >= startIndex; i--) {
+			if (getMessageFromEntryForCompaction(entries[i])) {
+				return i;
+			}
+		}
+		return -1;
+	};
+
+	// Walk backwards from newest, accumulating estimated message sizes.
+	// Count every entry that will later become compaction summary input, not
+	// just raw `message` entries. `custom_message` entries are valid user-role
+	// cut points and are converted to LLM messages by getMessageFromEntry(); if
+	// they are not counted here, active-goal checkpoints can be retained as
+	// "free" context and then explode the summarization prompt.
 	let accumulatedTokens = 0;
 	let cutIndex = cutPoints[0]; // Default: keep from first message (not header)
 
 	for (let i = endIndex - 1; i >= startIndex; i--) {
-		const entry = entries[i];
-		if (entry.type !== "message") continue;
+		const message = getMessageFromEntryForCompaction(entries[i]);
+		if (!message) continue;
 
-		// Estimate this message's size
-		const messageTokens = estimateTokens(entry.message);
+		const messageTokens = estimateTokens(message);
 		accumulatedTokens += messageTokens;
 
 		// Check if we've exceeded the budget
@@ -426,30 +480,100 @@ export function findCutPoint(
 		}
 	}
 
-	// Scan backwards from cutIndex to include any non-message entries (bash, settings, etc.)
+	// Scan backwards from cutIndex to include adjacent metadata entries (bash,
+	// settings, custom state, etc.), but do not cross another entry that would
+	// itself become compaction summary input. That would retain uncounted
+	// custom_message/branch_summary text behind the chosen budget boundary.
 	while (cutIndex > startIndex) {
 		const prevEntry = entries[cutIndex - 1];
 		// Stop at session header or compaction boundaries
 		if (prevEntry.type === "compaction") {
 			break;
 		}
-		if (prevEntry.type === "message") {
-			// Stop if we hit any message
+		if (getMessageFromEntryForCompaction(prevEntry)) {
 			break;
 		}
-		// Include this non-message entry (bash, settings change, etc.)
+		// Include this non-message entry (bash, settings change, custom state, etc.)
 		cutIndex--;
+	}
+
+	// Keep the literal live suffix valid for provider replay. OpenAI/Codex
+	// rejects a `toolResult`/function_call_output unless the matching assistant
+	// tool call is also present earlier in the same request. Most tool pairs are
+	// adjacent, but delayed tool results can return several turns later, so an
+	// adjacency-only cut can leave an orphan tool result after compaction.
+	while (cutIndex > startIndex && cutIndex < endIndex) {
+		let moved = false;
+		const currentRole = messageRole(cutIndex);
+		if (currentRole === "toolResult") {
+			cutIndex--;
+			moved = true;
+		} else {
+			const previousIndex = previousMessageIndex(cutIndex);
+			const currentIsPlainAssistant = currentRole === "assistant" && !assistantHasToolCall(cutIndex);
+			if (currentIsPlainAssistant && previousIndex >= startIndex && messageRole(previousIndex) === "toolResult") {
+				cutIndex = previousIndex;
+				moved = true;
+			}
+		}
+		for (let i = cutIndex; i < endIndex; i++) {
+			const toolCallId = toolResultCallId(i);
+			if (!toolCallId) {
+				continue;
+			}
+			const matchingCallIndex = findAssistantToolCallIndex(toolCallId, i);
+			if (matchingCallIndex === -1) {
+				// The matching tool call is already outside this compaction
+				// window, usually because an older boundary kept a delayed
+				// result without its call. Moving earlier cannot make that
+				// suffix replay-valid, so summarize the orphan result away and
+				// also summarize any immediate plain assistant follow-up that
+				// likely depended on it. If there is no safe later suffix, keep
+				// the whole window instead of materializing a broken compaction.
+				let nextIndex = i + 1;
+				while (nextIndex < endIndex) {
+					const nextMessage = getMessageFromEntryForCompaction(entries[nextIndex]);
+					if (!nextMessage) {
+						nextIndex++;
+						continue;
+					}
+					if (nextMessage.role === "toolResult") {
+						nextIndex++;
+						continue;
+					}
+					if (nextMessage.role === "assistant" && !assistantHasToolCall(nextIndex)) {
+						nextIndex++;
+						continue;
+					}
+					break;
+				}
+				cutIndex = nextIndex < endIndex ? nextIndex : startIndex;
+				moved = true;
+				break;
+			}
+			if (matchingCallIndex < cutIndex) {
+				cutIndex = matchingCallIndex;
+				moved = true;
+				break;
+			}
+		}
+		if (!moved) {
+			break;
+		}
 	}
 
 	// Determine if this is a split turn
 	const cutEntry = entries[cutIndex];
-	const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
-	const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
+	const isTurnStartEntry =
+		(cutEntry.type === "message" && cutEntry.message.role === "user") ||
+		cutEntry.type === "branch_summary" ||
+		cutEntry.type === "custom_message";
+	const turnStartIndex = isTurnStartEntry ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
 
 	return {
 		firstKeptEntryIndex: cutIndex,
 		turnStartIndex,
-		isSplitTurn: !isUserMessage && turnStartIndex !== -1,
+		isSplitTurn: !isTurnStartEntry && turnStartIndex !== -1,
 	};
 }
 

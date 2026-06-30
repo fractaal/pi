@@ -1007,11 +1007,13 @@ Emitted when automatic retry is triggered after a transient error (overloaded, r
 {
   "type": "auto_retry_start",
   "attempt": 1,
-  "maxAttempts": 3,
+  "maxAttempts": null,
   "delayMs": 2000,
   "errorMessage": "529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}"
 }
 ```
+
+`maxAttempts` is a number when `retry.maxRetries` is configured. It is `null` for the default unbounded retry mode.
 
 ```json
 {
@@ -1021,7 +1023,7 @@ Emitted when automatic retry is triggered after a transient error (overloaded, r
 }
 ```
 
-On final failure (max retries exceeded):
+On final failure (max retries exceeded for a finite `retry.maxRetries` setting):
 ```json
 {
   "type": "auto_retry_end",

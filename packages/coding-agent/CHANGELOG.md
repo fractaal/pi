@@ -8,6 +8,9 @@
 
 ### Fixed
 
+- Fixed auto-compaction to treat overflow recovery as a stop-the-world safepoint: extension-triggered turns are deferred, nested extension compaction is ignored, queued steering/follow-ups are parked, and overflow messages cannot be masked before core compacts and retries.
+- Fixed compaction cut-point selection to count custom messages, preserve replay-valid tool call/result suffixes, and summarize pre-existing orphan tool results away when possible.
+- Fixed default agent-level retries to retry indefinitely with a 10-second backoff cap; set `retry.maxRetries` to a finite number to restore capped attempts.
 - Fixed the compaction event regression test to cover status indicator cleanup and keep CI passing.
 - Fixed interactive status indicators so ending work, retry, compaction, or branch-summary indicators no longer shrink the TUI when clear-on-shrink is enabled ([#6026](https://github.com/earendil-works/pi/pull/6026)).
 - Fixed `--session` and `SessionManager.open()` to reject non-empty invalid session files without overwriting them ([#6002](https://github.com/earendil-works/pi/issues/6002)).

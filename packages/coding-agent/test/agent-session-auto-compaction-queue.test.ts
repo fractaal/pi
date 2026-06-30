@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Agent } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
 import { type AssistantMessage, createAssistantMessageEventStream, fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -361,6 +361,58 @@ describe("AgentSession auto-compaction queue resume", () => {
 		await checkCompaction(errorAssistant);
 
 		expect(runAutoCompactionSpy).not.toHaveBeenCalled();
+	});
+
+	it("should enter an overflow compaction barrier before extension mutation and park queued messages", async () => {
+		const model = session.model!;
+		const overflowMessage: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "error",
+			errorMessage: "prompt is too long",
+			timestamp: Date.now(),
+		};
+		const queuedSteering = { role: "user" as const, content: "queued steer", timestamp: Date.now() + 1 };
+		const queuedFollowUp = { role: "user" as const, content: "queued follow-up", timestamp: Date.now() + 2 };
+		session.agent.steer(queuedSteering);
+		session.agent.followUp(queuedFollowUp);
+
+		const sessionPrivate = session as unknown as {
+			_handleAgentEvent: (event: AgentEvent) => Promise<void>;
+			_emitExtensionEvent: (event: AgentEvent) => Promise<void>;
+			_isCompactionBarrierActive: () => boolean;
+		};
+		sessionPrivate._emitExtensionEvent = async (event) => {
+			if (event.type === "message_end" && event.message.role === "assistant") {
+				event.message.stopReason = "aborted";
+				event.message.errorMessage = "extension tried to mask overflow";
+			}
+		};
+
+		await sessionPrivate._handleAgentEvent({ type: "message_end", message: overflowMessage });
+
+		expect(sessionPrivate._isCompactionBarrierActive()).toBe(true);
+		expect(session.agent.hasQueuedMessages()).toBe(false);
+		expect(session.pendingMessageCount).toBe(2);
+		expect(overflowMessage.stopReason).toBe("error");
+		expect(overflowMessage.errorMessage).toBe("prompt is too long");
+		const persistedMessage = sessionManager.getEntries().find((entry) => entry.type === "message")?.message;
+		expect(persistedMessage?.role).toBe("assistant");
+		if (persistedMessage?.role === "assistant") {
+			expect(persistedMessage.stopReason).toBe("error");
+			expect(persistedMessage.errorMessage).toBe("prompt is too long");
+		}
 	});
 
 	it("should not trigger threshold compaction for error messages when only kept pre-compaction usage exists", async () => {

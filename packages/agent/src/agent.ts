@@ -151,6 +151,11 @@ class PendingMessageQueue {
 	}
 }
 
+export interface QueuedAgentMessages {
+	steering: AgentMessage[];
+	followUp: AgentMessage[];
+}
+
 type ActiveRun = {
 	promise: Promise<void>;
 	resolve: () => void;
@@ -284,6 +289,14 @@ export class Agent {
 	clearAllQueues(): void {
 		this.clearSteeringQueue();
 		this.clearFollowUpQueue();
+	}
+
+	/** Drain and return all queued steering and follow-up messages. */
+	drainQueuedMessages(): QueuedAgentMessages {
+		return {
+			steering: this.steeringQueue.drain(),
+			followUp: this.followUpQueue.drain(),
+		};
 	}
 
 	/** Returns true when either queue still contains pending messages. */

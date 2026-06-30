@@ -808,7 +808,7 @@ export class SettingsManager {
 	getRetrySettings(): { enabled: boolean; maxRetries: number; baseDelayMs: number } {
 		return {
 			enabled: this.getRetryEnabled(),
-			maxRetries: this.settings.retry?.maxRetries ?? 3,
+			maxRetries: this.settings.retry?.maxRetries ?? Number.POSITIVE_INFINITY,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
 		};
 	}

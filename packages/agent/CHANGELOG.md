@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `Agent.drainQueuedMessages()` so higher-level runtimes can temporarily park steering and follow-up queues around transcript maintenance safepoints.
+
 ## [0.80.2] - 2026-06-23
 
 ### Changed
