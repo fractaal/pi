@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed overflow auto-compaction to drop its input barrier before retrying, so steering submitted during the resumed run enters the live steering queue instead of staying parked until the retry turn ends.
 - Fixed auto-compaction to treat overflow recovery as a stop-the-world safepoint: extension-triggered turns are deferred, nested extension compaction is ignored, queued steering/follow-ups are parked, and overflow messages cannot be masked before core compacts and retries.
 - Fixed compaction cut-point selection to count custom messages, preserve replay-valid tool call/result suffixes, and summarize pre-existing orphan tool results away when possible.
 - Fixed default agent-level retries to retry indefinitely with a 10-second backoff cap; set `retry.maxRetries` to a finite number to restore capped attempts.

@@ -133,6 +133,76 @@ describe("AgentSession auto-compaction queue resume", () => {
 		expect(continueSpy).not.toHaveBeenCalled();
 	});
 
+	it("should exit the compaction barrier before retry compaction end handlers queue steering", async () => {
+		settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
+		const model = session.model!;
+		const now = Date.now();
+		sessionManager.appendMessage({
+			role: "user",
+			content: [{ type: "text", text: "message to compact" }],
+			timestamp: now - 1000,
+		});
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "text", text: "assistant response to compact" }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: {
+				input: 100,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 100,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: now - 500,
+		});
+		session.agent.state.messages = sessionManager.buildSessionContext().messages;
+		session.agent.streamFn = (summaryModel) => {
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: {
+						...fauxAssistantMessage("compacted"),
+						api: summaryModel.api,
+						provider: summaryModel.provider,
+						model: summaryModel.id,
+						usage: {
+							input: 10,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 10,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+					},
+				});
+			});
+			return stream;
+		};
+
+		const sessionPrivate = session as unknown as {
+			_isCompactionBarrierActive: () => boolean;
+			_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<boolean>;
+		};
+		const barrierActiveAtCompactionEnd: boolean[] = [];
+		session.subscribe((event) => {
+			if (event.type !== "compaction_end") return;
+			barrierActiveAtCompactionEnd.push(sessionPrivate._isCompactionBarrierActive());
+			void session.steer("steer after compaction");
+		});
+
+		await expect(sessionPrivate._runAutoCompaction("overflow", true)).resolves.toBe(true);
+
+		expect(barrierActiveAtCompactionEnd).toEqual([false]);
+		expect(session.getSteeringMessages()).toEqual(["steer after compaction"]);
+		expect(session.agent.hasQueuedMessages()).toBe(true);
+	});
+
 	it("should not compact repeatedly after overflow recovery already attempted", async () => {
 		const model = session.model!;
 		const overflowMessage: AssistantMessage = {

@@ -2239,7 +2239,6 @@ export class AgentSession {
 				estimatedTokensAfter,
 				details,
 			};
-			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 
 			if (willRetry) {
 				const messages = this.agent.state.messages;
@@ -2247,9 +2246,12 @@ export class AgentSession {
 				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
 					this.agent.state.messages = messages.slice(0, -1);
 				}
+				this._exitCompactionBarrier({ flushDeferred: true });
+				this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 				return true;
 			}
 
+			this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 			this._exitCompactionBarrier({ flushDeferred: true });
 			// Auto-compaction can complete while follow-up/steering/custom messages are waiting.
 			// Continue once so queued messages are delivered.
