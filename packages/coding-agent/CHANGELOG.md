@@ -14,6 +14,7 @@
 - Fixed auto-compaction to treat overflow recovery as a stop-the-world safepoint: extension-triggered turns are deferred, nested extension compaction is ignored, queued steering/follow-ups are parked, and overflow messages cannot be masked before core compacts and retries.
 - Fixed compaction cut-point selection to count custom messages, preserve replay-valid tool call/result suffixes, and summarize pre-existing orphan tool results away when possible.
 - Fixed default agent-level retries to retry indefinitely with a 10-second backoff cap; set `retry.maxRetries` to a finite number to restore capped attempts.
+- Fixed assistant thinking rendering to hide OpenAI Responses HTML comment separators in existing sessions.
 - Fixed Xiaomi Token Plan model metadata to follow the upstream models.dev token-plan catalogs, removing unsupported `mimo-v2-omni` variants ([#6204](https://github.com/earendil-works/pi/issues/6204)).
 - Fixed startup model selection to skip unauthenticated saved defaults so configured local custom models can be selected instead ([#6231](https://github.com/earendil-works/pi/issues/6231)).
 - Fixed the question extension example to run question tool calls sequentially so multiple questions in one assistant turn remain answerable ([#6189](https://github.com/earendil-works/pi/issues/6189)).
