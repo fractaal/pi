@@ -64,7 +64,10 @@ function parseTextSignature(
 }
 
 function sanitizeResponsesReasoningText(text: string): string {
-	return text.replace(/[ \t]*<!--\s*-->[ \t]*/g, "").replace(/\n{3,}/g, "\n\n");
+	return text
+		.replace(/[ \t]*<!--\s*-->[ \t]*/g, "")
+		.replace(/[ \t]*<!--\s*$/g, "")
+		.replace(/\n{3,}/g, "\n\n");
 }
 
 export interface OpenAIResponsesStreamOptions {
@@ -292,7 +295,7 @@ export function convertResponsesTools(tools: Tool[], options?: ConvertResponsesT
 type StreamingToolCall = ToolCall & { partialJson: string };
 
 type ResponsesOutputSlot =
-	| { type: "thinking"; block: ThinkingContent; contentIndex: number }
+	| { type: "thinking"; block: ThinkingContent; contentIndex: number; rawThinking: string }
 	| { type: "text"; block: TextContent; contentIndex: number }
 	| { type: "toolCall"; block: StreamingToolCall; contentIndex: number };
 
@@ -320,6 +323,7 @@ export async function processResponsesStream<TApi extends Api>(
 				type: "thinking",
 				block,
 				contentIndex: output.content.length - 1,
+				rawThinking: "",
 			} satisfies ResponsesOutputSlot;
 			outputSlots.set(outputIndex, slot);
 			stream.push({ type: "thinking_start", contentIndex: slot.contentIndex, partial: output });
@@ -399,26 +403,40 @@ export async function processResponsesStream<TApi extends Api>(
 			const slot = getSlot(event.output_index, "thinking");
 			if (!slot) continue;
 			const previousThinking = slot.block.thinking;
-			slot.block.thinking = sanitizeResponsesReasoningText(slot.block.thinking + event.delta);
-			stream.push({
-				type: "thinking_delta",
-				contentIndex: slot.contentIndex,
-				delta: slot.block.thinking.slice(previousThinking.length),
-				partial: output,
-			});
+			slot.rawThinking += event.delta;
+			slot.block.thinking = sanitizeResponsesReasoningText(slot.rawThinking);
+			const delta = slot.block.thinking.startsWith(previousThinking)
+				? slot.block.thinking.slice(previousThinking.length)
+				: slot.block.thinking;
+			if (delta.length > 0) {
+				stream.push({
+					type: "thinking_delta",
+					contentIndex: slot.contentIndex,
+					delta,
+					partial: output,
+				});
+			}
 		} else if (event.type === "response.reasoning_summary_part.done") {
 			const slot = getSlot(event.output_index, "thinking");
 			if (!slot) continue;
-			slot.block.thinking += "\n\n";
-			stream.push({
-				type: "thinking_delta",
-				contentIndex: slot.contentIndex,
-				delta: "\n\n",
-				partial: output,
-			});
+			const previousThinking = slot.block.thinking;
+			slot.rawThinking += "\n\n";
+			slot.block.thinking = sanitizeResponsesReasoningText(slot.rawThinking);
+			const delta = slot.block.thinking.startsWith(previousThinking)
+				? slot.block.thinking.slice(previousThinking.length)
+				: slot.block.thinking;
+			if (delta.length > 0) {
+				stream.push({
+					type: "thinking_delta",
+					contentIndex: slot.contentIndex,
+					delta,
+					partial: output,
+				});
+			}
 		} else if (event.type === "response.reasoning_text.delta") {
 			const slot = getSlot(event.output_index, "thinking");
 			if (!slot) continue;
+			slot.rawThinking += event.delta;
 			slot.block.thinking += event.delta;
 			stream.push({
 				type: "thinking_delta",
@@ -482,9 +500,8 @@ export async function processResponsesStream<TApi extends Api>(
 			if (item.type === "reasoning" && slot?.type === "thinking") {
 				const summaryText = item.summary?.map((s) => s.text).join("\n\n") || "";
 				const contentText = item.content?.map((c) => c.text).join("\n\n") || "";
-				slot.block.thinking = sanitizeResponsesReasoningText(
-					summaryText || contentText || slot.block.thinking,
-				).trimEnd();
+				slot.rawThinking = summaryText || contentText || slot.rawThinking;
+				slot.block.thinking = sanitizeResponsesReasoningText(slot.rawThinking).trimEnd();
 				slot.block.thinkingSignature = JSON.stringify(item);
 				stream.push({
 					type: "thinking_end",

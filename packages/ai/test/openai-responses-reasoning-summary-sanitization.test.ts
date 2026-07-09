@@ -35,22 +35,34 @@ async function* createReasoningSummaryEvents(): AsyncIterable<ResponseStreamEven
 		type: "response.reasoning_summary_text.delta",
 		sequence_number: 2,
 		output_index: 0,
-		delta: "**Planning CI test suite optimization**\n\n<!-- -->",
+		delta: "**Planning CI test suite optimization**\n\n<!--",
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.reasoning_summary_text.delta",
+		sequence_number: 3,
+		output_index: 0,
+		delta: " -->",
 	} as ResponseStreamEvent;
 	yield {
 		type: "response.reasoning_summary_part.done",
-		sequence_number: 3,
+		sequence_number: 4,
 		output_index: 0,
 	} as ResponseStreamEvent;
 	yield {
 		type: "response.reasoning_summary_text.delta",
-		sequence_number: 4,
+		sequence_number: 5,
 		output_index: 0,
-		delta: "**Evaluating test duration reduction strategies**\n\n<!-- -->",
+		delta: "**Evaluating test duration reduction strategies**\n\n<!--",
+	} as ResponseStreamEvent;
+	yield {
+		type: "response.reasoning_summary_text.delta",
+		sequence_number: 6,
+		output_index: 0,
+		delta: " -->",
 	} as ResponseStreamEvent;
 	yield {
 		type: "response.output_item.done",
-		sequence_number: 5,
+		sequence_number: 7,
 		output_index: 0,
 		item: {
 			type: "reasoning",
@@ -63,7 +75,7 @@ async function* createReasoningSummaryEvents(): AsyncIterable<ResponseStreamEven
 	} as ResponseStreamEvent;
 	yield {
 		type: "response.completed",
-		sequence_number: 5,
+		sequence_number: 8,
 		response: { id: "resp_test", status: "completed" },
 	} as ResponseStreamEvent;
 }
@@ -97,7 +109,8 @@ describe("openai responses reasoning summary sanitization", () => {
 		expect(thinkingBlock.thinking).toBe(
 			"**Planning CI test suite optimization**\n\n**Evaluating test duration reduction strategies**",
 		);
-		expect(thinkingBlock.thinking).not.toContain("<!-- -->");
+		expect(thinkingBlock.thinking).not.toContain("<!--");
+		expect(thinkingBlock.thinking).not.toContain("-->");
 		expect(thinkingBlock.thinkingSignature).toContain("<!-- -->");
 
 		const emittedEvents = pushSpy.mock.calls.map(([event]) => event as AssistantMessageEvent);
@@ -107,9 +120,11 @@ describe("openai responses reasoning summary sanitization", () => {
 		expect(thinkingEvents.length).toBeGreaterThan(0);
 		for (const event of thinkingEvents) {
 			if (event.type === "thinking_delta") {
-				expect(event.delta).not.toContain("<!-- -->");
+				expect(event.delta).not.toContain("<!--");
+				expect(event.delta).not.toContain("-->");
 			} else {
-				expect(event.content).not.toContain("<!-- -->");
+				expect(event.content).not.toContain("<!--");
+				expect(event.content).not.toContain("-->");
 			}
 		}
 	});
