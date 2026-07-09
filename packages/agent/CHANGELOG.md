@@ -5,6 +5,24 @@
 ### Added
 
 - Added `Agent.drainQueuedMessages()` so higher-level runtimes can temporarily park steering and follow-up queues around transcript maintenance safepoints.
+- Added configurable harness session context entry transforms and custom-entry message projectors.
+- Exported `InMemorySessionStorage` and `JsonlSessionStorage` ([#6435](https://github.com/earendil-works/pi/issues/6435)).
+
+### Fixed
+
+- Fixed harness split-turn compaction to serialize summary requests so single-concurrency providers are not asked to run overlapping generations ([#5536](https://github.com/earendil-works/pi/issues/5536)).
+- Fixed harness session storage short entry ids to use the random tail of the generated uuidv7 instead of the timestamp prefix, which was nearly constant between calls ([#6242](https://github.com/earendil-works/pi/issues/6242)).
+
+## [0.80.3] - 2026-06-30
+
+### Added
+
+- Added `prepareNextTurnWithContext` for `Agent` users that need the next-turn loop context.
+
+### Fixed
+
+- Fixed oversized harness shell execution timeouts to fail with a clear validation error instead of being clamped to an immediate timeout ([#6181](https://github.com/earendil-works/pi/issues/6181)).
+- Fixed `Agent.prepareNextTurn` to keep receiving the run abort signal instead of the next-turn context.
 
 ## [0.80.2] - 2026-06-23
 
