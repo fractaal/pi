@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed OpenAI Codex GPT-5.6 Luna, Sol, and Terra context-window metadata to use the provider's 372,000-token window instead of the older 272,000-token Codex limit.
 - Fixed OpenAI Responses reasoning summaries to strip provider-inserted HTML comment separators from visible thinking while preserving signed replay payloads.
 - Fixed post-compaction output-token budgeting to ignore stale assistant usage from before the compaction boundary ([#6464](https://github.com/earendil-works/pi/issues/6464)).
 
