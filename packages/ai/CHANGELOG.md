@@ -6,6 +6,8 @@
 
 - Fixed OpenAI Responses reasoning summaries to strip provider-inserted HTML comment separators from visible thinking while preserving signed replay payloads.
 
+## [0.80.5] - 2026-07-09
+
 ## [0.80.4] - 2026-07-09
 
 ### Fixed

@@ -10,6 +10,8 @@
 - Fixed default agent-level retries to retry indefinitely with a 10-second backoff cap; set `retry.maxRetries` to a finite number to restore capped attempts.
 - Fixed assistant thinking rendering to hide OpenAI Responses HTML comment separators in existing sessions.
 
+## [0.80.5] - 2026-07-09
+
 ## [0.80.4] - 2026-07-09
 
 ### New Features
