@@ -132,6 +132,7 @@ export type AgentSessionEvent =
 			messages: AgentMessage[];
 			willRetry: boolean;
 	  }
+	| { type: "agent_settled" }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -293,6 +294,9 @@ export class AgentSession {
 	// Event subscription state
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
+	private _isAgentRunActive = false;
+	private _idleWaitPromise: Promise<void> | undefined;
+	private _resolveIdleWait: (() => void) | undefined;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
 	private _steeringMessages: string[] = [];
@@ -628,6 +632,35 @@ export class AgentSession {
 		return !!sameModel && isContextOverflow(assistantMsg, contextWindow);
 	}
 
+	private _getIdleWaitPromise(): Promise<void> {
+		if (!this._idleWaitPromise) {
+			this._idleWaitPromise = new Promise((resolve) => {
+				this._resolveIdleWait = resolve;
+			});
+		}
+		return this._idleWaitPromise;
+	}
+
+	private _resolveIdleWaitIfIdle(): void {
+		if (this._isAgentRunActive || !this._resolveIdleWait) {
+			return;
+		}
+		const resolve = this._resolveIdleWait;
+		this._idleWaitPromise = undefined;
+		this._resolveIdleWait = undefined;
+		resolve();
+	}
+
+	private async _emitAgentSettled(): Promise<void> {
+		this._isAgentRunActive = false;
+		try {
+			await this._extensionRunner.emit({ type: "agent_settled" });
+			this._emit({ type: "agent_settled" });
+		} finally {
+			this._resolveIdleWaitIfIdle();
+		}
+	}
+
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
 
@@ -944,9 +977,14 @@ export class AgentSession {
 		return this.agent.state.thinkingLevel;
 	}
 
-	/** Whether agent is currently streaming a response */
+	/** Whether the session is currently processing an agent run or post-run continuation. */
 	get isStreaming(): boolean {
-		return this.agent.state.isStreaming;
+		return this._isAgentRunActive;
+	}
+
+	/** Whether the session has no active agent run, retry, auto-compaction, or queued continuation. */
+	get isIdle(): boolean {
+		return !this._isAgentRunActive && !this._isCompactionBarrierActive();
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -1126,6 +1164,7 @@ export class AgentSession {
 	// =========================================================================
 
 	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+		this._isAgentRunActive = true;
 		try {
 			await this.agent.prompt(messages);
 			while (await this._handlePostAgentRun()) {
@@ -1134,6 +1173,7 @@ export class AgentSession {
 		} finally {
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
+			await this._emitAgentSettled();
 		}
 	}
 
@@ -1656,7 +1696,14 @@ export class AgentSession {
 	async abort(): Promise<void> {
 		this.abortRetry();
 		this.agent.abort();
-		await this.agent.waitForIdle();
+		await this.waitForIdle();
+	}
+
+	async waitForIdle(): Promise<void> {
+		if (this.isIdle) {
+			return;
+		}
+		await this._getIdleWaitPromise();
 	}
 
 	// =========================================================================
@@ -2511,7 +2558,7 @@ export class AgentSession {
 			},
 			{
 				getModel: () => this.model,
-				isIdle: () => !this.isStreaming && !this._isCompactionBarrierActive(),
+				isIdle: () => this.isIdle,
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 				getSignal: () => this.agent.signal,
 				abort: () => {

@@ -6,6 +6,7 @@
 
 - Added `/login <provider>` support with provider autocomplete.
 - Added public SDK exports for CLI-equivalent model and scoped-model resolution ([#6201](https://github.com/earendil-works/pi/issues/6201)).
+- Added extension and RPC `agent_settled` events plus session-level idle waiting for fully settled agent runs ([#6363](https://github.com/earendil-works/pi/issues/6363)).
 - Added extension entry renderers for persisted display-only session entries that are rendered in interactive mode without being sent to the model context.
 
 ### Fixed
@@ -20,6 +21,7 @@
 - Fixed the question extension example to run question tool calls sequentially so multiple questions in one assistant turn remain answerable ([#6189](https://github.com/earendil-works/pi/issues/6189)).
 - Fixed `/login` to report auth storage persistence failures instead of claiming credentials were saved when `auth.json` is locked ([#6223](https://github.com/earendil-works/pi/issues/6223)).
 - Fixed split-turn compaction to serialize summary requests so single-concurrency local providers do not fail with 429 errors ([#5536](https://github.com/earendil-works/pi/issues/5536)).
+- Fixed compaction retained-token budgeting to count context-visible custom messages ([#6326](https://github.com/earendil-works/pi/issues/6326)).
 - Fixed custom session entries appended during assistant streaming to render before the live assistant message, matching persisted session order.
 - Fixed oversized bash tool timeouts to fail with a clear validation error instead of being clamped to an immediate timeout ([#6181](https://github.com/earendil-works/pi/issues/6181)).
 - Fixed the edit tool schema to allow model-invented extra replacement fields instead of rejecting otherwise valid edits ([#6278](https://github.com/earendil-works/pi/issues/6278)).
