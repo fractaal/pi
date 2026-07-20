@@ -606,10 +606,10 @@ export class AgentSession {
 			const customMessage = entry.message;
 			if (entry.options?.deliverAs === "nextTurn") {
 				this._pendingNextTurnMessages.push(customMessage);
-			} else if (entry.options?.triggerTurn || entry.options?.deliverAs === "followUp") {
-				this.agent.followUp(customMessage);
 			} else if (entry.options?.deliverAs === "steer") {
 				this.agent.steer(customMessage);
+			} else if (entry.options?.triggerTurn || entry.options?.deliverAs === "followUp") {
+				this.agent.followUp(customMessage);
 			} else {
 				this.agent.state.messages.push(customMessage);
 				this.sessionManager.appendCustomMessageEntry(

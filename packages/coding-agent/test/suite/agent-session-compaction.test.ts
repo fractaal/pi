@@ -230,6 +230,38 @@ describe("AgentSession compaction characterization", () => {
 		await expect(sessionInternals._runAutoCompaction("threshold", false)).resolves.toBe(true);
 	});
 
+	it("preserves explicit custom-message steering through auto-compaction", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => {
+						pi.sendMessage(
+							{ customType: "compaction-steer", content: "steer after compaction", display: true },
+							{ triggerTurn: true, deliverAs: "steer" },
+						);
+						return {
+							compaction: {
+								summary: "auto compacted",
+								firstKeptEntryId: event.preparation.firstKeptEntryId,
+								tokensBefore: event.preparation.tokensBefore,
+								details: {},
+							},
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+
+		await expect(sessionInternals._runAutoCompaction("threshold", false)).resolves.toBe(true);
+
+		const queued = harness.session.agent.drainQueuedMessages();
+		expect(queued.steering).toEqual([expect.objectContaining({ role: "custom", customType: "compaction-steer" })]);
+		expect(queued.followUp).toEqual([]);
+	});
+
 	it("does not retry overflow recovery more than once", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
