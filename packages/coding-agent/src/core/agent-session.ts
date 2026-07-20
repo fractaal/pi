@@ -580,6 +580,19 @@ export class AgentSession {
 		this._emitQueueUpdate();
 	}
 
+	private _queueCustomMessage(
+		message: CustomMessage<unknown>,
+		deliverAs: "steer" | "followUp" | "nextTurn" = "steer",
+	): void {
+		if (deliverAs === "nextTurn") {
+			this._pendingNextTurnMessages.push(message);
+		} else if (deliverAs === "followUp") {
+			this.agent.followUp(message);
+		} else {
+			this.agent.steer(message);
+		}
+	}
+
 	private _flushDeferredCompactionMessages(): void {
 		if (this._deferredCompactionMessages.length === 0) return;
 		const deferred = this._deferredCompactionMessages;
@@ -603,24 +616,7 @@ export class AgentSession {
 				continue;
 			}
 
-			const customMessage = entry.message;
-			if (entry.options?.deliverAs === "nextTurn") {
-				this._pendingNextTurnMessages.push(customMessage);
-			} else if (entry.options?.deliverAs === "steer") {
-				this.agent.steer(customMessage);
-			} else if (entry.options?.triggerTurn || entry.options?.deliverAs === "followUp") {
-				this.agent.followUp(customMessage);
-			} else {
-				this.agent.state.messages.push(customMessage);
-				this.sessionManager.appendCustomMessageEntry(
-					customMessage.customType,
-					customMessage.content,
-					customMessage.display,
-					customMessage.details,
-				);
-				this._emit({ type: "message_start", message: customMessage });
-				this._emit({ type: "message_end", message: customMessage });
-			}
+			this._queueCustomMessage(entry.message, entry.options?.deliverAs);
 		}
 	}
 
@@ -1557,14 +1553,8 @@ export class AgentSession {
 			this._deferCompactionMessage({ type: "custom", message: appMessage, options });
 			return;
 		}
-		if (options?.deliverAs === "nextTurn") {
-			this._pendingNextTurnMessages.push(appMessage);
-		} else if (this.isStreaming) {
-			if (options?.deliverAs === "followUp") {
-				this.agent.followUp(appMessage);
-			} else {
-				this.agent.steer(appMessage);
-			}
+		if (options?.deliverAs === "nextTurn" || this.isStreaming) {
+			this._queueCustomMessage(appMessage, options?.deliverAs);
 		} else if (options?.triggerTurn) {
 			await this._runAgentPrompt(appMessage);
 		} else {
@@ -1656,10 +1646,10 @@ export class AgentSession {
 
 			const customText = this._getMessageText(entry.message);
 			if (customText) {
-				if (entry.options?.deliverAs === "steer") {
-					steering.push(customText);
-				} else {
+				if (entry.options?.deliverAs === "followUp" || entry.options?.deliverAs === "nextTurn") {
 					followUp.push(customText);
+				} else {
+					steering.push(customText);
 				}
 			}
 		}

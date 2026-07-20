@@ -10,6 +10,7 @@ import { createHarness, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
 	_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<boolean>;
+	_enterCompactionBarrier: (reason: "overflow" | "threshold", willRetry: boolean) => void;
 	_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<boolean>;
 };
 
@@ -260,6 +261,68 @@ describe("AgentSession compaction characterization", () => {
 		const queued = harness.session.agent.drainQueuedMessages();
 		expect(queued.steering).toEqual([expect.objectContaining({ role: "custom", customType: "compaction-steer" })]);
 		expect(queued.followUp).toEqual([]);
+	});
+
+	it("preserves default custom-message steering through auto-compaction", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => {
+						pi.sendMessage(
+							{ customType: "compaction-trigger", content: "trigger after compaction", display: true },
+							{ triggerTurn: true },
+						);
+						pi.sendMessage({
+							customType: "compaction-default",
+							content: "default after compaction",
+							display: true,
+						});
+						return {
+							compaction: {
+								summary: "auto compacted",
+								firstKeptEntryId: event.preparation.firstKeptEntryId,
+								tokensBefore: event.preparation.tokensBefore,
+								details: {},
+							},
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+
+		await expect(sessionInternals._runAutoCompaction("threshold", false)).resolves.toBe(true);
+
+		const queued = harness.session.agent.drainQueuedMessages();
+		expect(queued.steering).toEqual([
+			expect.objectContaining({ role: "custom", customType: "compaction-trigger" }),
+			expect.objectContaining({ role: "custom", customType: "compaction-default" }),
+		]);
+		expect(queued.followUp).toEqual([]);
+	});
+
+	it("reports deferred default custom messages as steering when clearing the barrier queue", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		sessionInternals._enterCompactionBarrier("threshold", false);
+
+		await harness.session.sendCustomMessage(
+			{ customType: "compaction-trigger", content: "trigger after compaction", display: true },
+			{ triggerTurn: true },
+		);
+		await harness.session.sendCustomMessage({
+			customType: "compaction-default",
+			content: "default after compaction",
+			display: true,
+		});
+
+		expect(harness.session.clearQueue()).toEqual({
+			steering: ["trigger after compaction", "default after compaction"],
+			followUp: [],
+		});
 	});
 
 	it("does not retry overflow recovery more than once", async () => {
