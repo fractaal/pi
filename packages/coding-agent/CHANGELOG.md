@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed cancelled or failed overflow compaction attempts to allow future recovery instead of blocking extension-triggered turns and the next pre-prompt check.
 - Fixed deferred custom messages to preserve explicit and default steering delivery across automatic compaction barriers.
 - Fixed overflow auto-compaction to drop its input barrier before retrying, so steering submitted during the resumed run enters the live steering queue instead of staying parked until the retry turn ends.
 - Fixed auto-compaction to treat overflow recovery as a stop-the-world safepoint: extension-triggered turns are deferred, nested extension compaction is ignored, queued steering/follow-ups are parked, and overflow messages cannot be masked before core compacts and retries.

@@ -735,7 +735,7 @@ export class AgentSession {
 				const assistantMsg = preExtensionAssistantMessage ?? (event.message as AssistantMessage);
 				this._lastAssistantMessage = assistantMsg;
 
-				if (assistantMsg.stopReason !== "error") {
+				if (assistantMsg.stopReason !== "error" && !this._shouldEnterOverflowBarrier(assistantMsg)) {
 					this._overflowRecoveryAttempted = false;
 				}
 
@@ -2134,13 +2134,11 @@ export class AgentSession {
 			}
 
 			this._overflowRecoveryAttempted = true;
-			// Remove the error message from agent state (it IS saved to session for history,
-			// but we don't want it in context for the retry)
-			const messages = this.agent.state.messages;
-			if (messages.length > 0 && messages[messages.length - 1].role === "assistant") {
-				this.agent.state.messages = messages.slice(0, -1);
+			const compacted = await this._runAutoCompaction("overflow", willRetry);
+			if (!compacted) {
+				this._overflowRecoveryAttempted = false;
 			}
-			return await this._runAutoCompaction("overflow", willRetry);
+			return compacted;
 		}
 
 		// Case 2: Threshold - context is getting large
@@ -2320,9 +2318,11 @@ export class AgentSession {
 			};
 
 			if (willRetry) {
+				// The rebuilt session includes the overflow response. Remove it only after compaction succeeds
+				// so agent.continue() retries from the preceding user/tool context instead of an assistant message.
 				const messages = this.agent.state.messages;
 				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant" && (lastMsg as AssistantMessage).stopReason === "error") {
+				if (lastMsg?.role === "assistant") {
 					this.agent.state.messages = messages.slice(0, -1);
 				}
 				this._exitCompactionBarrier({ flushDeferred: true });
