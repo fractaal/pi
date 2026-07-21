@@ -10,7 +10,7 @@ import { createHarness, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
 	_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<boolean>;
-	_enterCompactionBarrier: (reason: "overflow" | "threshold", willRetry: boolean) => void;
+	_enterCompactionBarrier: (reason: "manual" | "overflow" | "threshold", willRetry: boolean) => void;
 	_runAutoCompaction: (reason: "overflow" | "threshold", willRetry: boolean) => Promise<boolean>;
 };
 
@@ -128,6 +128,329 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
 	});
 
+	it("resolves idle waiters after successful manual compaction without queued work", async () => {
+		let finishCompaction: (() => void) | undefined;
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => {
+						return await new Promise((resolve) => {
+							finishCompaction = () =>
+								resolve({
+									compaction: {
+										summary: "completed manual compaction",
+										firstKeptEntryId: event.preparation.firstKeptEntryId,
+										tokensBefore: event.preparation.tokensBefore,
+										details: {},
+									},
+								});
+						});
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		const compactPromise = harness.session.compact();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const idlePromise = harness.session.waitForIdle();
+		expect(finishCompaction).toBeTypeOf("function");
+		finishCompaction?.();
+
+		await expect(compactPromise).resolves.toMatchObject({ summary: "completed manual compaction" });
+		await expect(idlePromise).resolves.toBeUndefined();
+		expect(harness.session.isIdle).toBe(true);
+		expect(harness.eventsOfType("agent_settled")).toHaveLength(0);
+	});
+
+	it("keeps the manual barrier active while aborting an in-flight agent run", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "manual active-run recovery",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		let streamCalls = 0;
+		let providersInFlight = 0;
+		let maxProvidersInFlight = 0;
+		let recoveryTexts: string[] = [];
+		harness.session.agent.streamFn = (model, context, options) => {
+			streamCalls += 1;
+			providersInFlight += 1;
+			maxProvidersInFlight = Math.max(maxProvidersInFlight, providersInFlight);
+			const stream = createAssistantMessageEventStream();
+			if (streamCalls === 1) {
+				const finishAborted = () => {
+					providersInFlight -= 1;
+					stream.push({
+						type: "error",
+						reason: "aborted",
+						error: {
+							...fauxAssistantMessage("Aborted", { stopReason: "aborted" }),
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+						},
+					});
+				};
+				if (options?.signal?.aborted) {
+					queueMicrotask(finishAborted);
+				} else {
+					options?.signal?.addEventListener("abort", finishAborted, { once: true });
+				}
+				return stream;
+			}
+
+			recoveryTexts = context.messages.flatMap((message) =>
+				typeof message.content === "string"
+					? [message.content]
+					: message.content
+							.filter((part): part is { type: "text"; text: string } => part.type === "text")
+							.map((part) => part.text),
+			);
+			queueMicrotask(() => {
+				providersInFlight -= 1;
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: {
+						...fauxAssistantMessage("recovered"),
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+					},
+				});
+			});
+			return stream;
+		};
+
+		const activePrompt = harness.session.prompt("active request");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(harness.session.isStreaming).toBe(true);
+		const compactPromise = harness.session.compact();
+		await harness.session.prompt("queued during active manual compaction");
+
+		await activePrompt;
+		await expect(compactPromise).resolves.toMatchObject({ summary: "manual active-run recovery" });
+		await harness.session.waitForIdle();
+
+		expect(streamCalls).toBe(2);
+		expect(maxProvidersInFlight).toBe(1);
+		expect(recoveryTexts.filter((text) => text === "queued during active manual compaction")).toHaveLength(1);
+		expect(recoveryTexts.some((text) => text.includes("manual active-run recovery"))).toBe(true);
+		expect(harness.eventsOfType("agent_settled")).toHaveLength(1);
+	});
+
+	it("holds terminal compaction ownership through explicit settlement", async () => {
+		let markSettlementStarted: () => void = () => undefined;
+		const settlementStarted = new Promise<void>((resolve) => {
+			markSettlementStarted = resolve;
+		});
+		let releaseSettlement: () => void = () => undefined;
+		const settlementReleased = new Promise<void>((resolve) => {
+			releaseSettlement = resolve;
+		});
+		let firstSettlement = true;
+		const settledIdleStates: boolean[] = [];
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_settled", async (_event, ctx) => {
+						settledIdleStates.push(ctx.isIdle());
+						if (!firstSettlement) return;
+						firstSettlement = false;
+						markSettlementStarted();
+						await settlementReleased;
+					});
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "explicit terminal settlement",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		let streamCalls = 0;
+		let providersInFlight = 0;
+		let maxProvidersInFlight = 0;
+		let recoveryTexts: string[] = [];
+		harness.session.agent.streamFn = (model, context, options) => {
+			streamCalls += 1;
+			providersInFlight += 1;
+			maxProvidersInFlight = Math.max(maxProvidersInFlight, providersInFlight);
+			const stream = createAssistantMessageEventStream();
+			if (streamCalls === 1) {
+				const finishAborted = () => {
+					providersInFlight -= 1;
+					stream.push({
+						type: "error",
+						reason: "aborted",
+						error: {
+							...fauxAssistantMessage("Aborted", { stopReason: "aborted" }),
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+						},
+					});
+				};
+				if (options?.signal?.aborted) {
+					queueMicrotask(finishAborted);
+				} else {
+					options?.signal?.addEventListener("abort", finishAborted, { once: true });
+				}
+				return stream;
+			}
+
+			recoveryTexts = context.messages.flatMap((message) =>
+				typeof message.content === "string"
+					? [message.content]
+					: message.content
+							.filter((part): part is { type: "text"; text: string } => part.type === "text")
+							.map((part) => part.text),
+			);
+			queueMicrotask(() => {
+				providersInFlight -= 1;
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: {
+						...fauxAssistantMessage("recovered after terminal settlement"),
+						api: model.api,
+						provider: model.provider,
+						model: model.id,
+					},
+				});
+			});
+			return stream;
+		};
+
+		const activePrompt = harness.session.prompt("active before explicit settlement");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const compactPromise = harness.session.compact();
+		await settlementStarted;
+		await expect(harness.session.compact()).rejects.toThrow("Compaction is already in progress");
+		await harness.session.prompt("queued during explicit settlement");
+		expect(streamCalls).toBe(1);
+		expect(harness.eventsOfType("agent_settled")).toHaveLength(0);
+
+		releaseSettlement();
+		await activePrompt;
+		await expect(compactPromise).resolves.toMatchObject({ summary: "explicit terminal settlement" });
+		await harness.session.waitForIdle();
+
+		expect(streamCalls).toBe(2);
+		expect(maxProvidersInFlight).toBe(1);
+		expect(recoveryTexts.filter((text) => text === "queued during explicit settlement")).toHaveLength(1);
+		expect(recoveryTexts.some((text) => text.includes("explicit terminal settlement"))).toBe(true);
+		expect(settledIdleStates).toEqual([true, true]);
+		expect(harness.eventsOfType("agent_settled")).toHaveLength(2);
+	});
+
+	it("waits for agent settlement before entering manual compaction", async () => {
+		let markSettlingStarted: () => void = () => undefined;
+		const settlingStarted = new Promise<void>((resolve) => {
+			markSettlingStarted = resolve;
+		});
+		let releaseSettlement: () => void = () => undefined;
+		const settlementReleased = new Promise<void>((resolve) => {
+			releaseSettlement = resolve;
+		});
+		const order: string[] = [];
+		let firstSettlement = true;
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_settled", async (_event, ctx) => {
+						if (!firstSettlement) return;
+						firstSettlement = false;
+						order.push(`settlement-start:${ctx.isIdle()}`);
+						markSettlingStarted();
+						await settlementReleased;
+						order.push("settlement-end");
+					});
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "post-settlement compaction",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.session.subscribe((event) => {
+			if (event.type === "agent_settled") order.push("public-settled");
+			if (event.type === "compaction_start") order.push("compaction-start");
+		});
+
+		let recoveryTexts: string[] = [];
+		harness.setResponses([
+			fauxAssistantMessage("first turn"),
+			(context) => {
+				recoveryTexts = context.messages.flatMap((message) =>
+					typeof message.content === "string"
+						? [message.content]
+						: message.content
+								.filter((part): part is { type: "text"; text: string } => part.type === "text")
+								.map((part) => part.text),
+				);
+				return fauxAssistantMessage("recovered after settlement");
+			},
+		]);
+
+		const initialPrompt = harness.session.prompt("initial turn");
+		await settlingStarted;
+		const compactPromise = harness.session.compact();
+		const idlePromise = harness.session.waitForIdle();
+		let idleResolved = false;
+		void idlePromise.then(() => {
+			idleResolved = true;
+		});
+		await harness.session.prompt("queued during settlement");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(order).toEqual(["settlement-start:true"]);
+		expect(idleResolved).toBe(false);
+
+		releaseSettlement();
+		await initialPrompt;
+		await expect(compactPromise).resolves.toMatchObject({ summary: "post-settlement compaction" });
+		await idlePromise;
+
+		expect(order.slice(0, 4)).toEqual([
+			"settlement-start:true",
+			"settlement-end",
+			"public-settled",
+			"compaction-start",
+		]);
+		expect(recoveryTexts.filter((text) => text === "queued during settlement")).toHaveLength(1);
+		expect(recoveryTexts.some((text) => text.includes("post-settlement compaction"))).toBe(true);
+	});
+
 	it("throws when compacting without a model", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -171,12 +494,16 @@ describe("AgentSession compaction characterization", () => {
 		expect(getStreamCallCount()).toBe(1);
 	});
 
-	it("cancels in-progress manual compaction when abortCompaction is called", async () => {
+	it("cancels in-progress manual compaction without replaying parked messages", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_before_compact", async (event) => {
+						pi.sendMessage(
+							{ customType: "parked-on-cancel", content: "do not replay", display: false },
+							{ triggerTurn: true, deliverAs: "steer" },
+						);
 						return await new Promise<{ cancel: true }>((resolve) => {
 							event.signal.addEventListener("abort", () => resolve({ cancel: true }), { once: true });
 						});
@@ -185,15 +512,25 @@ describe("AgentSession compaction characterization", () => {
 			],
 		});
 		harnesses.push(harness);
-
-		await harness.session.prompt("one");
-		await harness.session.prompt("two");
+		seedCompactableSession(harness);
 
 		const compactPromise = harness.session.compact();
 		await new Promise((resolve) => setTimeout(resolve, 0));
+		const idlePromise = harness.session.waitForIdle();
+		await expect(harness.session.compact()).rejects.toThrow("Compaction is already in progress");
 		harness.session.abortCompaction();
 
 		await expect(compactPromise).rejects.toThrow("Compaction cancelled");
+		await expect(idlePromise).resolves.toBeUndefined();
+		expect(harness.session.pendingMessageCount).toBe(1);
+		expect(harness.session.getSteeringMessages()).toEqual(["do not replay"]);
+		expect(harness.faux.state.callCount).toBe(0);
+		expect(harness.eventsOfType("agent_settled")).toHaveLength(0);
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter((entry) => entry.type === "custom_message" && entry.customType === "parked-on-cancel"),
+		).toHaveLength(0);
 	});
 
 	it("resumes after threshold compaction when only agent-level queued messages exist", async () => {
@@ -301,6 +638,79 @@ describe("AgentSession compaction characterization", () => {
 			expect.objectContaining({ role: "custom", customType: "compaction-default" }),
 		]);
 		expect(queued.followUp).toEqual([]);
+	});
+
+	it("recovers model-visible messages after failed auto-compaction through manual compaction", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => {
+						if (event.reason === "threshold") {
+							pi.sendMessage(
+								{ customType: "remote-before-recovery", content: "remote before recovery", display: false },
+								{ triggerTurn: true, deliverAs: "steer" },
+							);
+							return undefined;
+						}
+						pi.sendMessage(
+							{ customType: "remote-during-manual", content: "remote during manual", display: false },
+							{ triggerTurn: true, deliverAs: "steer" },
+						);
+						return {
+							compaction: {
+								summary: "manual recovery summary",
+								firstKeptEntryId: event.preparation.firstKeptEntryId,
+								tokensBefore: event.preparation.tokensBefore,
+								details: {},
+							},
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.session.agent.steeringMode = "all";
+
+		let providerTexts: string[] = [];
+		const fauxStreamFn = harness.session.agent.streamFn;
+		harness.session.agent.streamFn = () => {
+			throw new Error("forced automatic compaction failure");
+		};
+		const sessionInternals = harness.session as unknown as SessionWithCompactionInternals;
+		await expect(sessionInternals._runAutoCompaction("threshold", false)).resolves.toBe(false);
+		expect(harness.session.pendingMessageCount).toBe(1);
+		expect(harness.session.getSteeringMessages()).toEqual(["remote before recovery"]);
+		expect(harness.faux.state.callCount).toBe(0);
+
+		harness.session.agent.streamFn = fauxStreamFn;
+		harness.setResponses([
+			(context) => {
+				providerTexts = context.messages.flatMap((message) =>
+					typeof message.content === "string"
+						? [message.content]
+						: message.content
+								.filter((part): part is { type: "text"; text: string } => part.type === "text")
+								.map((part) => part.text),
+				);
+				return fauxAssistantMessage("recovered");
+			},
+		]);
+		harness.session.subscribe((event) => {
+			if (event.type === "compaction_start" && event.reason === "manual") {
+				void harness.session.prompt("interactive during manual");
+			}
+		});
+		await expect(harness.session.compact()).resolves.toMatchObject({ summary: "manual recovery summary" });
+		await harness.session.waitForIdle();
+
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(harness.faux.state.callCount).toBe(1);
+		for (const expected of ["remote before recovery", "remote during manual", "interactive during manual"]) {
+			expect(providerTexts.filter((text) => text === expected)).toHaveLength(1);
+		}
+		expect(harness.eventsOfType("agent_settled")).toHaveLength(1);
 	});
 
 	it("reports deferred default custom messages as steering when clearing the barrier queue", async () => {

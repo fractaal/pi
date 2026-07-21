@@ -266,7 +266,7 @@ const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "hi
 const MAX_AGENT_RETRY_DELAY_MS = 10000;
 
 type CompactionBarrier = {
-	reason: "overflow" | "threshold";
+	reason: "manual" | "overflow" | "threshold";
 	willRetry: boolean;
 	startedAt: number;
 };
@@ -295,6 +295,8 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	private _isAgentRunSettling = false;
+	private _activeAgentRunCompletion: Promise<void> = Promise.resolve();
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -311,6 +313,7 @@ export class AgentSession {
 	private _overflowRecoveryAttempted = false;
 	/** Stop-the-world barrier: extension-triggered turns are deferred while core compacts/retries. */
 	private _compactionBarrier: CompactionBarrier | undefined = undefined;
+	private _manualCompactionPending = false;
 	private _deferredCompactionMessages: DeferredCompactionMessage[] = [];
 
 	// Branch summarization state
@@ -526,10 +529,11 @@ export class AgentSession {
 	}
 
 	private _emitQueueUpdate(): void {
+		const deferred = this._getDeferredCompactionQueueTexts();
 		this._emit({
 			type: "queue_update",
-			steering: [...this._steeringMessages],
-			followUp: [...this._followUpMessages],
+			steering: [...this._steeringMessages, ...deferred.steering],
+			followUp: [...this._followUpMessages, ...deferred.followUp],
 		});
 	}
 
@@ -537,7 +541,11 @@ export class AgentSession {
 		return this._compactionBarrier !== undefined;
 	}
 
-	private _enterCompactionBarrier(reason: "overflow" | "threshold", willRetry: boolean): void {
+	private _isCompactionIngressBlocked(): boolean {
+		return this._manualCompactionPending || this._isCompactionBarrierActive();
+	}
+
+	private _enterCompactionBarrier(reason: "manual" | "overflow" | "threshold", willRetry: boolean): void {
 		if (this._compactionBarrier) {
 			this._compactionBarrier.reason = reason;
 			this._compactionBarrier.willRetry = this._compactionBarrier.willRetry || willRetry;
@@ -580,6 +588,34 @@ export class AgentSession {
 		this._emitQueueUpdate();
 	}
 
+	private _getDeferredCompactionQueueTexts(): { steering: string[]; followUp: string[] } {
+		const steering: string[] = [];
+		const followUp: string[] = [];
+		for (const entry of this._deferredCompactionMessages) {
+			if (entry.type === "user") {
+				(entry.mode === "steer" ? steering : followUp).push(entry.text);
+				continue;
+			}
+
+			if (entry.type === "agentQueued") {
+				const text = entry.message.role === "user" ? this._getUserMessageText(entry.message) : "";
+				if (text) {
+					(entry.mode === "steer" ? steering : followUp).push(text);
+				}
+				continue;
+			}
+
+			const text = this._getMessageText(entry.message);
+			if (!text) continue;
+			if (entry.options?.deliverAs === "followUp" || entry.options?.deliverAs === "nextTurn") {
+				followUp.push(text);
+			} else {
+				steering.push(text);
+			}
+		}
+		return { steering, followUp };
+	}
+
 	private _queueCustomMessage(
 		message: CustomMessage<unknown>,
 		deliverAs: "steer" | "followUp" | "nextTurn" = "steer",
@@ -600,9 +636,9 @@ export class AgentSession {
 		for (const entry of deferred) {
 			if (entry.type === "user") {
 				if (entry.mode === "steer") {
-					void this._queueSteer(entry.text, entry.images);
+					void this._queueSteer(entry.text, entry.images, true);
 				} else {
-					void this._queueFollowUp(entry.text, entry.images);
+					void this._queueFollowUp(entry.text, entry.images, true);
 				}
 				continue;
 			}
@@ -618,6 +654,19 @@ export class AgentSession {
 
 			this._queueCustomMessage(entry.message, entry.options?.deliverAs);
 		}
+		this._emitQueueUpdate();
+	}
+
+	private _startCompactionRecoveryRun(): boolean {
+		if (!this.agent.hasQueuedMessages()) return false;
+		void this._runAgent(() => this.agent.continue()).catch((error) => {
+			this._extensionRunner.emitError({
+				extensionPath: "<runtime>",
+				event: "compaction_recovery",
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
+		return true;
 	}
 
 	private _shouldEnterOverflowBarrier(assistantMsg: AssistantMessage): boolean {
@@ -638,7 +687,7 @@ export class AgentSession {
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (this._isAgentRunActive || !this._resolveIdleWait) {
+		if (!this.isIdle || this._isAgentRunSettling || this._manualCompactionPending || !this._resolveIdleWait) {
 			return;
 		}
 		const resolve = this._resolveIdleWait;
@@ -649,10 +698,13 @@ export class AgentSession {
 
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
+		this._isAgentRunSettling = true;
 		try {
+			if (this._isCompactionBarrierActive()) return;
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
 		} finally {
+			this._isAgentRunSettling = false;
 			this._resolveIdleWaitIfIdle();
 		}
 	}
@@ -1041,9 +1093,15 @@ export class AgentSession {
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 	}
 
+	/** Whether new messages are currently deferred for an imminent or active compaction. */
+	get isCompactionIngressBlocked(): boolean {
+		return this._isCompactionIngressBlocked();
+	}
+
 	/** Whether compaction or branch summarization is currently running */
 	get isCompacting(): boolean {
 		return (
+			this._manualCompactionPending ||
 			this._autoCompactionAbortController !== undefined ||
 			this._compactionAbortController !== undefined ||
 			this._branchSummaryAbortController !== undefined
@@ -1159,17 +1217,25 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	private async _runAgent(start: () => Promise<void>): Promise<void> {
+		let resolveRunCompletion: () => void = () => undefined;
+		this._activeAgentRunCompletion = new Promise((resolve) => {
+			resolveRunCompletion = resolve;
+		});
 		this._isAgentRunActive = true;
 		try {
-			await this.agent.prompt(messages);
+			await start();
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
 			}
 		} finally {
 			this._systemPromptOverride = undefined;
 			this._flushPendingBashMessages();
-			await this._emitAgentSettled();
+			try {
+				await this._emitAgentSettled();
+			} finally {
+				resolveRunCompletion();
+			}
 		}
 	}
 
@@ -1198,7 +1264,11 @@ export class AgentSession {
 			return true;
 		}
 
-		if (this._isCompactionBarrierActive() && msg.stopReason !== "error") {
+		if (
+			this._isCompactionBarrierActive() &&
+			this._compactionBarrier?.reason !== "manual" &&
+			msg.stopReason !== "error"
+		) {
 			this._exitCompactionBarrier({ flushDeferred: true });
 		}
 
@@ -1258,6 +1328,18 @@ export class AgentSession {
 			if (expandPromptTemplates) {
 				expandedText = this._expandSkillCommand(expandedText);
 				expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+			}
+
+			// Context mutation is a stop-the-world operation. Queue normal prompts
+			// behind the same barrier used by extension and interactive ingress.
+			if (this._isCompactionIngressBlocked()) {
+				if (options?.streamingBehavior === "followUp") {
+					await this._queueFollowUp(expandedText, currentImages);
+				} else {
+					await this._queueSteer(expandedText, currentImages);
+				}
+				preflightResult?.(true);
+				return;
 			}
 
 			// If streaming, queue via steer() or followUp() based on option
@@ -1363,7 +1445,7 @@ export class AgentSession {
 		}
 
 		preflightResult?.(true);
-		await this._runAgentPrompt(messages);
+		await this._runAgent(() => this.agent.prompt(messages));
 	}
 
 	/**
@@ -1470,8 +1552,8 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a steering message (already expanded, no extension command check).
 	 */
-	private async _queueSteer(text: string, images?: ImageContent[]): Promise<void> {
-		if (this._isCompactionBarrierActive()) {
+	private async _queueSteer(text: string, images?: ImageContent[], bypassCompactionBlock = false): Promise<void> {
+		if (!bypassCompactionBlock && this._isCompactionIngressBlocked()) {
 			this._deferCompactionMessage({ type: "user", mode: "steer", text, images });
 			return;
 		}
@@ -1491,8 +1573,8 @@ export class AgentSession {
 	/**
 	 * Internal: Queue a follow-up message (already expanded, no extension command check).
 	 */
-	private async _queueFollowUp(text: string, images?: ImageContent[]): Promise<void> {
-		if (this._isCompactionBarrierActive()) {
+	private async _queueFollowUp(text: string, images?: ImageContent[], bypassCompactionBlock = false): Promise<void> {
+		if (!bypassCompactionBlock && this._isCompactionIngressBlocked()) {
 			this._deferCompactionMessage({ type: "user", mode: "followUp", text, images });
 			return;
 		}
@@ -1549,14 +1631,14 @@ export class AgentSession {
 			details: message.details,
 			timestamp: Date.now(),
 		} satisfies CustomMessage<T>;
-		if (this._isCompactionBarrierActive()) {
+		if (this._isCompactionIngressBlocked()) {
 			this._deferCompactionMessage({ type: "custom", message: appMessage, options });
 			return;
 		}
 		if (options?.deliverAs === "nextTurn" || this.isStreaming) {
 			this._queueCustomMessage(appMessage, options?.deliverAs);
 		} else if (options?.triggerTurn) {
-			await this._runAgentPrompt(appMessage);
+			await this._runAgent(() => this.agent.prompt(appMessage));
 		} else {
 			this.agent.state.messages.push(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
@@ -1601,7 +1683,7 @@ export class AgentSession {
 			if (images.length === 0) images = undefined;
 		}
 
-		if (this._isCompactionBarrierActive()) {
+		if (this._isCompactionIngressBlocked()) {
 			this._deferCompactionMessage({ type: "user", mode: options?.deliverAs ?? "followUp", text, images });
 			return;
 		}
@@ -1621,38 +1703,9 @@ export class AgentSession {
 	 * @returns Object with steering and followUp arrays
 	 */
 	clearQueue(): { steering: string[]; followUp: string[] } {
-		const steering = [...this._steeringMessages];
-		const followUp = [...this._followUpMessages];
-		for (const entry of this._deferredCompactionMessages) {
-			if (entry.type === "user") {
-				if (entry.mode === "steer") {
-					steering.push(entry.text);
-				} else {
-					followUp.push(entry.text);
-				}
-				continue;
-			}
-
-			if (entry.type === "agentQueued") {
-				const text = entry.message.role === "user" ? this._getUserMessageText(entry.message) : "";
-				if (!text) continue;
-				if (entry.mode === "steer") {
-					steering.push(text);
-				} else {
-					followUp.push(text);
-				}
-				continue;
-			}
-
-			const customText = this._getMessageText(entry.message);
-			if (customText) {
-				if (entry.options?.deliverAs === "followUp" || entry.options?.deliverAs === "nextTurn") {
-					followUp.push(customText);
-				} else {
-					steering.push(customText);
-				}
-			}
-		}
+		const deferred = this._getDeferredCompactionQueueTexts();
+		const steering = [...this._steeringMessages, ...deferred.steering];
+		const followUp = [...this._followUpMessages, ...deferred.followUp];
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this._deferredCompactionMessages = [];
@@ -1668,12 +1721,12 @@ export class AgentSession {
 
 	/** Get pending steering messages (read-only) */
 	getSteeringMessages(): readonly string[] {
-		return this._steeringMessages;
+		return [...this._steeringMessages, ...this._getDeferredCompactionQueueTexts().steering];
 	}
 
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
-		return this._followUpMessages;
+		return [...this._followUpMessages, ...this._getDeferredCompactionQueueTexts().followUp];
 	}
 
 	get resourceLoader(): ResourceLoader {
@@ -1690,7 +1743,7 @@ export class AgentSession {
 	}
 
 	async waitForIdle(): Promise<void> {
-		if (this.isIdle) {
+		if (this.isIdle && !this._isAgentRunSettling && !this._manualCompactionPending) {
 			return;
 		}
 		await this._getIdleWaitPromise();
@@ -1919,8 +1972,29 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
+		if (this.isCompacting || this._isCompactionBarrierActive()) {
+			throw new Error("Compaction is already in progress");
+		}
+		let compactionSucceeded = false;
+		this._manualCompactionPending = true;
+		const wasAgentRunActive = this._isAgentRunActive;
+		const wasAgentRunSettling = this._isAgentRunSettling;
+		const activeAgentRunCompletion = this._activeAgentRunCompletion;
+		try {
+			if (!wasAgentRunActive && wasAgentRunSettling) {
+				await activeAgentRunCompletion;
+			}
+			this._enterCompactionBarrier("manual", false);
+		} finally {
+			this._manualCompactionPending = false;
+		}
+		if (wasAgentRunActive) {
+			this.abortRetry();
+			this.agent.abort();
+			await this.agent.waitForIdle();
+			await activeAgentRunCompletion;
+		}
 		this._disconnectFromAgent();
-		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
 
@@ -2037,6 +2111,7 @@ export class AgentSession {
 				aborted: false,
 				willRetry: false,
 			});
+			compactionSucceeded = true;
 			return compactionResult;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
@@ -2053,6 +2128,31 @@ export class AgentSession {
 		} finally {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
+			this._manualCompactionPending = true;
+			this._exitCompactionBarrier({ flushDeferred: false });
+			if (compactionSucceeded) {
+				this._flushDeferredCompactionMessages();
+			}
+
+			if (compactionSucceeded && this.agent.hasQueuedMessages()) {
+				this._manualCompactionPending = false;
+				this._startCompactionRecoveryRun();
+			} else if (wasAgentRunActive) {
+				try {
+					await this._emitAgentSettled();
+				} finally {
+					if (compactionSucceeded) {
+						this._flushDeferredCompactionMessages();
+					}
+					this._manualCompactionPending = false;
+				}
+				if (!this._startCompactionRecoveryRun()) {
+					this._resolveIdleWaitIfIdle();
+				}
+			} else {
+				this._manualCompactionPending = false;
+				this._resolveIdleWaitIfIdle();
+			}
 		}
 	}
 
@@ -2558,13 +2658,13 @@ export class AgentSession {
 					}
 					void this.abort();
 				},
-				hasPendingMessages: () => this.pendingMessageCount > 0 || this._isCompactionBarrierActive(),
+				hasPendingMessages: () => this.pendingMessageCount > 0 || this._isCompactionIngressBlocked(),
 				shutdown: () => {
 					this._extensionShutdownHandler?.();
 				},
 				getContextUsage: () => this.getContextUsage(),
 				compact: (options) => {
-					if (this._isCompactionBarrierActive()) {
+					if (this._isCompactionIngressBlocked()) {
 						return;
 					}
 					void (async () => {

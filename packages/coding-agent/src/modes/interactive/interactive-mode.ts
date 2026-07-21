@@ -2789,7 +2789,7 @@ export class InteractiveMode {
 					this.editor.setText("");
 					await this.session.prompt(text);
 				} else {
-					this.queueCompactionMessage(text, "steer");
+					await this.queueCompactionMessage(text, "steer");
 				}
 				return;
 			}
@@ -3088,7 +3088,6 @@ export class InteractiveMode {
 						this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
 					}
 				}
-				void this.flushCompactionQueue({ willRetry: event.willRetry });
 				this.ui.requestRender();
 				break;
 			}
@@ -3678,7 +3677,7 @@ export class InteractiveMode {
 				this.editor.setText("");
 				await this.session.prompt(text);
 			} else {
-				this.queueCompactionMessage(text, "followUp");
+				await this.queueCompactionMessage(text, "followUp");
 			}
 			return;
 		}
@@ -3985,8 +3984,17 @@ export class InteractiveMode {
 		return allQueued.length;
 	}
 
-	private queueCompactionMessage(text: string, mode: "steer" | "followUp"): void {
-		this.compactionQueuedMessages.push({ text, mode });
+	private async queueCompactionMessage(text: string, mode: "steer" | "followUp"): Promise<void> {
+		if (this.session.isCompactionIngressBlocked) {
+			if (mode === "followUp") {
+				await this.session.followUp(text);
+			} else {
+				await this.session.steer(text);
+			}
+		} else {
+			// Branch summarization owns a separate queue because it does not use the compaction barrier.
+			this.compactionQueuedMessages.push({ text, mode });
+		}
 		this.editor.addToHistory?.(text);
 		this.editor.setText("");
 		this.updatePendingMessagesDisplay();
