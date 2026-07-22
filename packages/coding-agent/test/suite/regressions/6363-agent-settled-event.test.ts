@@ -61,6 +61,43 @@ describe("regression #6363: agent settled event and idle waiting", () => {
 		expect(publicEvents).toEqual(["agent_settled"]);
 	});
 
+	it("waitForIdle resolves after agent_settled handlers finish", async () => {
+		let markSettlementStarted: () => void = () => undefined;
+		const settlementStarted = new Promise<void>((resolve) => {
+			markSettlementStarted = resolve;
+		});
+		let releaseSettlement: () => void = () => undefined;
+		const settlementReleased = new Promise<void>((resolve) => {
+			releaseSettlement = resolve;
+		});
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_settled", async () => {
+						markSettlementStarted();
+						await settlementReleased;
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		const promptPromise = harness.session.prompt("hello");
+		await settlementStarted;
+		const idlePromise = harness.session.waitForIdle();
+		let idleResolved = false;
+		void idlePromise.then(() => {
+			idleResolved = true;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(idleResolved).toBe(false);
+
+		releaseSettlement();
+		await Promise.all([promptPromise, idlePromise]);
+		expect(idleResolved).toBe(true);
+	});
+
 	it("settles only after follow-ups queued by agent_end handlers run", async () => {
 		let queuedFollowUp = false;
 		const settledIdleStates: boolean[] = [];

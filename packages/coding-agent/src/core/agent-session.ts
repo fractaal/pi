@@ -295,7 +295,6 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
-	private _isAgentRunSettling = false;
 	private _activeAgentRunCompletion: Promise<void> = Promise.resolve();
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
@@ -687,7 +686,7 @@ export class AgentSession {
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (!this.isIdle || this._isAgentRunSettling || this._manualCompactionPending || !this._resolveIdleWait) {
+		if (!this.isIdle || this._manualCompactionPending || !this._resolveIdleWait) {
 			return;
 		}
 		const resolve = this._resolveIdleWait;
@@ -698,13 +697,11 @@ export class AgentSession {
 
 	private async _emitAgentSettled(): Promise<void> {
 		this._isAgentRunActive = false;
-		this._isAgentRunSettling = true;
 		try {
 			if (this._isCompactionBarrierActive()) return;
 			await this._extensionRunner.emit({ type: "agent_settled" });
 			this._emit({ type: "agent_settled" });
 		} finally {
-			this._isAgentRunSettling = false;
 			this._resolveIdleWaitIfIdle();
 		}
 	}
@@ -1101,7 +1098,7 @@ export class AgentSession {
 	/** Whether compaction or branch summarization is currently running */
 	get isCompacting(): boolean {
 		return (
-			this._manualCompactionPending ||
+			this._isCompactionBarrierActive() ||
 			this._autoCompactionAbortController !== undefined ||
 			this._compactionAbortController !== undefined ||
 			this._branchSummaryAbortController !== undefined
@@ -1743,10 +1740,10 @@ export class AgentSession {
 	}
 
 	async waitForIdle(): Promise<void> {
-		if (this.isIdle && !this._isAgentRunSettling && !this._manualCompactionPending) {
-			return;
+		if (!this.isIdle || this._manualCompactionPending) {
+			await this._getIdleWaitPromise();
 		}
-		await this._getIdleWaitPromise();
+		await this._activeAgentRunCompletion;
 	}
 
 	// =========================================================================
@@ -1972,16 +1969,15 @@ export class AgentSession {
 	 * @param customInstructions Optional instructions for the compaction summary
 	 */
 	async compact(customInstructions?: string): Promise<CompactionResult> {
-		if (this.isCompacting || this._isCompactionBarrierActive()) {
+		if (this._manualCompactionPending || this.isCompacting) {
 			throw new Error("Compaction is already in progress");
 		}
 		let compactionSucceeded = false;
-		this._manualCompactionPending = true;
 		const wasAgentRunActive = this._isAgentRunActive;
-		const wasAgentRunSettling = this._isAgentRunSettling;
 		const activeAgentRunCompletion = this._activeAgentRunCompletion;
+		this._manualCompactionPending = true;
 		try {
-			if (!wasAgentRunActive && wasAgentRunSettling) {
+			if (!wasAgentRunActive) {
 				await activeAgentRunCompletion;
 			}
 			this._enterCompactionBarrier("manual", false);
@@ -2128,29 +2124,12 @@ export class AgentSession {
 		} finally {
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
-			this._manualCompactionPending = true;
-			this._exitCompactionBarrier({ flushDeferred: false });
-			if (compactionSucceeded) {
-				this._flushDeferredCompactionMessages();
+			this._exitCompactionBarrier({ flushDeferred: compactionSucceeded });
+			const recoveryStarted = compactionSucceeded && this._startCompactionRecoveryRun();
+			if (!recoveryStarted && wasAgentRunActive) {
+				await this._emitAgentSettled();
 			}
-
-			if (compactionSucceeded && this.agent.hasQueuedMessages()) {
-				this._manualCompactionPending = false;
-				this._startCompactionRecoveryRun();
-			} else if (wasAgentRunActive) {
-				try {
-					await this._emitAgentSettled();
-				} finally {
-					if (compactionSucceeded) {
-						this._flushDeferredCompactionMessages();
-					}
-					this._manualCompactionPending = false;
-				}
-				if (!this._startCompactionRecoveryRun()) {
-					this._resolveIdleWaitIfIdle();
-				}
-			} else {
-				this._manualCompactionPending = false;
+			if (!recoveryStarted) {
 				this._resolveIdleWaitIfIdle();
 			}
 		}
