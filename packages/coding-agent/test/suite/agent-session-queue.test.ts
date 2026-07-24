@@ -258,8 +258,17 @@ describe("AgentSession queue characterization", () => {
 		expect(getAssistantTexts(harness)).toEqual(["", "original turn complete", "batched follow-up response"]);
 	});
 
-	it("queues custom messages with deliverAs steer while streaming", async () => {
-		const waiting = await createWaitingHarness();
+	it("queues custom messages with deliverAs steer while streaming without restarting the agent lifecycle", async () => {
+		const promptsSeen: string[] = [];
+		const waiting = await createWaitingHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", ({ prompt }) => {
+						promptsSeen.push(prompt);
+					});
+				},
+			],
+		});
 		const { harness, waitForToolStart, promptPromise, releaseToolExecution } = waiting;
 		harnesses.push(harness);
 		let sawCustomMessage = false;
@@ -280,12 +289,13 @@ describe("AgentSession queue characterization", () => {
 		await waitForToolStart;
 		await harness.session.sendCustomMessage(
 			{ customType: "queue-test", content: "steer custom", display: true, details: { value: 1 } },
-			{ deliverAs: "steer" },
+			{ deliverAs: "steer", triggerTurn: true },
 		);
 		releaseToolExecution();
 		await promptPromise;
 
 		expect(sawCustomMessage).toBe(true);
+		expect(promptsSeen).toEqual(["start"]);
 		expect(
 			harness.session.messages.some((message) => message.role === "custom" && message.customType === "queue-test"),
 		).toBe(true);
@@ -323,6 +333,141 @@ describe("AgentSession queue characterization", () => {
 		expect(
 			harness.session.messages.some((message) => message.role === "custom" && message.customType === "queue-test"),
 		).toBe(true);
+	});
+
+	it("runs before_agent_start when a triggerTurn custom message starts an agent run", async () => {
+		const promptsSeen: string[] = [];
+		const initiatorsSeen: string[] = [];
+		const imagesSeen: number[] = [];
+		const harness = await createHarness({
+			systemPrompt: "Base system prompt.",
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", ({ prompt, initiator, images, systemPrompt }) => {
+						promptsSeen.push(prompt);
+						initiatorsSeen.push(initiator);
+						imagesSeen.push(images?.length ?? 0);
+						return {
+							systemPrompt: `${systemPrompt}\n\nExtension prompt append.`,
+							message: {
+								customType: "hook-context",
+								content: "Injected by before_agent_start.",
+								display: false,
+							},
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		let providerSystemPrompt = "";
+		let providerMessages: string[] = [];
+		harness.setResponses([
+			(context) => {
+				providerSystemPrompt = context.systemPrompt ?? "";
+				providerMessages = context.messages.map((message) => getMessageText(message));
+				return fauxAssistantMessage("done");
+			},
+		]);
+
+		await harness.session.sendCustomMessage(
+			{
+				customType: "host-turn",
+				content: [
+					{ type: "text", text: "Host custom turn." },
+					{ type: "image", mimeType: "image/png", data: "ZmFrZQ==" },
+				],
+				display: true,
+				details: {},
+			},
+			{ triggerTurn: true },
+		);
+
+		expect(promptsSeen).toEqual(["Host custom turn."]);
+		expect(initiatorsSeen).toEqual(["custom_message"]);
+		expect(imagesSeen).toEqual([1]);
+		expect(providerSystemPrompt).toContain("Extension prompt append.");
+		expect(providerMessages).toContain("Host custom turn.");
+		expect(providerMessages).toContain("Injected by before_agent_start.");
+	});
+
+	it("queues a second triggerTurn custom message while the first run is preparing", async () => {
+		const promptsSeen: string[] = [];
+		let releaseFirstHook: () => void = () => undefined;
+		const firstHookRelease = new Promise<void>((resolve) => {
+			releaseFirstHook = resolve;
+		});
+		let markFirstHookStarted: () => void = () => undefined;
+		const firstHookStarted = new Promise<void>((resolve) => {
+			markFirstHookStarted = resolve;
+		});
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async ({ prompt }) => {
+						promptsSeen.push(prompt);
+						if (promptsSeen.length === 1) {
+							markFirstHookStarted();
+							await firstHookRelease;
+						}
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("first done"), fauxAssistantMessage("second done")]);
+
+		const firstRun = harness.session.sendCustomMessage(
+			{ customType: "host-turn", content: "first", display: true },
+			{ triggerTurn: true },
+		);
+		await firstHookStarted;
+		expect(harness.session.isStreaming).toBe(true);
+
+		await harness.session.sendCustomMessage(
+			{ customType: "host-turn", content: "second", display: true },
+			{ triggerTurn: true },
+		);
+		expect(promptsSeen).toEqual(["first"]);
+
+		releaseFirstHook();
+		await firstRun;
+		await harness.session.waitForIdle();
+
+		expect(harness.session.isStreaming).toBe(false);
+		expect(harness.eventsOfType("agent_settled")).toHaveLength(1);
+		expect(
+			harness.session.messages
+				.filter((message) => message.role === "custom" && message.customType === "host-turn")
+				.map((message) => getMessageText(message)),
+		).toEqual(["first", "second"]);
+	});
+
+	it("does not run before_agent_start for custom messages that do not start an agent run", async () => {
+		const promptsSeen: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", ({ prompt }) => {
+						promptsSeen.push(prompt);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+
+		await harness.session.sendCustomMessage({
+			customType: "append-only",
+			content: "do not start",
+			display: true,
+		});
+		await harness.session.sendCustomMessage(
+			{ customType: "next-turn", content: "wait for a prompt", display: true },
+			{ deliverAs: "nextTurn" },
+		);
+
+		expect(promptsSeen).toEqual([]);
+		expect(harness.getPendingResponseCount()).toBe(0);
 	});
 
 	it("injects nextTurn custom messages into the next prompt", async () => {

@@ -681,12 +681,14 @@ export interface AfterProviderResponseEvent {
 	headers: Record<string, string>;
 }
 
-/** Fired after user submits prompt but before agent loop. */
+/** Fired after an initiating message is accepted but before the agent loop starts. */
 export interface BeforeAgentStartEvent {
 	type: "before_agent_start";
-	/** The raw user prompt text (after expansion). */
+	/** Whether a user-role prompt or custom message initiated the agent run. */
+	initiator: "prompt" | "custom_message";
+	/** The initiating message text, after expansion for user-role prompts. */
 	prompt: string;
-	/** Images attached to the user prompt, if any. */
+	/** Images attached to the initiating message, if any. */
 	images?: ImageContent[];
 	/** The fully assembled system prompt string. */
 	systemPrompt: string;

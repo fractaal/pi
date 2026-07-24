@@ -1026,6 +1026,7 @@ export class ExtensionRunner {
 		images: ImageContent[] | undefined,
 		systemPrompt: string,
 		systemPromptOptions: BuildSystemPromptOptions,
+		initiator: BeforeAgentStartEvent["initiator"] = "prompt",
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
 		const ctx = Object.defineProperties(
@@ -1047,6 +1048,7 @@ export class ExtensionRunner {
 				try {
 					const event: BeforeAgentStartEvent = {
 						type: "before_agent_start",
+						initiator,
 						prompt,
 						images,
 						systemPrompt: currentSystemPrompt,

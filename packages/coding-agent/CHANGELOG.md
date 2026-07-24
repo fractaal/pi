@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed idle custom messages with `triggerTurn` to run `before_agent_start` before starting the agent loop, matching normal prompt lifecycle behavior without rerunning hooks for queued or append-only custom messages.
+- Fixed run-scoped `before_agent_start` system prompt overrides to reset after the agent settles.
 - Fixed successful manual compaction to resume messages parked by an earlier failed automatic compaction instead of leaving them permanently unreachable.
 - Fixed cancelled or failed overflow compaction attempts to allow future recovery instead of blocking extension-triggered turns and the next pre-prompt check.
 - Fixed deferred custom messages to preserve explicit and default steering delivery across automatic compaction barriers.

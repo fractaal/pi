@@ -57,6 +57,7 @@ import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.ts";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
+	type BeforeAgentStartEvent,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
@@ -1227,6 +1228,7 @@ export class AgentSession {
 			}
 		} finally {
 			this._systemPromptOverride = undefined;
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
 			this._flushPendingBashMessages();
 			try {
 				await this._emitAgentSettled();
@@ -1234,6 +1236,42 @@ export class AgentSession {
 				resolveRunCompletion();
 			}
 		}
+	}
+
+	private async _prepareAgentStartMessages(
+		prompt: string,
+		images: ImageContent[] | undefined,
+		initiator: BeforeAgentStartEvent["initiator"],
+		messages: AgentMessage[],
+	): Promise<AgentMessage[]> {
+		const result = await this._extensionRunner.emitBeforeAgentStart(
+			prompt,
+			images,
+			this._baseSystemPrompt,
+			this._baseSystemPromptOptions,
+			initiator,
+		);
+		if (result?.messages) {
+			for (const msg of result.messages) {
+				messages.push({
+					role: "custom",
+					customType: msg.customType,
+					// Untyped extensions can pass null/missing content; normalize at ingestion.
+					content: msg.content ?? [],
+					display: msg.display,
+					details: msg.details,
+					timestamp: Date.now(),
+				});
+			}
+		}
+		if (result?.systemPrompt !== undefined) {
+			this._systemPromptOverride = result.systemPrompt;
+			this.agent.state.systemPrompt = result.systemPrompt;
+		} else {
+			this._systemPromptOverride = undefined;
+			this.agent.state.systemPrompt = this._baseSystemPrompt;
+		}
+		return messages;
 	}
 
 	private async _handlePostAgentRun(): Promise<boolean> {
@@ -1402,36 +1440,7 @@ export class AgentSession {
 			}
 			this._pendingNextTurnMessages = [];
 
-			// Emit before_agent_start extension event
-			const result = await this._extensionRunner.emitBeforeAgentStart(
-				expandedText,
-				currentImages,
-				this._baseSystemPrompt,
-				this._baseSystemPromptOptions,
-			);
-			// Add all custom messages from extensions
-			if (result?.messages) {
-				for (const msg of result.messages) {
-					messages.push({
-						role: "custom",
-						customType: msg.customType,
-						// Untyped extensions can pass null/missing content; normalize at ingestion.
-						content: msg.content ?? [],
-						display: msg.display,
-						details: msg.details,
-						timestamp: Date.now(),
-					});
-				}
-			}
-			// Apply extension-modified system prompt, or reset to base
-			if (result?.systemPrompt !== undefined) {
-				this._systemPromptOverride = result.systemPrompt;
-				this.agent.state.systemPrompt = result.systemPrompt;
-			} else {
-				// Ensure we're using the base prompt (in case previous turn had modifications)
-				this._systemPromptOverride = undefined;
-				this.agent.state.systemPrompt = this._baseSystemPrompt;
-			}
+			messages = await this._prepareAgentStartMessages(expandedText, currentImages, "prompt", messages);
 		} catch (error) {
 			preflightResult?.(false);
 			throw error;
@@ -1635,7 +1644,19 @@ export class AgentSession {
 		if (options?.deliverAs === "nextTurn" || this.isStreaming) {
 			this._queueCustomMessage(appMessage, options?.deliverAs);
 		} else if (options?.triggerTurn) {
-			await this._runAgent(() => this.agent.prompt(appMessage));
+			await this._runAgent(async () => {
+				const images =
+					typeof appMessage.content === "string"
+						? undefined
+						: appMessage.content.filter((part): part is ImageContent => part.type === "image");
+				const messages = await this._prepareAgentStartMessages(
+					this._getMessageText(appMessage),
+					images && images.length > 0 ? images : undefined,
+					"custom_message",
+					[appMessage],
+				);
+				await this.agent.prompt(messages);
+			});
 		} else {
 			this.agent.state.messages.push(appMessage);
 			this.sessionManager.appendCustomMessageEntry(
