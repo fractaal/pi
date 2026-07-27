@@ -6,7 +6,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { estimateTokens } from "../../src/core/compaction/index.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 type SessionWithCompactionInternals = {
 	_checkCompaction: (assistantMessage: AssistantMessage, skipAbortedCheck?: boolean) => Promise<boolean>;
@@ -575,6 +575,144 @@ describe("AgentSession compaction characterization", () => {
 		const queued = harness.session.agent.drainQueuedMessages();
 		expect(queued.steering).toEqual([expect.objectContaining({ role: "custom", customType: "compaction-steer" })]);
 		expect(queued.followUp).toEqual([]);
+	});
+
+	it("delivers extension-injected triggerTurn steering into the turn after compaction completes", async () => {
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => {
+						pi.sendMessage(
+							{ customType: "compaction-steer", content: "steer after compaction", display: true },
+							{ triggerTurn: true, deliverAs: "steer" },
+						);
+						return {
+							compaction: {
+								summary: "auto compacted",
+								firstKeptEntryId: event.preparation.firstKeptEntryId,
+								tokensBefore: event.preparation.tokensBefore,
+								details: {},
+							},
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		let providerTexts: string[] = [];
+		harness.setResponses([
+			(context) => {
+				providerTexts = context.messages.map((message) => getMessageText(message));
+				return fauxAssistantMessage("steering delivered");
+			},
+		]);
+
+		await harness.session.compact();
+		await harness.session.waitForIdle();
+
+		expect(harness.session.getSteeringMessages()).toEqual([]);
+		expect(providerTexts.filter((text) => text === "steer after compaction")).toHaveLength(1);
+		expect(harness.faux.state.callCount).toBe(1);
+	});
+
+	it("delivers steering queued by a compaction-end handler into the retry turn", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "overflow recovery completed",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		harness.session.subscribe((event) => {
+			if (event.type !== "compaction_end") return;
+			void harness.session.steer("steer after compaction");
+		});
+
+		let retryTexts: string[] = [];
+		const responseTimestamp = Date.now() + 10_000;
+		harness.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "prompt is too long",
+				timestamp: responseTimestamp,
+			}),
+			(context) => {
+				retryTexts = context.messages.map((message) => getMessageText(message));
+				return fauxAssistantMessage("retried after compaction");
+			},
+		]);
+
+		await harness.session.prompt("request");
+		await harness.session.waitForIdle();
+
+		expect(harness.session.getSteeringMessages()).toEqual([]);
+		expect(retryTexts.filter((text) => text === "steer after compaction")).toHaveLength(1);
+		expect(harness.faux.state.callCount).toBe(2);
+	});
+
+	it("recovers from overflow even when an extension rewrites the failed assistant message", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event) => ({
+						compaction: {
+							summary: "overflow recovery completed",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+					pi.on("message_end", (event) => {
+						if (event.message.role !== "assistant" || event.message.stopReason !== "error") return;
+						return {
+							message: {
+								...event.message,
+								stopReason: "aborted" as const,
+								errorMessage: "extension tried to mask overflow",
+							},
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		const responseTimestamp = Date.now() + 10_000;
+		harness.setResponses([
+			fauxAssistantMessage("", {
+				stopReason: "error",
+				errorMessage: "prompt is too long",
+				timestamp: responseTimestamp,
+			}),
+			fauxAssistantMessage("retried after compaction"),
+		]);
+
+		await harness.session.prompt("request");
+		await harness.session.waitForIdle();
+
+		expect(harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction")).toHaveLength(1);
+		expect(harness.faux.state.callCount).toBe(2);
+		const overflowEntry = harness.sessionManager
+			.getEntries()
+			.filter((entry) => entry.type === "message")
+			.map((entry) => entry.message)
+			.find((message) => message.role === "assistant" && message.errorMessage !== undefined);
+		expect(overflowEntry).toMatchObject({ stopReason: "error", errorMessage: "prompt is too long" });
 	});
 
 	it("preserves default custom-message steering through auto-compaction", async () => {
