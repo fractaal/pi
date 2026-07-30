@@ -72,6 +72,48 @@ describe("version checks", () => {
 		});
 	});
 
+	it("resolves this fork's own dist-tag instead of the upstream version api", async () => {
+		vi.doMock("../src/config.ts", async (importOriginal) => ({
+			...(await importOriginal<typeof import("../src/config.ts")>()),
+			BUILD_SIGNATURE: "fractal",
+			PACKAGE_NAME: "@fractaal/pi-coding-agent",
+		}));
+		const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
+			Response.json({ latest: "0.80.3", fractal: "0.83.0-fractal.2", requested: String(input) }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		vi.resetModules();
+		const { getLatestPiRelease: forkAware } = await import("../src/utils/version-check.ts");
+
+		// Returning the installed package name is the point: the self-update guard
+		// installs unconditionally when the reported name differs, so a fork build
+		// reporting upstream's name would replace itself with upstream.
+		await expect(forkAware("0.83.0-fractal.1")).resolves.toEqual({
+			packageName: "@fractaal/pi-coding-agent",
+			version: "0.83.0-fractal.2",
+		});
+		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("registry.npmjs.org");
+		expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("pi.dev");
+		vi.doUnmock("../src/config.ts");
+	});
+
+	it("reports no fork update rather than falling back to upstream when the registry fails", async () => {
+		vi.doMock("../src/config.ts", async (importOriginal) => ({
+			...(await importOriginal<typeof import("../src/config.ts")>()),
+			BUILD_SIGNATURE: "fractal",
+			PACKAGE_NAME: "@fractaal/pi-coding-agent",
+		}));
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: string | URL | Request) => new Response("nope", { status: 503 })),
+		);
+		vi.resetModules();
+		const { getLatestPiRelease: forkAware } = await import("../src/utils/version-check.ts");
+
+		await expect(forkAware("0.83.0-fractal.1")).resolves.toBeUndefined();
+		vi.doUnmock("../src/config.ts");
+	});
+
 	it("returns update notes from the version check api", async () => {
 		const fetchMock = vi.fn(async () => Response.json({ note: " **Read this** ", version: "1.2.4" }));
 		vi.stubGlobal("fetch", fetchMock);
