@@ -316,7 +316,14 @@ type OAuthServerInfo = {
 	waitForCode: () => Promise<{ code: string } | null>;
 };
 
-function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
+/**
+ * `signal` closes the loopback callback server when the caller abandons the
+ * login. Without it the server keeps holding port 1455 after an abort, and the
+ * next sign-in attempt cannot bind — the login then hangs with no visible cause.
+ * The device-code and token-exchange paths already honor the interaction signal;
+ * this brings the browser path in line.
+ */
+function startLocalOAuthServer(state: string, signal?: AbortSignal): Promise<OAuthServerInfo> {
 	if (!_http) {
 		throw new Error("OpenAI Codex OAuth is only available in Node.js environments");
 	}
@@ -364,14 +371,36 @@ function startLocalOAuthServer(state: string): Promise<OAuthServerInfo> {
 		}
 	});
 
+	let abortListener: (() => void) | undefined;
+	const closeServer = () => {
+		try {
+			server.close();
+		} catch {
+			// Already closed, or never listened.
+		}
+	};
+
 	return new Promise((resolve) => {
 		server
 			.listen(1455, getCallbackHost(), () => {
+				const cancelWait = () => {
+					settleWait?.(null);
+				};
+				abortListener = () => {
+					cancelWait();
+					closeServer();
+				};
+				if (signal?.aborted) {
+					abortListener();
+				} else {
+					signal?.addEventListener("abort", abortListener, { once: true });
+				}
 				resolve({
-					close: () => server.close(),
-					cancelWait: () => {
-						settleWait?.(null);
+					close: () => {
+						if (abortListener) signal?.removeEventListener("abort", abortListener);
+						closeServer();
 					},
+					cancelWait,
 					waitForCode: () => waitForCodePromise,
 				});
 			})
@@ -443,7 +472,7 @@ async function loginOpenAICodexDeviceCode(interaction: AuthInteraction): Promise
 
 async function loginOpenAICodex(interaction: AuthInteraction): Promise<OAuthCredential> {
 	const { verifier, state, url } = await createAuthorizationFlow();
-	const server = await startLocalOAuthServer(state);
+	const server = await startLocalOAuthServer(state, interaction.signal);
 	const manualAbort = new AbortController();
 	let code: string | undefined;
 	let manualCode: string | undefined;

@@ -72,6 +72,48 @@ describe("OpenAI Codex OAuth", () => {
 		vi.useRealTimers();
 	});
 
+	it("releases the loopback callback port when an abandoned browser login is aborted", async () => {
+		const listenable = async (): Promise<boolean> => {
+			const net = await import("node:net");
+			return await new Promise((resolve) => {
+				const probe = net.createServer();
+				probe.once("error", () => resolve(false));
+				probe.once("listening", () => probe.close(() => resolve(true)));
+				probe.listen(1455, "127.0.0.1");
+			});
+		};
+
+		// A stale listener would make the rest of this vacuous.
+		await vi.waitFor(async () => expect(await listenable()).toBe(true));
+
+		const controller = new AbortController();
+		let browserOpened = false;
+		// The caller abandons the login without answering — a renderer reload or
+		// profile switch, which is exactly when Desktop aborts. The login promise
+		// stays pending on the manual-code prompt, so the port can only be freed by
+		// the abort listener, not by the flow's own `finally`.
+		const login = openaiCodexOAuth.login({
+			signal: controller.signal,
+			prompt: (prompt) => {
+				if (prompt.type === "select") return Promise.resolve("browser");
+				return new Promise<string>(() => {});
+			},
+			notify: (event) => {
+				if (event.type === "auth_url") browserOpened = true;
+			},
+		});
+		login.catch(() => undefined);
+
+		await vi.waitFor(() => expect(browserOpened).toBe(true));
+		expect(await listenable()).toBe(false);
+
+		controller.abort();
+
+		// Without abort wiring the callback server keeps port 1455 forever and the
+		// next sign-in cannot bind.
+		await vi.waitFor(async () => expect(await listenable()).toBe(true));
+	});
+
 	it("logs in with the OpenAI Codex device code flow", async () => {
 		vi.useFakeTimers();
 		const startTime = new Date("2026-05-20T00:00:00Z");
