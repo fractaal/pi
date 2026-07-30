@@ -89,7 +89,15 @@ describe("test harness", () => {
 	});
 
 	it("turns a pending terminal response into an error", async () => {
-		harness = await createHarness({ responses: [{ text: "partial", stopReason: "pending" }] });
+		// The faux provider signals "pending" by throwing "...ended without a stop reason", which
+		// matches the retryable transient-stream-truncation allowlist. Upstream relies on its
+		// maxRetries default of 3 to turn that into a surfaced error; this fork defaults retries to
+		// unbounded on purpose (so spotty connectivity resumes rather than failing the turn). This
+		// test is about error surfacing, not the retry budget, so pin retry off.
+		harness = await createHarness({
+			responses: [{ text: "partial", stopReason: "pending" }],
+			settings: { retry: { enabled: false } },
+		});
 
 		await harness.session.prompt("hi");
 
