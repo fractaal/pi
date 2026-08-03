@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -6,15 +6,19 @@ import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type Model,
+	type ModelsSimpleStreamOptions,
+	type ProviderHeaders,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
+import type { InlineExtension } from "../src/core/extensions/index.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
 
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 describe("createAgentSession stream options", () => {
 	let tempDir: string;
@@ -30,6 +34,7 @@ describe("createAgentSession stream options", () => {
 	});
 
 	afterEach(() => {
+		vi.unstubAllEnvs();
 		if (tempDir) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -78,15 +83,13 @@ describe("createAgentSession stream options", () => {
 		api: Api,
 		settings: Partial<Settings>,
 		requestOptions: SimpleStreamOptions = {},
-		extensionSource?: string,
+		extensionFactory?: InlineExtension,
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
-		if (extensionSource) {
-			const extensionsDir = join(agentDir, "extensions");
-			mkdirSync(extensionsDir, { recursive: true });
-			writeFileSync(join(extensionsDir, "headers.ts"), extensionSource);
-		}
+		const resourceLoader = extensionFactory
+			? createTestResourceLoader({ extensionsResult: await createTestExtensionsResult([extensionFactory], cwd) })
+			: undefined;
 
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
@@ -111,6 +114,7 @@ describe("createAgentSession stream options", () => {
 			modelRuntime,
 			settingsManager,
 			sessionManager,
+			resourceLoader,
 		});
 
 		try {
@@ -175,7 +179,7 @@ describe("createAgentSession stream options", () => {
 			"openai-completions",
 			{},
 			{ headers: { "x-explicit": "explicit" } },
-			`export default function (pi) {
+			(pi) => {
 				pi.on("before_provider_headers", (event) => {
 					event.headers["x-hook"] = [
 						event.headers["x-provider"],
@@ -183,7 +187,7 @@ describe("createAgentSession stream options", () => {
 						event.headers["x-explicit"],
 					].join(":");
 				});
-			}`,
+			},
 		);
 
 		expect(options?.headers).toMatchObject({
@@ -193,5 +197,110 @@ describe("createAgentSession stream options", () => {
 			"x-hook": "provider:model:explicit",
 		});
 		expect(options).not.toHaveProperty("transformHeaders");
+	});
+
+	it("applies ordinary request settings and header transforms to native compaction", async () => {
+		vi.stubEnv("PI_TELEMETRY", "1");
+		const model = {
+			...createModel("openai-codex-responses"),
+			provider: "openai-codex",
+			baseUrl: "https://openrouter.ai/api/v1",
+			contextWindow: 200,
+		};
+		const settingsManager = SettingsManager.inMemory({
+			httpIdleTimeoutMs: 1234,
+			retry: { provider: { maxRetries: 2, maxRetryDelayMs: 3000 } },
+			compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
+		});
+		const resourceLoader = createTestResourceLoader({
+			extensionsResult: await createTestExtensionsResult(
+				[
+					(pi) => {
+						pi.on("before_provider_headers", (event) => {
+							event.headers["x-hook"] = `${event.headers["HTTP-Referer"]}:${event.headers["x-provider"]}`;
+						});
+					},
+				],
+				cwd,
+			),
+		});
+
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
+		modelRegistry.registerProvider(model.provider, {
+			api: model.api,
+			headers: { "x-provider": "provider" },
+		});
+		const modelRuntime = getModelRuntime(modelRegistry);
+		let capturedOptions: ModelsSimpleStreamOptions | undefined;
+		let transformedHeaders: ProviderHeaders | undefined;
+		modelRuntime.compactOpenAICodexResponses = async (_model, _context, requestOptions) => {
+			capturedOptions = requestOptions;
+			transformedHeaders = await requestOptions?.transformHeaders?.({ "x-provider": "provider" });
+			return {
+				item: { type: "compaction", encrypted_content: "opaque" },
+				tokensBefore: 100,
+				usage: {
+					input: 100,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 101,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+			};
+		};
+
+		const sessionManager = SessionManager.inMemory(cwd, { compactionMode: "openai-native" });
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			modelRuntime,
+			settingsManager,
+			sessionManager,
+			resourceLoader,
+		});
+		try {
+			for (let turn = 0; turn < 2; turn++) {
+				sessionManager.appendMessage({
+					role: "user",
+					content: `synthetic context ${turn} ${"x".repeat(80)}`,
+					timestamp: Date.now(),
+				});
+				sessionManager.appendMessage({
+					role: "assistant",
+					content: [{ type: "text", text: "answer" }],
+					api: model.api,
+					provider: model.provider,
+					model: model.id,
+					usage: {
+						input: 80,
+						output: 20,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 100,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: Date.now(),
+				});
+			}
+			session.agent.state.messages = sessionManager.buildSessionContext().messages;
+
+			await session.compact();
+
+			expect(capturedOptions).toMatchObject({ timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 3000 });
+			expect(transformedHeaders).toMatchObject({
+				"x-provider": "provider",
+				"HTTP-Referer": "https://pi.dev",
+				"X-OpenRouter-Title": "pi",
+				"x-hook": "https://pi.dev:provider",
+			});
+		} finally {
+			session.dispose();
+			modelRegistry.unregisterProvider(model.provider);
+		}
 	});
 });

@@ -28,6 +28,7 @@ import type {
 	AssistantMessage,
 	Context,
 	Model,
+	OpenAINativeCompactionItem,
 	ProviderEnv,
 	ProviderHeaders,
 	SimpleStreamOptions,
@@ -89,6 +90,15 @@ export interface OpenAICodexResponsesOptions extends StreamOptions {
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	textVerbosity?: "low" | "medium" | "high";
 	toolChoice?: "auto" | "none" | "required";
+	/** Internal native-compaction request control. */
+	nativeCompaction?: boolean;
+	onNativeCompactionItem?: (item: unknown) => void;
+}
+
+export interface OpenAICodexNativeCompactionResult {
+	item: OpenAINativeCompactionItem;
+	tokensBefore: number;
+	usage: Usage;
 }
 
 type CodexResponseStatus = "completed" | "incomplete" | "failed" | "cancelled" | "queued" | "in_progress";
@@ -502,11 +512,11 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 	return stream;
 };
 
-export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions> = (
+function buildSimpleCodexOptions(
 	model: Model<"openai-codex-responses">,
 	context: Context,
 	options?: SimpleStreamOptions,
-): AssistantMessageEventStream => {
+): OpenAICodexResponsesOptions {
 	const apiKey = options?.apiKey;
 	if (!apiKey) {
 		throw new Error(`No API key for provider: ${model.provider}`);
@@ -514,13 +524,59 @@ export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStream
 
 	const base = buildBaseOptions(model, context, options, apiKey);
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
-	const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
-
-	return stream(model, context, {
+	return {
 		...base,
-		reasoningEffort,
-	} satisfies OpenAICodexResponsesOptions);
-};
+		reasoningEffort: clampedReasoning === "off" ? undefined : clampedReasoning,
+	};
+}
+
+export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions> = (
+	model: Model<"openai-codex-responses">,
+	context: Context,
+	options?: SimpleStreamOptions,
+): AssistantMessageEventStream => stream(model, context, buildSimpleCodexOptions(model, context, options));
+
+export async function compactOpenAICodexResponses(
+	model: Model<"openai-codex-responses">,
+	context: Context,
+	options?: SimpleStreamOptions,
+): Promise<OpenAICodexNativeCompactionResult> {
+	const items: unknown[] = [];
+	const result = await stream(model, context, {
+		...buildSimpleCodexOptions(model, context, options),
+		transport: "sse",
+		nativeCompaction: true,
+		onNativeCompactionItem: (item) => items.push(item),
+	}).result();
+
+	if (result.stopReason !== "stop") {
+		throw new Error(result.errorMessage || `OpenAI native compaction did not complete (${result.stopReason})`);
+	}
+	if (items.length !== 1) {
+		throw new Error(`OpenAI native compaction returned ${items.length} checkpoint items; expected exactly one`);
+	}
+	const item = items[0] as Partial<OpenAINativeCompactionItem> | null;
+	if (
+		!item ||
+		item.type !== "compaction" ||
+		typeof item.encrypted_content !== "string" ||
+		item.encrypted_content.length === 0 ||
+		(item.id != null && (typeof item.id !== "string" || item.id.length === 0))
+	) {
+		throw new Error("OpenAI native compaction returned a malformed checkpoint item");
+	}
+
+	closeOpenAICodexWebSocketSessions(options?.sessionId);
+	return {
+		item: {
+			type: "compaction",
+			encrypted_content: item.encrypted_content,
+			id: typeof item.id === "string" ? item.id : undefined,
+		},
+		tokensBefore: result.usage.input + result.usage.cacheRead,
+		usage: result.usage,
+	};
+}
 
 // ============================================================================
 // Request Building
@@ -549,6 +605,10 @@ function buildRequestBody(
 			supportsOpenAIGrammarTools,
 		},
 	});
+
+	if (options?.nativeCompaction) {
+		messages.push({ type: "compaction_trigger" } as unknown as ResponseInput[number]);
+	}
 
 	const body: RequestBody = {
 		model: model.id,
@@ -661,12 +721,18 @@ async function processStream(
 	grammarToolInputProperties: ReadonlyMap<string, string>,
 	options?: OpenAICodexResponsesOptions,
 ): Promise<void> {
-	await processResponsesStream(mapCodexEvents(parseSSE(response, options?.signal)), output, stream, model, {
-		serviceTier: options?.serviceTier,
-		grammarToolInputProperties,
-		resolveServiceTier: resolveCodexServiceTier,
-		applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
-	});
+	await processResponsesStream(
+		mapCodexEvents(parseSSE(response, options?.signal), options?.onNativeCompactionItem),
+		output,
+		stream,
+		model,
+		{
+			serviceTier: options?.serviceTier,
+			grammarToolInputProperties,
+			resolveServiceTier: resolveCodexServiceTier,
+			applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+		},
+	);
 }
 
 class CodexApiError extends Error {
@@ -718,10 +784,18 @@ function extractCodexEventError(event: Record<string, unknown>): { code?: string
 	};
 }
 
-async function* mapCodexEvents(events: AsyncIterable<Record<string, unknown>>): AsyncGenerator<ResponseStreamEvent> {
+async function* mapCodexEvents(
+	events: AsyncIterable<Record<string, unknown>>,
+	onNativeCompactionItem?: (item: unknown) => void,
+): AsyncGenerator<ResponseStreamEvent> {
 	for await (const event of events) {
 		const type = typeof event.type === "string" ? event.type : undefined;
 		if (!type) continue;
+
+		if (type === "response.output_item.done") {
+			const item = event.item as { type?: unknown } | undefined;
+			if (item?.type === "compaction") onNativeCompactionItem?.(item);
+		}
 
 		if (type === "error") {
 			const { code, message } = extractCodexEventError(event);

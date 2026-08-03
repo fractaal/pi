@@ -13,6 +13,7 @@ import { convertToLlm } from "../messages.ts";
 import {
 	buildSessionContext,
 	type CompactionEntry,
+	getLatestCompactionCheckpoint,
 	type SessionEntry,
 	sessionEntryToContextMessages,
 } from "../session-manager.ts";
@@ -831,25 +832,22 @@ export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
 ): CompactionPreparation | undefined {
-	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
+	const latestCheckpoint = getLatestCompactionCheckpoint(pathEntries);
+	if (pathEntries.length > 0 && latestCheckpoint?.id === pathEntries[pathEntries.length - 1].id) {
 		return undefined;
 	}
 
-	let prevCompactionIndex = -1;
-	for (let i = pathEntries.length - 1; i >= 0; i--) {
-		if (pathEntries[i].type === "compaction") {
-			prevCompactionIndex = i;
-			break;
-		}
-	}
-
+	const prevCompactionIndex = latestCheckpoint
+		? pathEntries.findIndex((entry) => entry.id === latestCheckpoint.id)
+		: -1;
 	let previousSummary: string | undefined;
 	let boundaryStart = 0;
-	if (prevCompactionIndex >= 0) {
-		const prevCompaction = pathEntries[prevCompactionIndex] as CompactionEntry;
-		previousSummary = prevCompaction.summary;
-		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
+	if (latestCheckpoint?.type === "compaction") {
+		previousSummary = latestCheckpoint.summary;
+		const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === latestCheckpoint.firstKeptEntryId);
 		boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
+	} else if (latestCheckpoint?.type === "openai_native_compaction") {
+		boundaryStart = prevCompactionIndex + 1;
 	}
 	const boundaryEnd = pathEntries.length;
 

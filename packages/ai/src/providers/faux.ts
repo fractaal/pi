@@ -184,6 +184,9 @@ function messageToText(message: Message): string {
 	if (message.role === "assistant") {
 		return assistantContentToText(message.content);
 	}
+	if (message.role === "openaiNativeCompaction") {
+		throw new Error("Faux provider cannot consume an OpenAI native compaction checkpoint");
+	}
 	return toolResultToText(message);
 }
 

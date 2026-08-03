@@ -3333,8 +3333,9 @@ export class InteractiveMode {
 				this.chatContainer.addChild(assistantComponent);
 				break;
 			}
-			case "toolResult": {
-				// Tool results are rendered inline with tool calls, handled separately
+			case "toolResult":
+			case "openaiNativeCompaction": {
+				// Tool results and opaque provider checkpoints have no standalone row.
 				break;
 			}
 			default: {

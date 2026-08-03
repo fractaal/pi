@@ -29,10 +29,13 @@ import { contentText } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
+	Context,
 	ImageContent,
 	Message,
 	Model,
+	OpenAINativeCompactionItem,
 	ProviderHeaders,
+	SimpleStreamOptions,
 	TextContent,
 	Usage,
 } from "@earendil-works/pi-ai/compat";
@@ -100,8 +103,13 @@ import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
-import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader } from "./session-manager.ts";
+import type {
+	BranchSummaryEntry,
+	OpenAINativeCompactionEntry,
+	SessionEntry,
+	SessionManager,
+} from "./session-manager.ts";
+import { CURRENT_SESSION_VERSION, getLatestCompactionCheckpoint, type SessionHeader } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
@@ -195,6 +203,16 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 		: undefined;
 }
 
+export type OpenAINativeCompactionFunction = (
+	model: Model<"openai-codex-responses">,
+	context: Context,
+	options?: SimpleStreamOptions,
+) => Promise<{ item: OpenAINativeCompactionItem; tokensBefore: number; usage: Usage }>;
+
+export function isOpenAINativeCompactionModel(model: Model<any>): boolean {
+	return model.provider === "openai-codex" && model.api === "openai-codex-responses";
+}
+
 export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
@@ -225,6 +243,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Narrow OpenAI/Codex native compaction capability, wired by the standard SDK. */
+	openaiNativeCompaction?: OpenAINativeCompactionFunction;
 }
 
 export interface ExtensionBindings {
@@ -375,6 +395,7 @@ export class AgentSession {
 	private _excludedToolNames?: Set<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
+	private _openaiNativeCompaction?: OpenAINativeCompactionFunction;
 	private _extensionUIContext?: ExtensionUIContext;
 	private _extensionMode: ExtensionMode = "print";
 	private _extensionCommandContextActions?: ExtensionCommandContextActions;
@@ -411,6 +432,15 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._openaiNativeCompaction = config.openaiNativeCompaction;
+		const checkpoint = this._latestNativeCompaction();
+		if (
+			checkpoint &&
+			this.model &&
+			(this.model.provider !== checkpoint.provider || this.model.id !== checkpoint.modelId)
+		) {
+			throw new Error(this._nativeCompactionModelError(this.model));
+		}
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1822,6 +1852,33 @@ export class AgentSession {
 	// Model Management
 	// =========================================================================
 
+	get compactionMode(): "openai-native" | undefined {
+		return this.sessionManager.getHeader()?.compactionMode;
+	}
+
+	private _latestNativeCompaction(): OpenAINativeCompactionEntry | undefined {
+		const checkpoint = getLatestCompactionCheckpoint(this.sessionManager.getBranch());
+		return checkpoint?.type === "openai_native_compaction" ? checkpoint : undefined;
+	}
+
+	private _isModelAllowedByCompactionMode(model: Model<any>): boolean {
+		if (this.compactionMode !== "openai-native") return true;
+		const checkpoint = this._latestNativeCompaction();
+		return !checkpoint || (model.provider === checkpoint.provider && model.id === checkpoint.modelId);
+	}
+
+	private _nativeCompactionModelError(model: Model<any>): string {
+		const checkpoint = this._latestNativeCompaction();
+		if (checkpoint) {
+			return `This session contains an OpenAI native compaction checkpoint and is locked to ${checkpoint.provider}/${checkpoint.modelId}; cannot switch to ${model.provider}/${model.id}`;
+		}
+		return `OpenAI native compaction checkpoint is incompatible with ${model.provider}/${model.id}`;
+	}
+
+	private _assertModelAllowedByCompactionMode(model: Model<any>): void {
+		if (!this._isModelAllowedByCompactionMode(model)) throw new Error(this._nativeCompactionModelError(model));
+	}
+
 	private async _emitModelSelect(
 		nextModel: Model<any>,
 		previousModel: Model<any> | undefined,
@@ -1842,6 +1899,7 @@ export class AgentSession {
 	 * @throws Error if no auth is configured for the model
 	 */
 	async setModel(model: Model<any>): Promise<void> {
+		this._assertModelAllowedByCompactionMode(model);
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -1878,7 +1936,9 @@ export class AgentSession {
 				auth: await this._modelRuntime.checkAuth(scoped.model.provider),
 			})),
 		);
-		const scopedModels = checks.filter(({ auth }) => auth !== undefined).map(({ scoped }) => scoped);
+		const scopedModels = checks
+			.filter(({ auth, scoped }) => auth !== undefined && this._isModelAllowedByCompactionMode(scoped.model))
+			.map(({ scoped }) => scoped);
 		if (scopedModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -1907,7 +1967,9 @@ export class AgentSession {
 	}
 
 	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const availableModels = await this._modelRuntime.getAvailable();
+		const availableModels = (await this._modelRuntime.getAvailable()).filter((model) =>
+			this._isModelAllowedByCompactionMode(model),
+		);
 		if (availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -2041,6 +2103,41 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
+	private async _runOpenAINativeCompaction(signal: AbortSignal): Promise<{
+		item: OpenAINativeCompactionItem;
+		tokensBefore: number;
+		usage: Usage;
+	}> {
+		if (!this.model) throw new Error(formatNoModelSelectedMessage());
+		this._assertModelAllowedByCompactionMode(this.model);
+		if (!isOpenAINativeCompactionModel(this.model)) {
+			throw new Error(
+				`OpenAI native compaction requires the openai-codex Responses route; current model is ${this.model.provider}/${this.model.id}`,
+			);
+		}
+		if (!this._openaiNativeCompaction) {
+			throw new Error("OpenAI native compaction is unavailable in this runtime");
+		}
+
+		let messages = this.agent.state.messages;
+		if (this.agent.transformContext) messages = await this.agent.transformContext(messages, signal);
+		const context: Context = {
+			systemPrompt: this.agent.state.systemPrompt,
+			messages: await this.agent.convertToLlm(messages),
+			tools: this.agent.state.tools,
+		};
+		return this._openaiNativeCompaction(this.model as Model<"openai-codex-responses">, context, {
+			signal,
+			reasoning: this.thinkingLevel === "off" ? undefined : this.thinkingLevel,
+			thinkingBudgets: this.agent.thinkingBudgets,
+			transport: this.agent.transport,
+			maxRetryDelayMs: this.agent.maxRetryDelayMs,
+			sessionId: this.agent.sessionId,
+			onPayload: this.agent.onPayload,
+			onResponse: this.agent.onResponse,
+		});
+	}
+
 	/**
 	 * Manually compact the session context.
 	 * Aborts current agent operation first.
@@ -2077,7 +2174,13 @@ export class AgentSession {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
-			const { apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model);
+			const nativeMode = this.compactionMode === "openai-native";
+			if (nativeMode && customInstructions) {
+				throw new Error("Custom compaction instructions are unavailable in OpenAI native mode");
+			}
+			const { apiKey, headers, env } = nativeMode
+				? { apiKey: undefined, headers: undefined, env: undefined }
+				: await this._getSummarizationRequestAuth(this.model);
 
 			const pathEntries = this.sessionManager.getBranch();
 			const settings = this.settingsManager.getCompactionSettings();
@@ -2086,7 +2189,7 @@ export class AgentSession {
 			if (!preparation) {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
-				if (lastEntry?.type === "compaction") {
+				if (lastEntry?.type === "compaction" || lastEntry?.type === "openai_native_compaction") {
 					throw new Error("Already compacted");
 				}
 				throw new Error("Nothing to compact (session too small)");
@@ -2095,7 +2198,7 @@ export class AgentSession {
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
 
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
+			if (!nativeMode && this._extensionRunner.hasHandlers("session_before_compact")) {
 				const result = (await this._extensionRunner.emit({
 					type: "session_before_compact",
 					preparation,
@@ -2121,8 +2224,16 @@ export class AgentSession {
 			let tokensBefore: number;
 			let usage: Usage | undefined;
 			let details: unknown;
+			let nativeItem: OpenAINativeCompactionItem | undefined;
 
-			if (extensionCompaction) {
+			if (nativeMode) {
+				const result = await this._runOpenAINativeCompaction(this._compactionAbortController.signal);
+				summary = "OpenAI native checkpoint";
+				firstKeptEntryId = "";
+				tokensBefore = result.tokensBefore;
+				usage = result.usage;
+				nativeItem = result.item;
+			} else if (extensionCompaction) {
 				// Extension provided compaction content
 				summary = extensionCompaction.summary;
 				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
@@ -2155,18 +2266,23 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const savedEntryId = nativeItem
+				? this.sessionManager.appendOpenAINativeCompaction(this.model.id, nativeItem, tokensBefore, usage!)
+				: this.sessionManager.appendCompaction(
+						summary,
+						firstKeptEntryId,
+						tokensBefore,
+						details,
+						fromExtension,
+						usage,
+					);
+			if (nativeItem) firstKeptEntryId = savedEntryId;
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
+			const savedCompactionEntry = this.sessionManager.getEntry(savedEntryId);
+			if (savedCompactionEntry?.type === "compaction") {
 				await this._extensionRunner.emit({
 					type: "session_compact",
 					compactionEntry: savedCompactionEntry,
@@ -2264,7 +2380,7 @@ export class AgentSession {
 		// Skip compaction checks if this assistant message is older than the latest
 		// compaction boundary. This prevents a stale pre-compaction usage/error
 		// from retriggering compaction on the first prompt after compaction.
-		const compactionEntry = getLatestCompactionEntry(this.sessionManager.getBranch());
+		const compactionEntry = getLatestCompactionCheckpoint(this.sessionManager.getBranch());
 		const assistantIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp <= new Date(compactionEntry.timestamp).getTime();
 		if (assistantIsFromBeforeCompaction) {
@@ -2349,12 +2465,13 @@ export class AgentSession {
 				return false;
 			}
 
+			const nativeMode = this.compactionMode === "openai-native";
 			let apiKey: string | undefined;
 			let headers: Record<string, string> | undefined;
 			let env: Record<string, string> | undefined;
-			if (this.agent.streamFunction === streamSimple) {
+			if (!nativeMode && this.agent.streamFunction === streamSimple) {
 				({ apiKey, headers, env } = await this._getRequiredRequestAuth(this.model));
-			} else {
+			} else if (!nativeMode) {
 				({ apiKey, headers, env } = await this._getSummarizationRequestAuth(this.model));
 			}
 
@@ -2373,7 +2490,7 @@ export class AgentSession {
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
 
-			if (this._extensionRunner.hasHandlers("session_before_compact")) {
+			if (!nativeMode && this._extensionRunner.hasHandlers("session_before_compact")) {
 				const extensionResult = (await this._extensionRunner.emit({
 					type: "session_before_compact",
 					preparation,
@@ -2407,8 +2524,16 @@ export class AgentSession {
 			let tokensBefore: number;
 			let usage: Usage | undefined;
 			let details: unknown;
+			let nativeItem: OpenAINativeCompactionItem | undefined;
 
-			if (extensionCompaction) {
+			if (nativeMode) {
+				const compactResult = await this._runOpenAINativeCompaction(this._autoCompactionAbortController.signal);
+				summary = "OpenAI native checkpoint";
+				firstKeptEntryId = "";
+				tokensBefore = compactResult.tokensBefore;
+				usage = compactResult.usage;
+				nativeItem = compactResult.item;
+			} else if (extensionCompaction) {
 				// Extension provided compaction content
 				summary = extensionCompaction.summary;
 				firstKeptEntryId = extensionCompaction.firstKeptEntryId;
@@ -2449,18 +2574,23 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
-			const newEntries = this.sessionManager.getEntries();
+			const savedEntryId = nativeItem
+				? this.sessionManager.appendOpenAINativeCompaction(this.model.id, nativeItem, tokensBefore, usage!)
+				: this.sessionManager.appendCompaction(
+						summary,
+						firstKeptEntryId,
+						tokensBefore,
+						details,
+						fromExtension,
+						usage,
+					);
+			if (nativeItem) firstKeptEntryId = savedEntryId;
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
 			const estimatedTokensAfter = estimateMessagesTokens(sessionContext.messages);
 
-			// Get the saved compaction entry for the extension event
-			const savedCompactionEntry = newEntries.find((e) => e.type === "compaction" && e.summary === summary) as
-				| CompactionEntry
-				| undefined;
-
-			if (this._extensionRunner && savedCompactionEntry) {
+			const savedCompactionEntry = this.sessionManager.getEntry(savedEntryId);
+			if (savedCompactionEntry?.type === "compaction") {
 				await this._extensionRunner.emit({
 					type: "session_compact",
 					compactionEntry: savedCompactionEntry,
@@ -3342,6 +3472,24 @@ export class AgentSession {
 				newLeafId = targetId;
 			}
 
+			if (newLeafId !== null) {
+				const checkpoint = getLatestCompactionCheckpoint(this.sessionManager.getBranch(newLeafId));
+				if (
+					checkpoint?.type === "openai_native_compaction" &&
+					(!this.model || this.model.provider !== checkpoint.provider || this.model.id !== checkpoint.modelId)
+				) {
+					const checkpointModel = this._modelRuntime.getModel(checkpoint.provider, checkpoint.modelId);
+					if (!checkpointModel || !(await this._modelRuntime.checkAuth(checkpoint.provider))) {
+						throw new Error(
+							`This session contains an OpenAI native compaction checkpoint and is locked to ${checkpoint.provider}/${checkpoint.modelId}; that model is not available`,
+						);
+					}
+					const previousModel = this.model;
+					this.agent.state.model = checkpointModel;
+					await this._emitModelSelect(checkpointModel, previousModel, "restore");
+				}
+			}
+
 			// Switch leaf (with or without summary)
 			// Summary is attached at the navigation target position (newLeafId), not the old branch
 			let summaryEntry: BranchSummaryEntry | undefined;
@@ -3428,7 +3576,12 @@ export class AgentSession {
 		const usageTotals = createUsageTotals();
 
 		for (const entry of this.sessionManager.getEntries()) {
-			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
+			if (
+				(entry.type === "branch_summary" ||
+					entry.type === "compaction" ||
+					entry.type === "openai_native_compaction") &&
+				entry.usage
+			) {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
 			if (entry.type !== "message") continue;
@@ -3482,7 +3635,7 @@ export class AgentSession {
 		// We can only trust usage from an assistant that responded after the latest compaction.
 		// If no such assistant exists, context token count is unknown until the next LLM response.
 		const branchEntries = this.sessionManager.getBranch();
-		const latestCompaction = getLatestCompactionEntry(branchEntries);
+		const latestCompaction = getLatestCompactionCheckpoint(branchEntries);
 
 		if (latestCompaction) {
 			// Check if there's a valid assistant usage after the compaction boundary
@@ -3562,6 +3715,7 @@ export class AgentSession {
 			id: this.sessionManager.getSessionId(),
 			timestamp: new Date().toISOString(),
 			cwd: this.sessionManager.getCwd(),
+			compactionMode: this.compactionMode,
 		};
 
 		const branchEntries = this.sessionManager.getBranch();

@@ -184,6 +184,7 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
 				case "user":
 				case "assistant":
 				case "toolResult":
+				case "openaiNativeCompaction":
 					return m;
 				default:
 					// biome-ignore lint/correctness/noSwitchDeclarations: fine
