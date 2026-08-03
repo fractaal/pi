@@ -1,12 +1,6 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import {
-	type ImageContent,
-	type Message,
-	type OpenAINativeCompactionItem,
-	type TextContent,
-	type Usage,
-	uuidv7,
-} from "@earendil-works/pi-ai";
+import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
+import type { OpenAINativeCompactionItem } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { randomUUID } from "crypto";
 import {
 	appendFileSync,
@@ -353,6 +347,10 @@ export function getLatestCompactionCheckpoint(
 	return null;
 }
 
+export function hasRestorableSessionContext(context: SessionContext, entries: SessionEntry[]): boolean {
+	return context.messages.length > 0 || getLatestCompactionCheckpoint(entries)?.type === "openai_native_compaction";
+}
+
 function buildEntryIndex(entries: SessionEntry[], byId?: Map<string, SessionEntry>): Map<string, SessionEntry> {
 	if (byId) return byId;
 	const index = new Map<string, SessionEntry>();
@@ -409,7 +407,8 @@ function getSessionContextSettings(path: SessionEntry[]): Pick<SessionContext, "
 
 /**
  * Project one selected session entry into LLM/runtime messages.
- * Plain custom entries are display/state entries and do not participate in context.
+ * Plain custom entries do not participate in context. Native compaction entries
+ * are replayed through the Codex request options rather than generic messages.
  */
 export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage[] {
 	if (entry.type === "message") {
@@ -427,18 +426,6 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	if (entry.type === "custom_message") {
 		return [
 			createCustomMessage(entry.customType, entry.content ?? [], entry.display, entry.details, entry.timestamp),
-		];
-	}
-	if (entry.type === "openai_native_compaction") {
-		return [
-			{
-				role: "openaiNativeCompaction",
-				content: [],
-				provider: entry.provider,
-				model: entry.modelId,
-				item: entry.item,
-				timestamp: new Date(entry.timestamp).getTime(),
-			},
 		];
 	}
 	if (entry.type === "branch_summary" && entry.summary) {

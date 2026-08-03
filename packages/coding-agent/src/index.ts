@@ -17,7 +17,6 @@ export {
 	type AgentSessionConfig,
 	type AgentSessionEvent,
 	type AgentSessionEventListener,
-	isOpenAINativeCompactionModel,
 	type ModelCycleResult,
 	type ParsedSkillBlock,
 	type PromptOptions,

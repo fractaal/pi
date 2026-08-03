@@ -430,22 +430,7 @@ export interface ToolResultMessage<TDetails = any> {
 	timestamp: number; // Unix timestamp in milliseconds
 }
 
-export interface OpenAINativeCompactionItem {
-	type: "compaction";
-	encrypted_content: string;
-	id?: string;
-}
-
-export interface OpenAINativeCompactionMessage {
-	role: "openaiNativeCompaction";
-	content: [];
-	provider: string;
-	model: string;
-	item: OpenAINativeCompactionItem;
-	timestamp: number;
-}
-
-export type Message = UserMessage | AssistantMessage | ToolResultMessage | OpenAINativeCompactionMessage;
+export type Message = UserMessage | AssistantMessage | ToolResultMessage;
 
 export type ImagesInputContent = TextContent | ImageContent;
 export type ImagesOutputContent = TextContent | ImageContent;

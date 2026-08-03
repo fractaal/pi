@@ -1,7 +1,6 @@
 import { zstdDecompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { compactOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
-import { convertResponsesMessages } from "../src/api/openai-responses-shared.ts";
 import type { Context, Model } from "../src/types.ts";
 
 const model: Model<"openai-codex-responses"> = {
@@ -98,28 +97,36 @@ describe("OpenAI Codex native compaction", () => {
 		});
 	});
 
-	it("replays the exact opaque checkpoint before later messages", () => {
-		const input = convertResponsesMessages(
-			model,
-			{
-				messages: [
-					{
-						role: "openaiNativeCompaction",
-						content: [],
-						provider: "openai-codex",
-						model: "gpt-5.6-sol",
-						item: { type: "compaction", id: "cmp_1", encrypted_content: "opaque-checkpoint" },
-						timestamp: 1,
-					},
-					{ role: "user", content: "continue", timestamp: 2 },
-				],
+	it("replays the exact opaque checkpoint before later messages", async () => {
+		mockResponse([{ type: "compaction", encrypted_content: "next-checkpoint" }], (body) => {
+			expect(body.input).toEqual([
+				{ type: "compaction", id: "cmp_1", encrypted_content: "opaque-checkpoint" },
+				{ role: "user", content: [{ type: "input_text", text: "Synthetic context" }] },
+				{ type: "compaction_trigger" },
+			]);
+		});
+
+		await compactOpenAICodexResponses(model, context, {
+			apiKey: token(),
+			nativeCompactionCheckpoint: {
+				provider: "openai-codex",
+				modelId: "gpt-5.6-sol",
+				item: { type: "compaction", id: "cmp_1", encrypted_content: "opaque-checkpoint" },
 			},
-			new Set(["openai-codex"]),
-		);
-		expect(input).toEqual([
-			{ type: "compaction", id: "cmp_1", encrypted_content: "opaque-checkpoint" },
-			{ role: "user", content: [{ type: "input_text", text: "continue" }] },
-		]);
+		});
+	});
+
+	it("rejects replay through a different Codex model", async () => {
+		await expect(
+			compactOpenAICodexResponses({ ...model, id: "gpt-other" }, context, {
+				apiKey: token(),
+				nativeCompactionCheckpoint: {
+					provider: "openai-codex",
+					modelId: "gpt-5.6-sol",
+					item: { type: "compaction", encrypted_content: "opaque-checkpoint" },
+				},
+			}),
+		).rejects.toThrow(/requires openai-codex\/gpt-5\.6-sol/);
 	});
 
 	it.each([

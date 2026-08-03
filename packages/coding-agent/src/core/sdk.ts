@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ModelsSimpleStreamOptions } from "@earendil-works/pi-ai";
+import type { OpenAINativeCompactionCheckpoint } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import {
 	clampThinkingLevel,
 	type Message,
@@ -20,7 +21,13 @@ import { ModelRuntime } from "./model-runtime.ts";
 import { mergeProviderAttributionHeaders } from "./provider-attribution.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { DefaultResourceLoader } from "./resource-loader.ts";
-import { getDefaultSessionDir, type SessionCompactionMode, SessionManager } from "./session-manager.ts";
+import {
+	getDefaultSessionDir,
+	getLatestCompactionCheckpoint,
+	hasRestorableSessionContext,
+	type SessionCompactionMode,
+	SessionManager,
+} from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
 import { time } from "./timings.ts";
 import {
@@ -195,10 +202,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		time("resourceLoader.reload");
 	}
 
-	// Check if session has existing data to restore
+	// Check if session has existing data to restore. Native checkpoints are
+	// intentionally absent from messages but still make this a continuing session.
 	const existingSession = sessionManager.buildSessionContext();
-	const hasExistingSession = existingSession.messages.length > 0;
-	const hasThinkingEntry = sessionManager.getBranch().some((entry) => entry.type === "thinking_level_change");
+	const activeBranch = sessionManager.getBranch();
+	const hasExistingSession = hasRestorableSessionContext(existingSession, activeBranch);
+	const hasThinkingEntry = activeBranch.some((entry) => entry.type === "thinking_level_change");
 
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
@@ -301,10 +310,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	};
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
+	type NativeAwareRequestOptions = ModelsSimpleStreamOptions & {
+		nativeCompactionCheckpoint?: OpenAINativeCompactionCheckpoint;
+	};
 	const enrichRequestOptions = (
 		requestModel: Model<any>,
 		requestOptions?: SimpleStreamOptions,
-	): ModelsSimpleStreamOptions => {
+	): NativeAwareRequestOptions => {
 		const providerRetrySettings = settingsManager.getProviderRetrySettings();
 		const httpIdleTimeoutMs = settingsManager.getHttpIdleTimeoutMs();
 		// SDKs treat timeout=0 as 0ms (immediate timeout), not "no timeout".
@@ -314,7 +326,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const websocketConnectTimeoutMs =
 			requestOptions?.websocketConnectTimeoutMs ?? settingsManager.getWebSocketConnectTimeoutMs();
 		const headerRunner = extensionRunnerRef.current;
-		return {
+		const enriched: NativeAwareRequestOptions = {
 			...requestOptions,
 			timeoutMs,
 			websocketConnectTimeoutMs,
@@ -332,6 +344,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					: (headers ?? {});
 			},
 		};
+		const checkpoint = getLatestCompactionCheckpoint(sessionManager.getBranch());
+		if (checkpoint?.type !== "openai_native_compaction") return enriched;
+		if (
+			requestModel.provider !== checkpoint.provider ||
+			requestModel.id !== checkpoint.modelId ||
+			requestModel.api !== "openai-codex-responses"
+		) {
+			throw new Error(
+				`OpenAI native compaction checkpoint requires ${checkpoint.provider}/${checkpoint.modelId} on openai-codex-responses; current model is ${requestModel.provider}/${requestModel.id} on ${requestModel.api}`,
+			);
+		}
+		return { ...enriched, nativeCompactionCheckpoint: checkpoint };
 	};
 
 	agent = new Agent({

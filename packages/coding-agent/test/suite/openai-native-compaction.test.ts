@@ -6,7 +6,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenAINativeCompactionFunction } from "../../src/core/agent-session.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { hasRestorableSessionContext, SessionManager } from "../../src/core/session-manager.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 const harnesses: Harness[] = [];
@@ -136,9 +136,7 @@ describe("AgentSession OpenAI native compaction", () => {
 			tokens: { input: 360, output: 45, cacheRead: 40, cacheWrite: 0, total: 445 },
 			cost: 0.23,
 		});
-		expect(harness.session.messages).toEqual([
-			expect.objectContaining({ role: "openaiNativeCompaction", model: "gpt-native-test" }),
-		]);
+		expect(harness.session.messages).toEqual([]);
 		expect(harness.eventsOfType("compaction_start")).toHaveLength(1);
 		expect(harness.eventsOfType("compaction_end")).toHaveLength(1);
 	});
@@ -194,7 +192,41 @@ describe("AgentSession OpenAI native compaction", () => {
 		expect(
 			harness.sessionManager.getEntries().filter((entry) => entry.type === "openai_native_compaction"),
 		).toHaveLength(1);
-		expect(harness.session.messages).toEqual([expect.objectContaining({ role: "openaiNativeCompaction" })]);
+		expect(harness.session.messages).toEqual([]);
+	});
+
+	it("retries an overflow error from the opaque checkpoint without a generic checkpoint message", async () => {
+		const harness = await nativeHarness(async () => ({
+			item: { type: "compaction", encrypted_content: "opaque-overflow-retry" },
+			tokensBefore: 240,
+			usage: nativeUsage(),
+		}));
+		harness.session.model!.contextWindow = 100_000;
+		const overflow = {
+			...assistant("gpt-native-test", ""),
+			stopReason: "error" as const,
+			errorMessage: "Your input exceeds the context window of this model",
+		};
+		harness.session.agent.streamFunction = responseStream([
+			overflow,
+			assistant("gpt-native-test", "continued after native overflow"),
+		]);
+
+		await harness.session.prompt("trigger an overflow retry");
+
+		expect(harness.eventsOfType("compaction_start")).toEqual([expect.objectContaining({ reason: "overflow" })]);
+		expect(harness.eventsOfType("compaction_end")).toEqual([
+			expect.objectContaining({ reason: "overflow", result: expect.any(Object), willRetry: true }),
+		]);
+		expect(
+			harness.sessionManager.getEntries().filter((entry) => entry.type === "openai_native_compaction"),
+		).toHaveLength(1);
+		expect(harness.session.messages).toEqual([
+			expect.objectContaining({
+				role: "assistant",
+				content: [{ type: "text", text: "continued after native overflow" }],
+			}),
+		]);
 	});
 
 	it("bypasses text compaction extension hooks in native mode", async () => {
@@ -263,6 +295,7 @@ describe("AgentSession OpenAI native compaction", () => {
 		await expect(harness.session.setModel(harness.getModel("model-a")!)).rejects.toThrow(
 			/locked to openai-codex\/model-b/,
 		);
+		await expect(harness.session.cycleModel()).resolves.toBeUndefined();
 	});
 
 	it("restores the checkpoint model when navigating back to a native-compacted branch", async () => {
@@ -299,7 +332,7 @@ describe("AgentSession OpenAI native compaction", () => {
 		await harness.session.prompt("continue from restored checkpoint branch");
 
 		expect(harness.session.model).toMatchObject({ provider: "openai-codex", id: "model-a" });
-		expect(harness.session.messages.map((message) => message.role)).toContain("openaiNativeCompaction");
+		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
 		expect(harness.session.messages.at(-1)).toMatchObject({ role: "assistant", model: "model-a" });
 	});
 
@@ -316,14 +349,13 @@ describe("AgentSession OpenAI native compaction", () => {
 			100,
 			nativeUsage(),
 		);
+		expect(manager.buildSessionContext().messages).toEqual([]);
+		expect(hasRestorableSessionContext(manager.buildSessionContext(), manager.getBranch())).toBe(true);
 		manager.appendMessage({ role: "user", content: "after", timestamp: 2 });
 
 		const restarted = SessionManager.open(path);
 		expect(restarted.getHeader()?.compactionMode).toBe("openai-native");
-		expect(restarted.buildSessionContext().messages.map((message) => message.role)).toEqual([
-			"openaiNativeCompaction",
-			"user",
-		]);
+		expect(restarted.buildSessionContext().messages.map((message) => message.role)).toEqual(["user"]);
 		restarted.createBranchedSession(restarted.getLeafId()!);
 		expect(restarted.getHeader()?.compactionMode).toBe("openai-native");
 		expect(restarted.getBranch().some((entry) => entry.id === checkpointId)).toBe(true);

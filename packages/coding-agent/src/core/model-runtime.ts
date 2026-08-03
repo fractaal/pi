@@ -32,6 +32,7 @@ import {
 import {
 	compactOpenAICodexResponses,
 	type OpenAICodexNativeCompactionResult,
+	type OpenAICodexSimpleStreamOptions,
 } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
@@ -507,7 +508,7 @@ export class ModelRuntime implements Models {
 		return compactOpenAICodexResponses(
 			prepared.model as Model<"openai-codex-responses">,
 			context,
-			prepared.options as SimpleStreamOptions,
+			prepared.options as OpenAICodexSimpleStreamOptions,
 		);
 	}
 

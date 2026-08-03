@@ -583,10 +583,6 @@ function toChatMessages(messages: Message[], supportsImages: boolean): ChatCompl
 			continue;
 		}
 
-		if (msg.role === "openaiNativeCompaction") {
-			throw new Error("OpenAI native compaction checkpoints cannot be sent to Mistral");
-		}
-
 		const toolContent: ContentChunk[] = [];
 		const textResult = msg.content
 			.filter((part) => part.type === "text")

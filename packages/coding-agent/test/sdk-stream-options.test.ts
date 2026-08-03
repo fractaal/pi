@@ -10,6 +10,7 @@ import {
 	type ProviderHeaders,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import type { OpenAICodexSimpleStreamOptions } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import type { InlineExtension } from "../src/core/extensions/index.ts";
@@ -199,7 +200,7 @@ describe("createAgentSession stream options", () => {
 		expect(options).not.toHaveProperty("transformHeaders");
 	});
 
-	it("applies ordinary request settings and header transforms to native compaction", async () => {
+	it("shares request settings with native compaction and replays checkpoints only through Codex", async () => {
 		vi.stubEnv("PI_TELEMETRY", "1");
 		const model = {
 			...createModel("openai-codex-responses"),
@@ -228,9 +229,18 @@ describe("createAgentSession stream options", () => {
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
 		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
+		let capturedReplayOptions: OpenAICodexSimpleStreamOptions | undefined;
+		const providerStream = vi.fn(
+			(_model: Model<any>, _context: { messages: unknown[] }, providerOptions?: OpenAICodexSimpleStreamOptions) => {
+				capturedReplayOptions = providerOptions;
+				return createDoneStream(model.api);
+			},
+		);
 		modelRegistry.registerProvider(model.provider, {
 			api: model.api,
+			apiKey: "test-api-key",
 			headers: { "x-provider": "provider" },
+			streamSimple: providerStream,
 		});
 		const modelRuntime = getModelRuntime(modelRegistry);
 		let capturedOptions: ModelsSimpleStreamOptions | undefined;
@@ -290,8 +300,24 @@ describe("createAgentSession stream options", () => {
 			session.agent.state.messages = sessionManager.buildSessionContext().messages;
 
 			await session.compact();
+			expect(sessionManager.getBranch().at(-1)).toMatchObject({ type: "openai_native_compaction" });
+			const continuation = await session.agent.streamFunction(model, { messages: [] });
+			const continuationResult = await continuation.result();
+			expect(continuationResult.stopReason, continuationResult.errorMessage).toBe("stop");
 
 			expect(capturedOptions).toMatchObject({ timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 3000 });
+			expect(capturedReplayOptions).toMatchObject({
+				nativeCompactionCheckpoint: {
+					provider: "openai-codex",
+					modelId: "capture-model",
+					item: { type: "compaction", encrypted_content: "opaque" },
+				},
+			});
+			expect(providerStream).toHaveBeenCalledTimes(1);
+			expect(() => session.agent.streamFunction({ ...model, api: "openai-completions" }, { messages: [] })).toThrow(
+				/checkpoint requires openai-codex\/capture-model/,
+			);
+			expect(providerStream).toHaveBeenCalledTimes(1);
 			expect(transformedHeaders).toMatchObject({
 				"x-provider": "provider",
 				"HTTP-Referer": "https://pi.dev",

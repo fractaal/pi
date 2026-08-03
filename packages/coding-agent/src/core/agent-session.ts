@@ -27,15 +27,17 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { contentText } from "@earendil-works/pi-ai";
 import type {
+	OpenAICodexSimpleStreamOptions,
+	OpenAINativeCompactionItem,
+} from "@earendil-works/pi-ai/api/openai-codex-responses";
+import type {
 	AssistantMessage,
 	AuthResult,
 	Context,
 	ImageContent,
 	Message,
 	Model,
-	OpenAINativeCompactionItem,
 	ProviderHeaders,
-	SimpleStreamOptions,
 	TextContent,
 	Usage,
 } from "@earendil-works/pi-ai/compat";
@@ -206,12 +208,8 @@ function withoutDeletedHeaders(headers: ProviderHeaders | undefined): Record<str
 export type OpenAINativeCompactionFunction = (
 	model: Model<"openai-codex-responses">,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: OpenAICodexSimpleStreamOptions,
 ) => Promise<{ item: OpenAINativeCompactionItem; tokensBefore: number; usage: Usage }>;
-
-export function isOpenAINativeCompactionModel(model: Model<any>): boolean {
-	return model.provider === "openai-codex" && model.api === "openai-codex-responses";
-}
 
 export interface AgentSessionConfig {
 	agent: Agent;
@@ -365,6 +363,7 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	private _retryFromNativeCheckpoint = false;
 	/** Stop-the-world barrier: extension-triggered turns are deferred while core compacts/retries. */
 	private _compactionBarrier: CompactionBarrier | undefined = undefined;
 	private _manualCompactionPending = false;
@@ -433,14 +432,7 @@ export class AgentSession {
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._openaiNativeCompaction = config.openaiNativeCompaction;
-		const checkpoint = this._latestNativeCompaction();
-		if (
-			checkpoint &&
-			this.model &&
-			(this.model.provider !== checkpoint.provider || this.model.id !== checkpoint.modelId)
-		) {
-			throw new Error(this._nativeCompactionModelError(this.model));
-		}
+		if (this.model) this._assertModelAllowedByNativeCheckpoint(this.model);
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -1302,7 +1294,12 @@ export class AgentSession {
 		try {
 			await start();
 			while (await this._handlePostAgentRun()) {
-				await this.agent.continue();
+				if (this._retryFromNativeCheckpoint) {
+					this._retryFromNativeCheckpoint = false;
+					await this.agent.prompt([]);
+				} else {
+					await this.agent.continue();
+				}
 			}
 		} finally {
 			this._systemPromptOverride = undefined;
@@ -1861,22 +1858,12 @@ export class AgentSession {
 		return checkpoint?.type === "openai_native_compaction" ? checkpoint : undefined;
 	}
 
-	private _isModelAllowedByCompactionMode(model: Model<any>): boolean {
-		if (this.compactionMode !== "openai-native") return true;
+	private _assertModelAllowedByNativeCheckpoint(model: Model<any>): void {
 		const checkpoint = this._latestNativeCompaction();
-		return !checkpoint || (model.provider === checkpoint.provider && model.id === checkpoint.modelId);
-	}
-
-	private _nativeCompactionModelError(model: Model<any>): string {
-		const checkpoint = this._latestNativeCompaction();
-		if (checkpoint) {
-			return `This session contains an OpenAI native compaction checkpoint and is locked to ${checkpoint.provider}/${checkpoint.modelId}; cannot switch to ${model.provider}/${model.id}`;
-		}
-		return `OpenAI native compaction checkpoint is incompatible with ${model.provider}/${model.id}`;
-	}
-
-	private _assertModelAllowedByCompactionMode(model: Model<any>): void {
-		if (!this._isModelAllowedByCompactionMode(model)) throw new Error(this._nativeCompactionModelError(model));
+		if (!checkpoint || (model.provider === checkpoint.provider && model.id === checkpoint.modelId)) return;
+		throw new Error(
+			`This session contains an OpenAI native compaction checkpoint and is locked to ${checkpoint.provider}/${checkpoint.modelId}; cannot switch to ${model.provider}/${model.id}`,
+		);
 	}
 
 	private async _emitModelSelect(
@@ -1899,7 +1886,7 @@ export class AgentSession {
 	 * @throws Error if no auth is configured for the model
 	 */
 	async setModel(model: Model<any>): Promise<void> {
-		this._assertModelAllowedByCompactionMode(model);
+		this._assertModelAllowedByNativeCheckpoint(model);
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -1923,6 +1910,7 @@ export class AgentSession {
 	 * @returns The new model info, or undefined if only one model available
 	 */
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
+		if (this._latestNativeCompaction()) return undefined;
 		if (this._scopedModels.length > 0) {
 			return this._cycleScopedModel(direction);
 		}
@@ -1936,9 +1924,7 @@ export class AgentSession {
 				auth: await this._modelRuntime.checkAuth(scoped.model.provider),
 			})),
 		);
-		const scopedModels = checks
-			.filter(({ auth, scoped }) => auth !== undefined && this._isModelAllowedByCompactionMode(scoped.model))
-			.map(({ scoped }) => scoped);
+		const scopedModels = checks.filter(({ auth }) => auth !== undefined).map(({ scoped }) => scoped);
 		if (scopedModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -1967,9 +1953,7 @@ export class AgentSession {
 	}
 
 	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const availableModels = (await this._modelRuntime.getAvailable()).filter((model) =>
-			this._isModelAllowedByCompactionMode(model),
-		);
+		const availableModels = await this._modelRuntime.getAvailable();
 		if (availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -2109,8 +2093,8 @@ export class AgentSession {
 		usage: Usage;
 	}> {
 		if (!this.model) throw new Error(formatNoModelSelectedMessage());
-		this._assertModelAllowedByCompactionMode(this.model);
-		if (!isOpenAINativeCompactionModel(this.model)) {
+		this._assertModelAllowedByNativeCheckpoint(this.model);
+		if (this.model.provider !== "openai-codex" || this.model.api !== "openai-codex-responses") {
 			throw new Error(
 				`OpenAI native compaction requires the openai-codex Responses route; current model is ${this.model.provider}/${this.model.id}`,
 			);
@@ -2610,12 +2594,18 @@ export class AgentSession {
 			};
 
 			if (willRetry) {
-				// The rebuilt session includes the overflow response. Remove it only after compaction succeeds
-				// so agent.continue() retries from the preceding user/tool context instead of an assistant message.
-				const messages = this.agent.state.messages;
-				const lastMsg = messages[messages.length - 1];
-				if (lastMsg?.role === "assistant") {
-					this.agent.state.messages = messages.slice(0, -1);
+				if (nativeItem) {
+					// The opaque checkpoint is provider context, not a generic message. Start
+					// a zero-message turn so Codex can retry from that checkpoint alone.
+					this._retryFromNativeCheckpoint = true;
+				} else {
+					// The rebuilt session includes the overflow response. Remove it only after compaction succeeds
+					// so agent.continue() retries from the preceding user/tool context instead of an assistant message.
+					const messages = this.agent.state.messages;
+					const lastMsg = messages[messages.length - 1];
+					if (lastMsg?.role === "assistant") {
+						this.agent.state.messages = messages.slice(0, -1);
+					}
 				}
 				this._exitCompactionBarrier({ flushDeferred: true });
 				this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });

@@ -2,6 +2,7 @@ import type * as NodeOs from "node:os";
 import type * as NodeZlib from "node:zlib";
 import type {
 	Tool as OpenAITool,
+	ResponseCompactionItemParam,
 	ResponseCreateParamsStreaming,
 	ResponseInput,
 	ResponseStreamEvent,
@@ -28,7 +29,6 @@ import type {
 	AssistantMessage,
 	Context,
 	Model,
-	OpenAINativeCompactionItem,
 	ProviderEnv,
 	ProviderHeaders,
 	SimpleStreamOptions,
@@ -84,12 +84,29 @@ const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
 // Types
 // ============================================================================
 
+export interface OpenAINativeCompactionItem {
+	type: "compaction";
+	encrypted_content: string;
+	id?: string;
+}
+
+export interface OpenAINativeCompactionCheckpoint {
+	provider: "openai-codex";
+	modelId: string;
+	item: OpenAINativeCompactionItem;
+}
+
+export interface OpenAICodexSimpleStreamOptions extends SimpleStreamOptions {
+	nativeCompactionCheckpoint?: OpenAINativeCompactionCheckpoint;
+}
+
 export interface OpenAICodexResponsesOptions extends StreamOptions {
 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
 	textVerbosity?: "low" | "medium" | "high";
 	toolChoice?: "auto" | "none" | "required";
+	nativeCompactionCheckpoint?: OpenAINativeCompactionCheckpoint;
 	/** Internal native-compaction request control. */
 	nativeCompaction?: boolean;
 	onNativeCompactionItem?: (item: unknown) => void;
@@ -99,6 +116,17 @@ export interface OpenAICodexNativeCompactionResult {
 	item: OpenAINativeCompactionItem;
 	tokensBefore: number;
 	usage: Usage;
+}
+
+function isOpenAINativeCompactionItem(item: unknown): item is OpenAINativeCompactionItem {
+	if (!item || typeof item !== "object") return false;
+	const candidate = item as Record<string, unknown>;
+	return (
+		candidate.type === "compaction" &&
+		typeof candidate.encrypted_content === "string" &&
+		candidate.encrypted_content.length > 0 &&
+		(candidate.id == null || (typeof candidate.id === "string" && candidate.id.length > 0))
+	);
 }
 
 type CodexResponseStatus = "completed" | "incomplete" | "failed" | "cancelled" | "queued" | "in_progress";
@@ -515,7 +543,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 function buildSimpleCodexOptions(
 	model: Model<"openai-codex-responses">,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: OpenAICodexSimpleStreamOptions,
 ): OpenAICodexResponsesOptions {
 	const apiKey = options?.apiKey;
 	if (!apiKey) {
@@ -527,19 +555,20 @@ function buildSimpleCodexOptions(
 	return {
 		...base,
 		reasoningEffort: clampedReasoning === "off" ? undefined : clampedReasoning,
+		nativeCompactionCheckpoint: options?.nativeCompactionCheckpoint,
 	};
 }
 
-export const streamSimple: StreamFunction<"openai-codex-responses", SimpleStreamOptions> = (
+export const streamSimple: StreamFunction<"openai-codex-responses", OpenAICodexSimpleStreamOptions> = (
 	model: Model<"openai-codex-responses">,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: OpenAICodexSimpleStreamOptions,
 ): AssistantMessageEventStream => stream(model, context, buildSimpleCodexOptions(model, context, options));
 
 export async function compactOpenAICodexResponses(
 	model: Model<"openai-codex-responses">,
 	context: Context,
-	options?: SimpleStreamOptions,
+	options?: OpenAICodexSimpleStreamOptions,
 ): Promise<OpenAICodexNativeCompactionResult> {
 	const items: unknown[] = [];
 	const result = await stream(model, context, {
@@ -556,13 +585,7 @@ export async function compactOpenAICodexResponses(
 		throw new Error(`OpenAI native compaction returned ${items.length} checkpoint items; expected exactly one`);
 	}
 	const item = items[0] as Partial<OpenAINativeCompactionItem> | null;
-	if (
-		!item ||
-		item.type !== "compaction" ||
-		typeof item.encrypted_content !== "string" ||
-		item.encrypted_content.length === 0 ||
-		(item.id != null && (typeof item.id !== "string" || item.id.length === 0))
-	) {
+	if (!isOpenAINativeCompactionItem(item)) {
 		throw new Error("OpenAI native compaction returned a malformed checkpoint item");
 	}
 
@@ -605,6 +628,19 @@ function buildRequestBody(
 			supportsOpenAIGrammarTools,
 		},
 	});
+
+	const checkpoint = options?.nativeCompactionCheckpoint;
+	if (checkpoint) {
+		if (checkpoint.provider !== model.provider || checkpoint.modelId !== model.id) {
+			throw new Error(
+				`OpenAI native compaction checkpoint requires ${checkpoint.provider}/${checkpoint.modelId}; current model is ${model.provider}/${model.id}`,
+			);
+		}
+		if (!isOpenAINativeCompactionItem(checkpoint.item)) {
+			throw new Error("Stored OpenAI native compaction checkpoint is malformed");
+		}
+		messages.unshift({ ...checkpoint.item } satisfies ResponseCompactionItemParam);
+	}
 
 	if (options?.nativeCompaction) {
 		messages.push({ type: "compaction_trigger" } as unknown as ResponseInput[number]);

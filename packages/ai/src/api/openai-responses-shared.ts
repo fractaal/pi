@@ -1,7 +1,6 @@
 import type OpenAI from "openai";
 import type {
 	Tool as OpenAITool,
-	ResponseCompactionItemParam,
 	ResponseCreateParamsStreaming,
 	ResponseInput,
 	ResponseInputContent,
@@ -189,14 +188,7 @@ export function convertResponsesMessages<TApi extends Api>(
 
 	let msgIndex = 0;
 	for (const msg of transformedMessages) {
-		if (msg.role === "openaiNativeCompaction") {
-			if (model.provider !== msg.provider || model.id !== msg.model || model.api !== "openai-codex-responses") {
-				throw new Error(
-					`OpenAI native compaction checkpoint requires ${msg.provider}/${msg.model}; current model is ${model.provider}/${model.id}`,
-				);
-			}
-			messages.push({ ...msg.item } satisfies ResponseCompactionItemParam);
-		} else if (msg.role === "user") {
+		if (msg.role === "user") {
 			if (typeof msg.content === "string") {
 				messages.push({
 					role: "user",
