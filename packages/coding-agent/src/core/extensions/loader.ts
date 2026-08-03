@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as _bundledPiAgentCore from "@earendil-works/pi-agent-core";
 import type { Provider } from "@earendil-works/pi-ai";
+import * as _bundledOpenAICodexResponses from "@earendil-works/pi-ai/api/openai-codex-responses";
 import * as _bundledPiAiCompat from "@earendil-works/pi-ai/compat";
 import * as _bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
 import * as _bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
@@ -58,6 +59,7 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	// superset of the core entrypoint): existing extensions using the old
 	// global API keep working at runtime until compat is removed.
 	"@earendil-works/pi-ai": _bundledPiAiCompat,
+	"@earendil-works/pi-ai/api/openai-codex-responses": _bundledOpenAICodexResponses,
 	"@earendil-works/pi-ai/compat": _bundledPiAiCompat,
 	"@earendil-works/pi-ai/oauth": _bundledPiAiOauth,
 	"@earendil-works/pi-ai/providers/all": _bundledPiAiProviders,
@@ -65,6 +67,7 @@ const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@mariozechner/pi-agent-core": _bundledPiAgentCore,
 	"@mariozechner/pi-tui": _bundledPiTui,
 	"@mariozechner/pi-ai": _bundledPiAiCompat,
+	"@mariozechner/pi-ai/api/openai-codex-responses": _bundledOpenAICodexResponses,
 	"@mariozechner/pi-ai/compat": _bundledPiAiCompat,
 	"@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
 	"@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
@@ -105,6 +108,10 @@ function getAliases(): Record<string, string> {
 	// superset of the core entrypoint): existing extensions using the old
 	// global API keep working at runtime until compat is removed.
 	const piAiCompatEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@earendil-works/pi-ai/compat");
+	const piAiOpenAICodexResponsesEntry = resolveWorkspaceOrImport(
+		"ai/dist/api/openai-codex-responses.js",
+		"@earendil-works/pi-ai/api/openai-codex-responses",
+	);
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
 	const piAiProvidersEntry = resolveWorkspaceOrImport(
 		"ai/dist/providers/all.js",
@@ -116,6 +123,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-agent-core": piAgentCoreEntry,
 		"@earendil-works/pi-tui": piTuiEntry,
 		"@earendil-works/pi-ai/providers/all": piAiProvidersEntry,
+		"@earendil-works/pi-ai/api/openai-codex-responses": piAiOpenAICodexResponsesEntry,
 		"@earendil-works/pi-ai/compat": piAiCompatEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@earendil-works/pi-ai": piAiCompatEntry,
@@ -123,6 +131,7 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-agent-core": piAgentCoreEntry,
 		"@mariozechner/pi-tui": piTuiEntry,
 		"@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
+		"@mariozechner/pi-ai/api/openai-codex-responses": piAiOpenAICodexResponsesEntry,
 		"@mariozechner/pi-ai/compat": piAiCompatEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
 		"@mariozechner/pi-ai": piAiCompatEntry,

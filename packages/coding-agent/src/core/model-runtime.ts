@@ -29,6 +29,11 @@ import {
 	type SimpleStreamOptions,
 	type StreamOptions,
 } from "@earendil-works/pi-ai";
+import {
+	compactOpenAICodexResponses,
+	type OpenAICodexNativeCompactionResult,
+	type OpenAICodexSimpleStreamOptions,
+} from "@earendil-works/pi-ai/api/openai-codex-responses";
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
@@ -489,6 +494,22 @@ export class ModelRuntime implements Models {
 		options?: ModelsApiStreamOptions<TApi>,
 	): Promise<AssistantMessage> {
 		return this.stream(model, context, options).result();
+	}
+
+	async compactOpenAICodexResponses(
+		model: Model<Api>,
+		context: Context,
+		options?: ModelsSimpleStreamOptions,
+	): Promise<OpenAICodexNativeCompactionResult> {
+		if (model.provider !== "openai-codex" || model.api !== "openai-codex-responses") {
+			throw new ModelsError("provider", `OpenAI native compaction is unavailable for ${model.provider}/${model.id}`);
+		}
+		const prepared = await this.prepareRequest(model, options);
+		return compactOpenAICodexResponses(
+			prepared.model as Model<"openai-codex-responses">,
+			context,
+			prepared.options as OpenAICodexSimpleStreamOptions,
+		);
 	}
 
 	streamSimple(model: Model<Api>, context: Context, options?: ModelsSimpleStreamOptions): AssistantMessageEventStream {

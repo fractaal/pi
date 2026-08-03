@@ -46,7 +46,7 @@ import {
 	MissingSessionCwdError,
 	type SessionCwdIssue,
 } from "./core/session-cwd.ts";
-import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
+import { assertValidSessionId, hasRestorableSessionContext, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
@@ -748,7 +748,7 @@ export async function main(args: string[], options?: MainOptions) {
 		} = buildSessionOptions(
 			parsed,
 			scopedModels,
-			sessionManager.buildSessionContext().messages.length > 0,
+			hasRestorableSessionContext(sessionManager.buildSessionContext(), sessionManager.getBranch()),
 			modelRuntime,
 			settingsManager,
 		);

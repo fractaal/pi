@@ -15,11 +15,15 @@ import type {
 	Model,
 } from "@earendil-works/pi-ai/compat";
 import { registerFauxProvider, streamSimple } from "@earendil-works/pi-ai/compat";
-import { AgentSession, type AgentSessionEvent } from "../../src/core/agent-session.ts";
+import {
+	AgentSession,
+	type AgentSessionEvent,
+	type OpenAINativeCompactionFunction,
+} from "../../src/core/agent-session.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
 import type { ExtensionRunner } from "../../src/core/extensions/index.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
-import { SessionManager } from "../../src/core/session-manager.ts";
+import { type SessionCompactionMode, SessionManager } from "../../src/core/session-manager.ts";
 import type { Settings } from "../../src/core/settings-manager.ts";
 import { SettingsManager } from "../../src/core/settings-manager.ts";
 import type { InlineExtension, ResourceLoader } from "../../src/index.ts";
@@ -72,6 +76,8 @@ export interface HarnessOptions {
 	extensionFactories?: Array<InlineExtension | CreateTestExtensionsResultInput>;
 	withConfiguredAuth?: boolean;
 	modelsJson?: Record<string, unknown>;
+	compactionMode?: SessionCompactionMode;
+	openaiNativeCompaction?: OpenAINativeCompactionFunction;
 }
 
 export interface Harness {
@@ -109,7 +115,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 	const withConfiguredAuth = options.withConfiguredAuth ?? true;
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
-	const sessionManager = SessionManager.inMemory();
+	const sessionManager = SessionManager.inMemory(undefined, { compactionMode: options.compactionMode });
 	const settingsManager = SettingsManager.inMemory(options.settings);
 
 	const authStorage = AuthStorage.inMemory();
@@ -191,6 +197,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		allowedToolNames: options.allowedToolNames,
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,
+		openaiNativeCompaction: options.openaiNativeCompaction,
 	});
 
 	const events: AgentSessionEvent[] = [];
