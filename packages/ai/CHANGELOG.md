@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Added OpenAI/Codex native compaction helpers that create and replay opaque checkpoints through the Responses API.
+
 ## [0.83.0] - 2026-07-29
 
 ### Breaking Changes

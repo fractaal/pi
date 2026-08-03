@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### New Features
+
+- **OpenAI/Codex native compaction** — The coding-agent SDK can persist and replay opaque checkpoints through session resume, forks, and context-overflow recovery.
+
+### Fixed
+
+- Fixed extension loading of `@earendil-works/pi-ai/api/openai-codex-responses` in Node and compiled builds.
+
 ## [0.83.0] - 2026-07-29
 
 ### New Features
