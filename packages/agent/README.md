@@ -147,14 +147,14 @@ When you use the `Agent` class, assistant `message_end` processing is treated as
 
 ### continue() Event Sequence
 
-`continue()` resumes from existing context without adding a new message. Use it for retries after errors.
+`continue()` processes queued steering or follow-up work first when the transcript is empty or ends in an assistant message. Otherwise it resumes from existing context without adding a new message; use that path for retries after errors.
 
 ```typescript
 // After an error, retry from current state
 await agent.continue();
 ```
 
-The last message in context must be `user` or `toolResult` (not `assistant`).
+Without queued work, the last message in context must be `user` or `toolResult` (not `assistant`).
 
 ### Event Types
 
@@ -277,7 +277,7 @@ await agent.prompt("What's in this image?", [
 // AgentMessage directly
 await agent.prompt({ role: "user", content: "Hello", timestamp: Date.now() });
 
-// Continue from current context (last message must be user or toolResult)
+// Process queued work, or continue from user/toolResult context
 await agent.continue();
 ```
 

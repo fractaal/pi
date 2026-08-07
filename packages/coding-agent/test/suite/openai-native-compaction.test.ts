@@ -7,7 +7,7 @@ import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compa
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenAINativeCompactionFunction } from "../../src/core/agent-session.ts";
 import { hasRestorableSessionContext, SessionManager } from "../../src/core/session-manager.ts";
-import { createHarness, type Harness } from "./harness.ts";
+import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
 const harnesses: Harness[] = [];
 const tempDirs: string[] = [];
@@ -227,6 +227,62 @@ describe("AgentSession OpenAI native compaction", () => {
 				content: [{ type: "text", text: "continued after native overflow" }],
 			}),
 		]);
+	});
+
+	it("delivers steering queued during threshold compaction from a checkpoint-only context", async () => {
+		let notifyCompactionStarted: () => void = () => undefined;
+		const compactionStarted = new Promise<void>((resolve) => {
+			notifyCompactionStarted = resolve;
+		});
+		let releaseCompaction: () => void = () => undefined;
+		const compactionCanFinish = new Promise<void>((resolve) => {
+			releaseCompaction = resolve;
+		});
+		const harness = await nativeHarness(async () => {
+			notifyCompactionStarted();
+			await compactionCanFinish;
+			return {
+				item: { type: "compaction", encrypted_content: "opaque-threshold-queue" },
+				tokensBefore: 180,
+				usage: nativeUsage(),
+			};
+		}, false);
+		const initialResponse = assistant("gpt-native-test", "response before compaction");
+		initialResponse.usage.input = 180;
+		initialResponse.usage.totalTokens = 180;
+		const responses = [initialResponse, assistant("gpt-native-test", "response after compaction")];
+		let requestCount = 0;
+		let queuedMessageCount = 0;
+		harness.session.agent.streamFunction = (_model, context) => {
+			requestCount += 1;
+			if (requestCount === 2) {
+				queuedMessageCount = context.messages.filter(
+					(message) => getMessageText(message) === "deliver after checkpoint",
+				).length;
+			}
+			const stream = createAssistantMessageEventStream();
+			const response = responses.shift();
+			if (!response) throw new Error("No synthetic response configured");
+			queueMicrotask(() => stream.push({ type: "done", reason: "stop", message: response }));
+			return stream;
+		};
+
+		const prompt = harness.session.prompt("trigger threshold compaction");
+		await compactionStarted;
+		await harness.session.prompt("deliver after checkpoint", { streamingBehavior: "steer" });
+		releaseCompaction();
+
+		await expect(prompt).resolves.toBeUndefined();
+		expect(requestCount).toBe(2);
+		expect(queuedMessageCount).toBe(1);
+		expect(harness.session.agent.hasQueuedMessages()).toBe(false);
+		expect(
+			harness.sessionManager
+				.getEntries()
+				.filter(
+					(entry) => entry.type === "message" && getMessageText(entry.message) === "deliver after checkpoint",
+				),
+		).toHaveLength(1);
 	});
 
 	it("bypasses text compaction extension hooks in native mode", async () => {

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Fixed queued steering and follow-up messages failing to continue when provider-owned context has no generic transcript messages.
+
 ## [0.83.0] - 2026-07-29
 
 ## [0.82.1] - 2026-07-25

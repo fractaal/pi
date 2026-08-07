@@ -602,6 +602,39 @@ describe("Agent", () => {
 		await firstPrompt.catch(() => {});
 	});
 
+	it.each(["steering", "follow-up"] as const)(
+		"continue() should process queued %s when provider context has no generic transcript messages",
+		async (queue) => {
+			const agent = new Agent({
+				streamFn: () => {
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Processed") });
+					});
+					return stream;
+				},
+			});
+
+			const message = {
+				role: "custom" as const,
+				customType: "queued-after-checkpoint",
+				content: [{ type: "text" as const, text: "Queued after checkpoint" }],
+				display: false,
+				timestamp: Date.now(),
+			};
+			if (queue === "steering") agent.steer(message);
+			else agent.followUp(message);
+
+			await expect(agent.continue()).resolves.toBeUndefined();
+
+			expect(agent.state.messages).toEqual([
+				expect.objectContaining({ role: "custom", customType: "queued-after-checkpoint" }),
+				expect.objectContaining({ role: "assistant" }),
+			]);
+			expect(agent.hasQueuedMessages()).toBe(false);
+		},
+	);
+
 	it("continue() should process queued follow-up messages after an assistant turn", async () => {
 		const agent = new Agent({
 			streamFn: () => {

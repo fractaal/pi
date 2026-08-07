@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed extension loading of `@earendil-works/pi-ai/api/openai-codex-responses` in Node and compiled builds.
+- Fixed messages queued during OpenAI native threshold compaction failing to resume from the opaque checkpoint.
 
 ## [0.83.0] - 2026-07-29
 
