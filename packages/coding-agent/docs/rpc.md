@@ -1059,7 +1059,7 @@ The `reason` field is `"manual"`, `"threshold"`, or `"overflow"`.
 }
 ```
 
-If `reason` was `"overflow"` and compaction succeeds, `willRetry` is `true` and the agent will automatically retry the prompt.
+When compaction succeeds with `willRetry: true`, Pi core automatically resumes the interrupted turn. This applies to overflow recovery and to threshold compaction after a length-truncated response.
 
 If compaction was aborted, `result` is `null` and `aborted` is `true`.
 

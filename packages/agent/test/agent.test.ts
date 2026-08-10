@@ -1,4 +1,10 @@
-import { type AssistantMessage, type AssistantMessageEvent, EventStream, getModel } from "@earendil-works/pi-ai/compat";
+import {
+	type AssistantMessage,
+	type AssistantMessageEvent,
+	EventStream,
+	getModel,
+	type Message,
+} from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import {
@@ -672,6 +678,67 @@ describe("Agent", () => {
 		expect(hasQueuedFollowUp).toBe(true);
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
 	});
+
+	it.each(["steering", "follow-up"] as const)(
+		"continue() should prepend recovery context to queued %s in the same provider request",
+		async (queue) => {
+			const requests: string[][] = [];
+			const agent = new Agent({
+				convertToLlm: (messages) =>
+					messages.map((message) =>
+						message.role === "custom"
+							? { role: "user", content: message.content, timestamp: message.timestamp }
+							: message,
+					) as Message[],
+				streamFn: (_model, context) => {
+					requests.push(
+						context.messages.map((message) =>
+							typeof message.content === "string"
+								? message.content
+								: message.content
+										.filter((part) => part.type === "text")
+										.map((part) => part.text)
+										.join("\n"),
+						),
+					);
+					const stream = new MockAssistantStream();
+					queueMicrotask(() => {
+						stream.push({ type: "done", reason: "stop", message: createAssistantMessage("Processed") });
+					});
+					return stream;
+				},
+			});
+
+			agent.state.messages = [
+				{
+					role: "user",
+					content: [{ type: "text", text: "Initial" }],
+					timestamp: Date.now() - 10,
+				},
+				createAssistantMessage("Partial response"),
+			];
+			const queuedMessage = {
+				role: "user" as const,
+				content: [{ type: "text" as const, text: "Queued guidance" }],
+				timestamp: Date.now(),
+			};
+			if (queue === "steering") agent.steer(queuedMessage);
+			else agent.followUp(queuedMessage);
+
+			await agent.continue([
+				{
+					role: "custom",
+					customType: "recovery-context",
+					content: "Continue the interrupted response",
+					display: false,
+					timestamp: Date.now(),
+				},
+			]);
+
+			expect(requests).toHaveLength(1);
+			expect(requests[0]!.slice(-2)).toEqual(["Continue the interrupted response", "Queued guidance"]);
+		},
+	);
 
 	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {
 		let responseCount = 0;

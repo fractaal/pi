@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- `Agent.continue()` can prepend additional context to the next queued batch without changing steering or follow-up delivery order.
+
 ### Fixed
 
 - Fixed queued steering and follow-up messages failing to continue when provider-owned context has no generic transcript messages.
