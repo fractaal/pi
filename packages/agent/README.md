@@ -147,14 +147,17 @@ When you use the `Agent` class, assistant `message_end` processing is treated as
 
 ### continue() Event Sequence
 
-`continue()` processes queued steering or follow-up work first when the transcript is empty or ends in an assistant message. Otherwise it resumes from existing context without adding a new message; use that path for retries after errors.
+`continue()` processes queued steering or follow-up work first when the transcript is empty or ends in an assistant message. Optional additional messages are prepended to that same queued batch. Otherwise it resumes from existing context without adding a new message; use that path for retries after errors.
 
 ```typescript
 // After an error, retry from current state
 await agent.continue();
+
+// Add recovery context to the same request as the next queued batch
+await agent.continue([recoveryMessage]);
 ```
 
-Without queued work, the last message in context must be `user` or `toolResult` (not `assistant`).
+Without queued work or additional messages, the last message in context must be `user` or `toolResult` (not `assistant`).
 
 ### Event Types
 

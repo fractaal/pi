@@ -317,6 +317,10 @@ function estimateMessagesTokens(messages: AgentMessage[]): number {
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
 /** Maximum agent-level retry backoff. Indefinite retry should keep trying, not sleep for days. */
 const MAX_AGENT_RETRY_DELAY_MS = 10000;
+const LENGTH_STOP_CONTINUATION_INSTRUCTION =
+	"Your previous response was cut off by the output limit. Continue exactly where it ended without repeating completed content.";
+
+type CompactionRetryMode = "replay" | "continue";
 
 type CompactionBarrier = {
 	reason: "manual" | "overflow" | "threshold";
@@ -363,7 +367,9 @@ export class AgentSession {
 	private _compactionAbortController: AbortController | undefined = undefined;
 	private _autoCompactionAbortController: AbortController | undefined = undefined;
 	private _overflowRecoveryAttempted = false;
+	private _lengthCompactionRecoveryAttempted = false;
 	private _retryFromNativeCheckpoint = false;
+	private _continueAfterLengthCompaction = false;
 	/** Stop-the-world barrier: extension-triggered turns are deferred while core compacts/retries. */
 	private _compactionBarrier: CompactionBarrier | undefined = undefined;
 	private _manualCompactionPending = false;
@@ -857,6 +863,9 @@ export class AgentSession {
 				if (assistantMsg.stopReason !== "error" && !this._shouldEnterOverflowBarrier(assistantMsg)) {
 					this._overflowRecoveryAttempted = false;
 				}
+				if (assistantMsg.stopReason !== "length") {
+					this._lengthCompactionRecoveryAttempted = false;
+				}
 
 				// Reset retry counter immediately on successful assistant response
 				// This prevents accumulation across multiple LLM calls within a turn
@@ -1297,6 +1306,17 @@ export class AgentSession {
 				if (this._retryFromNativeCheckpoint) {
 					this._retryFromNativeCheckpoint = false;
 					await this.agent.prompt([]);
+				} else if (this._continueAfterLengthCompaction) {
+					this._continueAfterLengthCompaction = false;
+					await this.agent.continue([
+						{
+							role: "custom",
+							customType: "length-stop-continuation",
+							content: LENGTH_STOP_CONTINUATION_INSTRUCTION,
+							display: false,
+							timestamp: Date.now(),
+						},
+					]);
 				} else {
 					await this.agent.continue();
 				}
@@ -1529,6 +1549,7 @@ export class AgentSession {
 		}
 
 		preflightResult?.(true);
+		this._lengthCompactionRecoveryAttempted = false;
 		await this._runAgent(() => this.agent.prompt(messages));
 	}
 
@@ -1722,6 +1743,7 @@ export class AgentSession {
 		if (options?.deliverAs === "nextTurn" || this.isStreaming) {
 			this._queueCustomMessage(appMessage, options?.deliverAs);
 		} else if (options?.triggerTurn) {
+			this._lengthCompactionRecoveryAttempted = false;
 			await this._runAgent(async () => {
 				const images =
 					typeof appMessage.content === "string"
@@ -2339,8 +2361,8 @@ export class AgentSession {
 	 * Called after agent_end and before prompt submission.
 	 *
 	 * Two cases:
-	 * 1. Overflow: LLM returned context overflow error, remove error message from agent state, compact, auto-retry
-	 * 2. Threshold: Context over threshold, compact, NO auto-retry (user continues manually)
+	 * 1. Overflow: LLM returned context overflow error, compact, then recover the interrupted turn
+	 * 2. Threshold: Context over threshold. Completed responses settle; length-stopped responses recover after compaction.
 	 *
 	 * @param assistantMessage The assistant message to check
 	 * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
@@ -2430,7 +2452,25 @@ export class AgentSession {
 			contextTokens = directContextTokens;
 		}
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
-			return await this._runAutoCompaction("threshold", false);
+			const retryMode: CompactionRetryMode | undefined =
+				skipAbortedCheck && assistantMessage.stopReason === "length"
+					? contentText(assistantMessage.content, "").trim().length > 0
+						? "continue"
+						: "replay"
+					: undefined;
+			if (!retryMode) {
+				return await this._runAutoCompaction("threshold", false);
+			}
+			if (this._lengthCompactionRecoveryAttempted) {
+				return false;
+			}
+
+			this._lengthCompactionRecoveryAttempted = true;
+			const compacted = await this._runAutoCompaction("threshold", true, retryMode);
+			if (!compacted) {
+				this._lengthCompactionRecoveryAttempted = false;
+			}
+			return compacted;
 		}
 		return false;
 	}
@@ -2438,7 +2478,11 @@ export class AgentSession {
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold",
+		willRetry: boolean,
+		retryMode: CompactionRetryMode = "replay",
+	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		let started = false;
 		this._enterCompactionBarrier(reason, willRetry);
@@ -2594,20 +2638,27 @@ export class AgentSession {
 			};
 
 			if (willRetry) {
-				if (nativeItem) {
-					// The opaque checkpoint is provider context, not a generic message. Start
-					// a zero-message turn so Codex can retry from that checkpoint alone.
-					this._retryFromNativeCheckpoint = true;
+				if (retryMode === "continue") {
+					// Keep visible partial output in context. The next run prepends one hidden
+					// continuation instruction to the next queued batch, if any.
+					this._continueAfterLengthCompaction = true;
+					this._exitCompactionBarrier({ flushDeferred: true });
 				} else {
-					// The rebuilt session includes the overflow response. Remove it only after compaction succeeds
-					// so agent.continue() retries from the preceding user/tool context instead of an assistant message.
-					const messages = this.agent.state.messages;
-					const lastMsg = messages[messages.length - 1];
-					if (lastMsg?.role === "assistant") {
-						this.agent.state.messages = messages.slice(0, -1);
+					if (nativeItem) {
+						// The opaque checkpoint is provider context, not a generic message. Start
+						// a zero-message turn so Codex can retry from that checkpoint alone.
+						this._retryFromNativeCheckpoint = true;
+					} else {
+						// The rebuilt session includes the overflow response. Remove it only after compaction succeeds
+						// so agent.continue() retries from the preceding user/tool context instead of an assistant message.
+						const messages = this.agent.state.messages;
+						const lastMsg = messages[messages.length - 1];
+						if (lastMsg?.role === "assistant") {
+							this.agent.state.messages = messages.slice(0, -1);
+						}
 					}
+					this._exitCompactionBarrier({ flushDeferred: true });
 				}
-				this._exitCompactionBarrier({ flushDeferred: true });
 				this._emit({ type: "compaction_end", reason, result, aborted: false, willRetry });
 				return true;
 			}

@@ -363,8 +363,11 @@ export class Agent {
 		await this.runPromptMessages(messages);
 	}
 
-	/** Process queued work, or continue from a transcript ending in a user or tool-result message. */
-	async continue(): Promise<void> {
+	/**
+	 * Process queued work, or continue from a transcript ending in a user or tool-result message.
+	 * Additional messages are prepended to the next queued batch, or form the batch when no work is queued.
+	 */
+	async continue(additionalMessages: AgentMessage[] = []): Promise<void> {
 		if (this.activeRun) {
 			throw new Error("Agent is already processing. Wait for completion before continuing.");
 		}
@@ -373,13 +376,18 @@ export class Agent {
 		if (!lastMessage || lastMessage.role === "assistant") {
 			const queuedSteering = this.steeringQueue.drain();
 			if (queuedSteering.length > 0) {
-				await this.runPromptMessages(queuedSteering, { skipInitialSteeringPoll: true });
+				await this.runPromptMessages([...additionalMessages, ...queuedSteering], { skipInitialSteeringPoll: true });
 				return;
 			}
 
 			const queuedFollowUps = this.followUpQueue.drain();
 			if (queuedFollowUps.length > 0) {
-				await this.runPromptMessages(queuedFollowUps);
+				await this.runPromptMessages([...additionalMessages, ...queuedFollowUps]);
+				return;
+			}
+
+			if (additionalMessages.length > 0) {
+				await this.runPromptMessages(additionalMessages);
 				return;
 			}
 		}
@@ -389,6 +397,9 @@ export class Agent {
 		}
 		if (lastMessage.role === "assistant") {
 			throw new Error("Cannot continue from message role: assistant");
+		}
+		if (additionalMessages.length > 0) {
+			throw new Error("Cannot prepend messages when continuing from a non-assistant message");
 		}
 
 		await this.runContinuation();

@@ -290,7 +290,7 @@ pi.on("session_before_compact", async (event, ctx) => {
 
   // branchEntries - all entries on current branch (for custom state)
   // reason - "manual" (/compact), "threshold", or "overflow"
-  // willRetry - whether the aborted turn is retried after compaction (overflow recovery)
+  // willRetry - whether Pi core resumes the interrupted turn after compaction
   // signal - AbortSignal (pass to LLM calls)
 
   // Cancel:
