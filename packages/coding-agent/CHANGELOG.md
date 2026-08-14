@@ -11,6 +11,7 @@
 - Fixed extension loading of `@earendil-works/pi-ai/api/openai-codex-responses` in Node and compiled builds.
 - Fixed messages queued during OpenAI native threshold compaction failing to resume from the opaque checkpoint.
 - Fixed length-truncated responses settling after threshold compaction instead of replaying empty output or continuing partial output.
+- Fixed GPT-5.6 models resolving to a smaller context window after remote catalog refreshes.
 
 ## [0.83.0] - 2026-07-29
 
