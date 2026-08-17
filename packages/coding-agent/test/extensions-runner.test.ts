@@ -92,6 +92,7 @@ describe("ExtensionRunner", () => {
 	const extensionContextActions: ExtensionContextActions = {
 		getModel: () => undefined,
 		isIdle: () => true,
+		waitForIdle: async () => {},
 		isProjectTrusted: () => true,
 		getSignal: () => undefined,
 		abort: () => {},
@@ -914,7 +915,6 @@ describe("ExtensionRunner", () => {
 			const fork = vi.fn(async () => ({ cancelled: false }));
 
 			runner.bindCommandContext({
-				waitForIdle: async () => {},
 				newSession: async () => ({ cancelled: false }),
 				fork,
 				navigateTree: async () => ({ cancelled: false }),

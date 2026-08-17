@@ -105,7 +105,6 @@ describe("regression #2860: replaced session callbacks", () => {
 			const session = runtime.session;
 			await session.bindExtensions({
 				commandContextActions: {
-					waitForIdle: () => session.agent.waitForIdle(),
 					newSession: async (options) => runtime.newSession(options),
 					fork: async (entryId, options) => {
 						const result = await runtime.fork(entryId, options);

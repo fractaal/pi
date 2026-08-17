@@ -339,6 +339,7 @@ export class ExtensionRunner {
 		this.getModel = contextActions.getModel;
 		this.getScopedModels = contextActions.getScopedModels;
 		this.isIdleFn = contextActions.isIdle;
+		this.waitForIdleFn = contextActions.waitForIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
@@ -412,7 +413,6 @@ export class ExtensionRunner {
 
 	bindCommandContext(actions?: ExtensionCommandContextActions): void {
 		if (actions) {
-			this.waitForIdleFn = actions.waitForIdle;
 			this.newSessionHandler = actions.newSession;
 			this.forkHandler = actions.fork;
 			this.navigateTreeHandler = actions.navigateTree;
@@ -421,7 +421,6 @@ export class ExtensionRunner {
 			return;
 		}
 
-		this.waitForIdleFn = async () => {};
 		this.newSessionHandler = async () => ({ cancelled: false });
 		this.forkHandler = async () => ({ cancelled: false });
 		this.navigateTreeHandler = async () => ({ cancelled: false });
@@ -710,6 +709,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.isIdleFn();
 			},
+			waitForIdle: () => {
+				runner.assertActive();
+				return runner.waitForIdleFn();
+			},
 			isProjectTrusted: () => {
 				runner.assertActive();
 				return runner.isProjectTrustedFn();
@@ -756,10 +759,6 @@ export class ExtensionRunner {
 		context.getSystemPromptOptions = () => {
 			this.assertActive();
 			return this.getSystemPromptOptionsFn();
-		};
-		context.waitForIdle = () => {
-			this.assertActive();
-			return this.waitForIdleFn();
 		};
 		context.newSession = (options) => {
 			this.assertActive();

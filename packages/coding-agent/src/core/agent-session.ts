@@ -762,7 +762,7 @@ export class AgentSession {
 	}
 
 	private _resolveIdleWaitIfIdle(): void {
-		if (!this.isIdle || this._manualCompactionPending || !this._resolveIdleWait) {
+		if (!this.isIdle || !this._resolveIdleWait) {
 			return;
 		}
 		const resolve = this._resolveIdleWait;
@@ -1107,9 +1107,13 @@ export class AgentSession {
 		return this._isAgentRunActive;
 	}
 
-	/** Whether the session has no active agent run, retry, auto-compaction, or queued continuation. */
+	/**
+	 * Whether the session has no active agent run, retry, compaction, or queued continuation.
+	 * False while a manual compaction is pending, because new messages are already being
+	 * deferred at that point even though the compaction barrier is not up yet.
+	 */
 	get isIdle(): boolean {
-		return !this._isAgentRunActive && !this._isCompactionBarrierActive();
+		return !this._isAgentRunActive && !this._isCompactionIngressBlocked();
 	}
 
 	/** Current effective system prompt (includes any per-turn extension modifications) */
@@ -1861,7 +1865,7 @@ export class AgentSession {
 	}
 
 	async waitForIdle(): Promise<void> {
-		if (!this.isIdle || this._manualCompactionPending) {
+		if (!this.isIdle) {
 			await this._getIdleWaitPromise();
 		}
 		await this._activeAgentRunCompletion;
@@ -2883,6 +2887,7 @@ export class AgentSession {
 				getModel: () => this.model,
 				getScopedModels: () => this._scopedModels,
 				isIdle: () => this.isIdle,
+				waitForIdle: () => this.waitForIdle(),
 				isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 				getSignal: () => this.agent.signal,
 				abort: () => {

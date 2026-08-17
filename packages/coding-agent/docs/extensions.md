@@ -1016,7 +1016,30 @@ pi.on("tool_result", async (event, ctx) => {
 
 ### ctx.isIdle() / ctx.abort() / ctx.hasPendingMessages()
 
-Control flow helpers. `ctx.isIdle()` is false while Pi is processing an agent run, automatic retry, auto-compaction retry, or queued continuation.
+Control flow helpers. `ctx.isIdle()` answers one question: is the agent loop running? It is false while Pi is processing an agent run, an automatic retry, a compaction (manual, threshold, or overflow, including the window between a manual compaction being requested and the barrier going up), or a queued continuation. Compaction counts as part of the loop, so extensions never have to model it separately.
+
+### ctx.waitForIdle()
+
+Resolve once the agent loop is stopped and the current run has fully unwound, including automatic retries, compaction, and queued continuations. When nothing is running it resolves without blocking. This is the level-triggered form of `ctx.isIdle()`: it cannot miss an event, because it does not listen for one.
+
+```typescript
+pi.registerCommand("my-cmd", {
+  handler: async (args, ctx) => {
+    await ctx.waitForIdle();
+    // The agent loop is stopped, safe to modify the session.
+  },
+});
+```
+
+Do not `await` it inside an event handler that Pi emits from within the run (`agent_settled`, `agent_end`, `tool_result`, ...). The run is not finished until your handler returns, and `waitForIdle()` does not resolve until the run has finished, so awaiting it there deadlocks the session. Start the work without awaiting it and let the handler return:
+
+```typescript
+pi.on("agent_settled", (_event, ctx) => {
+  void ctx.waitForIdle().then(() => {
+    pi.sendUserMessage("continue");
+  });
+});
+```
 
 ### ctx.shutdown()
 
@@ -1095,19 +1118,6 @@ const contextPaths = options.contextFiles?.map((file) => file.path) ?? [];
 This has the same shape and mutability as `before_agent_start` `event.systemPromptOptions`: custom prompt, active tools, tool snippets, prompt guidelines, appended system prompt text, cwd, loaded context files, and loaded skills. It may include full context file contents, so treat it as sensitive extension-local data and avoid exposing it through command lists, logs, or autocomplete metadata.
 
 This reports the current base prompt inputs. It does not include per-turn `before_agent_start` chained system-prompt changes, later `context` event message mutations, or `before_provider_request` payload rewrites.
-
-### ctx.waitForIdle()
-
-Wait for the agent to fully settle, including automatic retries, auto-compaction retries, and queued continuations:
-
-```typescript
-pi.registerCommand("my-cmd", {
-  handler: async (args, ctx) => {
-    await ctx.waitForIdle();
-    // Agent is now idle, safe to modify session
-  },
-});
-```
 
 ### ctx.newSession(options?)
 

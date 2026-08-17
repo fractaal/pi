@@ -326,8 +326,22 @@ export interface ExtensionContext {
 	scopedModels: readonly ScopedModel[];
 	/** Current thinking level, when provided by the session runtime. */
 	thinkingLevel?: ThinkingLevel;
-	/** Whether the agent is idle (not streaming) */
+	/**
+	 * Whether the agent loop is stopped. False while Pi is processing an agent run,
+	 * automatic retry, compaction, or queued continuation.
+	 */
 	isIdle(): boolean;
+	/**
+	 * Resolve once the agent loop is stopped and the current run has fully unwound,
+	 * including automatic retries, compaction, and queued continuations. When nothing
+	 * is running it resolves without blocking.
+	 *
+	 * Do not `await` this inside an event handler that Pi emits from within the run
+	 * (`agent_settled`, `agent_end`, `tool_result`, ...): the run does not finish until
+	 * the handler returns, so awaiting deadlocks. Start the work without awaiting it
+	 * (`void ctx.waitForIdle().then(...)`) and let the handler return.
+	 */
+	waitForIdle(): Promise<void>;
 	/** Whether project-local trust is active for this context. */
 	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
@@ -353,9 +367,6 @@ export interface ExtensionContext {
 export interface ExtensionCommandContext extends ExtensionContext {
 	/** Get the current base system-prompt construction options. */
 	getSystemPromptOptions(): BuildSystemPromptOptions;
-
-	/** Wait for the agent to finish streaming */
-	waitForIdle(): Promise<void>;
 
 	/** Start a new session, optionally with initialization. */
 	newSession(options?: {
@@ -1625,6 +1636,7 @@ export interface ExtensionContextActions {
 	getModel: () => Model<any> | undefined;
 	getScopedModels: () => readonly ScopedModel[];
 	isIdle: () => boolean;
+	waitForIdle: () => Promise<void>;
 	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
@@ -1641,7 +1653,6 @@ export interface ExtensionContextActions {
  * Only needed for interactive mode where extension commands are invokable.
  */
 export interface ExtensionCommandContextActions {
-	waitForIdle: () => Promise<void>;
 	newSession: (options?: {
 		parentSession?: string;
 		setup?: (sessionManager: SessionManager) => Promise<void>;
