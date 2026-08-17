@@ -1806,7 +1806,7 @@ export class InteractiveMode {
 			scopedModels: this.session.scopedModels,
 			thinkingLevel: this.session.thinkingLevel,
 			isIdle: () => this.session.isIdle,
-			waitForIdle: () => this.session.waitForIdle(),
+			onIdle: (callback) => extensionRunner.registerIdleCallback(callback),
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
 			abort: () => {

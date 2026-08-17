@@ -294,6 +294,7 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private pendingIdleCallbacks: Set<() => void> = new Set();
 
 	constructor(
 		extensions: Extension[],
@@ -564,6 +565,46 @@ export class ExtensionRunner {
 		}
 	}
 
+	/**
+	 * Run `callback` once, at the next point where the agent loop is stopped and the current
+	 * run has fully unwound. Returns a function that cancels the pending callback.
+	 *
+	 * Deliberately callback-based rather than awaitable: extensions register from handlers
+	 * that the run itself is waiting on, so handing them a promise to await would let them
+	 * stall their own turn. A callback reference that is already pending is not registered
+	 * twice, so events collapsing onto one idle point produce one callback.
+	 */
+	registerIdleCallback(callback: () => void): () => void {
+		const unsubscribe = (): void => {
+			this.pendingIdleCallbacks.delete(callback);
+		};
+		if (this.pendingIdleCallbacks.has(callback)) {
+			return unsubscribe;
+		}
+		this.pendingIdleCallbacks.add(callback);
+		const reportError = (err: unknown): void => {
+			this.emitError({
+				extensionPath: "<unknown>",
+				event: "idle",
+				error: err instanceof Error ? err.message : String(err),
+				stack: err instanceof Error ? err.stack : undefined,
+			});
+		};
+		void this.waitForIdleFn().then(() => {
+			// Dropped if the caller unsubscribed, or if the session was replaced or reloaded
+			// while the callback was pending.
+			if (!this.pendingIdleCallbacks.delete(callback) || this.staleMessage) {
+				return;
+			}
+			try {
+				callback();
+			} catch (err) {
+				reportError(err);
+			}
+		}, reportError);
+		return unsubscribe;
+	}
+
 	hasHandlers(eventType: string): boolean {
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(eventType);
@@ -709,9 +750,9 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.isIdleFn();
 			},
-			waitForIdle: () => {
+			onIdle: (callback) => {
 				runner.assertActive();
-				return runner.waitForIdleFn();
+				return runner.registerIdleCallback(callback);
 			},
 			isProjectTrusted: () => {
 				runner.assertActive();
@@ -759,6 +800,10 @@ export class ExtensionRunner {
 		context.getSystemPromptOptions = () => {
 			this.assertActive();
 			return this.getSystemPromptOptionsFn();
+		};
+		context.waitForIdle = () => {
+			this.assertActive();
+			return this.waitForIdleFn();
 		};
 		context.newSession = (options) => {
 			this.assertActive();

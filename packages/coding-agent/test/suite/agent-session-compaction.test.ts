@@ -1342,23 +1342,23 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.isIdle).toBe(true);
 	});
 
-	it("resolves ctx.waitForIdle() from an event handler only after the agent run settles", async () => {
+	it("runs ctx.onIdle() callbacks from an event handler only after the agent run settles", async () => {
 		const order: string[] = [];
-		let settledWaiterResolved = false;
+		let settledCallbackRan = false;
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
 					pi.on("agent_start", (_event, ctx) => {
-						void ctx.waitForIdle().then(() => {
+						ctx.onIdle(() => {
 							order.push("idle");
 						});
 					});
 					pi.on("agent_settled", (_event, ctx) => {
 						order.push("settled");
-						// Documented pattern: start the wait, never await it inside a handler
-						// the run itself is waiting on.
-						void ctx.waitForIdle().then(() => {
-							settledWaiterResolved = true;
+						// Registering from a handler the run is waiting on is safe: the
+						// callback runs after the handler returns and the run unwinds.
+						ctx.onIdle(() => {
+							settledCallbackRan = true;
 						});
 					});
 				},
@@ -1371,19 +1371,49 @@ describe("AgentSession compaction characterization", () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(order).toEqual(["settled", "idle"]);
-		expect(settledWaiterResolved).toBe(true);
+		expect(settledCallbackRan).toBe(true);
 	});
 
-	it("keeps ctx.waitForIdle() pending for an event handler until compaction finishes", async () => {
-		let idleResolved = false;
+	it("runs one ctx.onIdle() callback when several events collapse onto one idle point", async () => {
+		let continuations = 0;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					// A stable reference, the way a Goal-style extension would hold one.
+					const onIdleContinue = () => {
+						continuations += 1;
+					};
+					pi.on("agent_start", (_event, ctx) => {
+						ctx.onIdle(onIdleContinue);
+					});
+					pi.on("agent_end", (_event, ctx) => {
+						ctx.onIdle(onIdleContinue);
+					});
+					pi.on("agent_settled", (_event, ctx) => {
+						ctx.onIdle(onIdleContinue);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		await harness.session.prompt("hello");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(continuations).toBe(1);
+	});
+
+	it("keeps ctx.onIdle() pending for an event handler until compaction finishes", async () => {
+		let idleCallbackRan = false;
 		let finishCompaction: (() => void) | undefined;
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
 			extensionFactories: [
 				(pi) => {
 					pi.on("session_before_compact", async (event, ctx) => {
-						void ctx.waitForIdle().then(() => {
-							idleResolved = true;
+						ctx.onIdle(() => {
+							idleCallbackRan = true;
 						});
 						return await new Promise((resolve) => {
 							finishCompaction = () =>
@@ -1406,12 +1436,12 @@ describe("AgentSession compaction characterization", () => {
 		const compactPromise = harness.session.compact();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(finishCompaction).toBeTypeOf("function");
-		expect(idleResolved).toBe(false);
+		expect(idleCallbackRan).toBe(false);
 
 		finishCompaction?.();
 		await expect(compactPromise).resolves.toMatchObject({ summary: "completed manual compaction" });
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
-		expect(idleResolved).toBe(true);
+		expect(idleCallbackRan).toBe(true);
 	});
 });

@@ -332,16 +332,21 @@ export interface ExtensionContext {
 	 */
 	isIdle(): boolean;
 	/**
-	 * Resolve once the agent loop is stopped and the current run has fully unwound,
-	 * including automatic retries, compaction, and queued continuations. When nothing
-	 * is running it resolves without blocking.
+	 * Run `callback` once, at the next point where the agent loop is stopped and the
+	 * current run has fully unwound, including automatic retries, compaction, and queued
+	 * continuations. Returns a function that cancels the pending callback.
 	 *
-	 * Do not `await` this inside an event handler that Pi emits from within the run
-	 * (`agent_settled`, `agent_end`, `tool_result`, ...): the run does not finish until
-	 * the handler returns, so awaiting deadlocks. Start the work without awaiting it
-	 * (`void ctx.waitForIdle().then(...)`) and let the handler return.
+	 * The callback never runs synchronously, so this is safe to call from any handler,
+	 * including ones Pi emits from within the run (`agent_settled`, `agent_end`,
+	 * `tool_result`, ...). Those handlers must return before the run can finish, so there
+	 * is deliberately nothing here to await.
+	 *
+	 * Registering a callback reference that is already pending is a no-op, the same way
+	 * `addEventListener` ignores a duplicate listener. Several events that collapse onto
+	 * one idle point therefore produce one callback, as long as the same function
+	 * reference is used each time.
 	 */
-	waitForIdle(): Promise<void>;
+	onIdle(callback: () => void): () => void;
 	/** Whether project-local trust is active for this context. */
 	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
@@ -367,6 +372,16 @@ export interface ExtensionContext {
 export interface ExtensionCommandContext extends ExtensionContext {
 	/** Get the current base system-prompt construction options. */
 	getSystemPromptOptions(): BuildSystemPromptOptions;
+
+	/**
+	 * Wait for the agent loop to stop and the current run to fully unwind, including
+	 * automatic retries, compaction, and queued continuations.
+	 *
+	 * Only command handlers get this. A command runs alongside the agent loop, so
+	 * awaiting here is safe. Event handlers get {@link ExtensionContext.onIdle} instead,
+	 * because a run cannot finish until its handlers return.
+	 */
+	waitForIdle(): Promise<void>;
 
 	/** Start a new session, optionally with initialization. */
 	newSession(options?: {

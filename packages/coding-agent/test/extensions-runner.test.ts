@@ -929,6 +929,68 @@ describe("ExtensionRunner", () => {
 			await commandContext.fork("entry-2", { position: "at" });
 			expect(fork).toHaveBeenLastCalledWith("entry-2", { position: "at" });
 		});
+
+		it("keeps waitForIdle on the command context and off the event context", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			const waitForIdle = vi.fn(async () => {});
+			runner.bindCore(extensionActions, { ...extensionContextActions, waitForIdle });
+			// Hosts without command bindings: print mode, rpc mode, and Aria Local Runtime.
+			runner.bindCommandContext(undefined);
+
+			const eventContext = runner.createContext();
+			expect(eventContext.onIdle).toBeTypeOf("function");
+			expect((eventContext as unknown as Record<string, unknown>).waitForIdle).toBeUndefined();
+
+			// createCommandContext() copies property descriptors; waitForIdle must survive it.
+			const commandContext = runner.createCommandContext();
+			expect(commandContext.onIdle).toBeTypeOf("function");
+			await commandContext.waitForIdle();
+			expect(waitForIdle).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("idle callbacks", () => {
+		it("registers a pending callback reference once and honours unsubscribe", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			let releaseIdle: () => void = () => undefined;
+			const idle = new Promise<void>((resolve) => {
+				releaseIdle = resolve;
+			});
+			runner.bindCore(extensionActions, { ...extensionContextActions, waitForIdle: () => idle });
+
+			const ctx = runner.createContext();
+			const callback = vi.fn();
+			const cancelled = vi.fn();
+			ctx.onIdle(callback);
+			ctx.onIdle(callback);
+			ctx.onIdle(callback);
+			const unsubscribe = ctx.onIdle(cancelled);
+			unsubscribe();
+
+			expect(callback).not.toHaveBeenCalled();
+			releaseIdle();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(callback).toHaveBeenCalledTimes(1);
+			expect(cancelled).not.toHaveBeenCalled();
+		});
+
+		it("reports a throwing idle callback through the extension error channel", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore(extensionActions, extensionContextActions);
+			const errors: string[] = [];
+			runner.onError((error) => errors.push(`${error.event}:${error.error}`));
+
+			runner.createContext().onIdle(() => {
+				throw new Error("idle callback failed");
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(errors).toEqual(["idle:idle callback failed"]);
+		});
 	});
 
 	describe("hasHandlers", () => {
