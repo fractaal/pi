@@ -1570,7 +1570,7 @@ export class AgentSession {
 		if (!command) return false;
 
 		// Get command context from extension runner (includes session control methods)
-		const ctx = this._extensionRunner.createCommandContext();
+		const ctx = this._extensionRunner.createCommandContext(command.sourceInfo.path);
 
 		try {
 			await command.handler(args, ctx);

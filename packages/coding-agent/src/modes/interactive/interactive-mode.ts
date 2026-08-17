@@ -1795,7 +1795,7 @@ export class InteractiveMode {
 		if (shortcuts.size === 0) return;
 
 		// Create a context for shortcut handlers
-		const createContext = (): ExtensionContext => ({
+		const createContext = (extensionPath: string): ExtensionContext => ({
 			ui: this.createExtensionUIContext(),
 			mode: "tui",
 			hasUI: true,
@@ -1806,7 +1806,7 @@ export class InteractiveMode {
 			scopedModels: this.session.scopedModels,
 			thinkingLevel: this.session.thinkingLevel,
 			isIdle: () => this.session.isIdle,
-			onIdle: (callback) => extensionRunner.registerIdleCallback(callback),
+			onIdle: (callback) => extensionRunner.registerIdleCallback(callback, extensionPath),
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
 			abort: () => {
@@ -1837,7 +1837,7 @@ export class InteractiveMode {
 				// Cast to KeyId - extension shortcuts use the same format
 				if (matchesKey(data, shortcutStr as KeyId)) {
 					// Run handler async, don't block input
-					Promise.resolve(shortcut.handler(createContext())).catch((err) => {
+					Promise.resolve(shortcut.handler(createContext(shortcut.extensionPath))).catch((err) => {
 						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
 					});
 					return true;
