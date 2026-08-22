@@ -15,7 +15,8 @@
  * 6. Commit and tag the release
  * 7. Add new [Unreleased] section to changelogs
  * 8. Commit next-cycle changelog updates
- * 9. Push main and the tag to trigger CI publishing
+ * 9. Stop. `main` is protected, so the release branch goes through a pull request
+ *    and `npm run release:tag` pushes the tag once the release commit is on main.
  *
  * The fork tags `fractaal-vX.Y.Z`. Upstream `v*` tags arrive through merges and
  * share the same Git tag namespace, so the release workflow keys off the fork
@@ -195,6 +196,15 @@ if (status && status.trim()) {
 }
 console.log("  Working directory clean\n");
 
+// `main` is protected, so release commits made here could never be pushed. Fail now
+// rather than after a full build and test run.
+const currentBranch = run("git rev-parse --abbrev-ref HEAD", { silent: true })?.trim();
+if (currentBranch === "main") {
+	console.error("Error: main is protected. Run this from a release branch based on current main, for example:");
+	console.error("  git checkout -b release/v<version> origin/main");
+	process.exit(1);
+}
+
 // 2. Bump or set version
 const version = bumpOrSetVersion(RELEASE_TARGET);
 console.log(`  New version: ${version}\n`);
@@ -246,10 +256,17 @@ stageChangedFiles();
 run(`git commit -m "Add [Unreleased] section for next cycle"`);
 console.log();
 
-// 9. Push
-console.log("Pushing to remote...");
-run("git push origin main");
-run(`git push origin ${releaseTag}`);
-console.log();
+// 9. Hand off to the pull request. `main` is protected (PR required, strict checks,
+// no bypass), so this stops here rather than pushing. The tag stays local until the
+// release commit is actually on main, which scripts/publish-release-tag.mjs proves.
+const branch = run("git rev-parse --abbrev-ref HEAD", { silent: true }).trim();
 
-console.log(`=== Prepared release ${releaseTag}; CI publishing starts after the tag push ===`);
+console.log(`=== Prepared release ${releaseTag} on ${branch} ===\n`);
+console.log("Nothing has been pushed. To publish:\n");
+console.log(`  1. git push -u origin ${branch}`);
+console.log(`  2. open a pull request into main and let build-check-test pass`);
+console.log(`  3. merge it with a merge commit, so ${releaseTag}'s commit stays on main`);
+console.log(`  4. git checkout main && git pull`);
+console.log(`  5. npm run release:tag -- ${releaseTag}`);
+console.log(`\nStep 5 pushes the tag only if its commit is reachable from origin/main,`);
+console.log(`and the release workflow publishes from that tag.`);
