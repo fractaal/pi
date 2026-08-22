@@ -206,7 +206,9 @@ console.log();
 
 // 4. Regenerate release artifacts
 console.log("Regenerating release artifacts...");
-run("npm run generate:models");
+// The model catalog is committed source. Refreshing it is a deliberate,
+// reviewable change (`npm run generate:models`), not a side effect of cutting a
+// release, so a release never silently ships a catalog nobody reviewed.
 run("npm run check:model-data");
 run("npm run shrinkwrap:coding-agent");
 run("npm run install-lock:coding-agent");

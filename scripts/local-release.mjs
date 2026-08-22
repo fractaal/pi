@@ -153,6 +153,10 @@ function buildBunBinaryRelease(targetDirectory, archiveDirectory) {
 		"--skip-install",
 		"--skip-deps",
 		"--skip-build",
+		// Same model-data preparation the release workflow uses. Without this the
+		// local smoke refreshes the committed catalog from live provider APIs and
+		// silently diverges from the commit it is supposed to be rehearsing.
+		"--offline-model-data",
 		"--platform",
 		platform,
 		"--out",
@@ -210,10 +214,6 @@ const nodeInstallDirectory = join(outDir, "node");
 const bunInstallDirectory = join(outDir, "bun-install");
 const binaryDirectory = join(outDir, "bun");
 mkdirSync(tarballDirectory, { recursive: true });
-
-// Release artifacts always use a freshly generated, strictly validated catalog,
-// including when checks or tests are explicitly skipped.
-run("npm", ["run", "generate:models"], { cwd: repoRoot });
 
 if (!options.skipCheck) {
 	run("npm", ["run", "check"], { cwd: repoRoot });
