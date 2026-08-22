@@ -19,7 +19,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -81,44 +81,63 @@ function resolveMainCommit(repoRoot) {
 	);
 }
 
-export function verifyReleaseSource(repoRoot, tag) {
-	const version = parseReleaseTag(tag);
-
-	const head = gitOrThrow(repoRoot, ["rev-parse", "HEAD^{commit}"], "Resolving HEAD");
+export function resolveTagTarget(repoRoot, tag) {
 	const tagTarget = git(repoRoot, ["rev-parse", "--verify", "--quiet", `refs/tags/${tag}^{commit}`]);
 	if (!tagTarget.ok || !tagTarget.stdout) {
 		throw new Error(`Release tag ${tag} does not exist in this checkout.`);
 	}
-	if (tagTarget.stdout !== head) {
-		throw new Error(
-			`Checked-out commit ${head} is not the ${tag} target ${tagTarget.stdout}. ` +
-				`Release runs build the tag itself; recovery reruns the same tag.`,
-		);
-	}
+	return tagTarget.stdout;
+}
+
+/**
+ * What makes a commit a release commit, independent of what happens to be checked
+ * out. Shared by the CI source check and the tag-push gate so the two cannot drift.
+ *
+ * Package versions are read out of the commit rather than the working tree: the tag
+ * gate runs from `main` after a merge, where the working tree is not the release
+ * commit at all.
+ */
+export function verifyReleaseCommit(repoRoot, tag, commit) {
+	const version = parseReleaseTag(tag);
 
 	const mainCommit = resolveMainCommit(repoRoot);
-	const reachable = git(repoRoot, ["merge-base", "--is-ancestor", head, mainCommit]);
+	const reachable = git(repoRoot, ["merge-base", "--is-ancestor", commit, mainCommit]);
 	if (!reachable.ok) {
-		throw new Error(`Release commit ${head} is not reachable from ${MAIN_BRANCH} (${mainCommit}).`);
+		throw new Error(`Release commit ${commit} is not reachable from ${MAIN_BRANCH} (${mainCommit}).`);
 	}
 
-	const subject = gitOrThrow(repoRoot, ["log", "-1", "--format=%s", head], "Reading the release commit subject");
+	const subject = gitOrThrow(repoRoot, ["log", "-1", "--format=%s", commit], "Reading the release commit subject");
 	const expectedSubject = `Release ${tag}`;
 	if (subject !== expectedSubject) {
 		throw new Error(
-			`Release commit ${head} has subject ${JSON.stringify(subject)}, expected ${JSON.stringify(expectedSubject)}.`,
+			`Release commit ${commit} has subject ${JSON.stringify(subject)}, expected ${JSON.stringify(expectedSubject)}.`,
 		);
 	}
 
 	for (const pkg of PUBLISHABLE_PACKAGES) {
-		const manifestPath = join(repoRoot, pkg.directory, "package.json");
-		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+		const manifestPath = `${pkg.directory}/package.json`;
+		const manifest = JSON.parse(
+			gitOrThrow(repoRoot, ["show", `${commit}:${manifestPath}`], `Reading ${manifestPath} at ${commit}`),
+		);
 		if (manifest.version !== version) {
 			throw new Error(`${pkg.directory} is at version ${manifest.version}, expected ${version} for ${tag}.`);
 		}
 	}
 
-	return { version, commit: head };
+	return { version, commit };
+}
+
+export function verifyReleaseSource(repoRoot, tag) {
+	const head = gitOrThrow(repoRoot, ["rev-parse", "HEAD^{commit}"], "Resolving HEAD");
+	const tagTarget = resolveTagTarget(repoRoot, tag);
+	if (tagTarget !== head) {
+		throw new Error(
+			`Checked-out commit ${head} is not the ${tag} target ${tagTarget}. ` +
+				`Release runs build the tag itself; recovery reruns the same tag.`,
+		);
+	}
+
+	return verifyReleaseCommit(repoRoot, tag, head);
 }
 
 /**

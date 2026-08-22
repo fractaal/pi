@@ -148,18 +148,28 @@ Attribution:
 
    Verify both Node and Bun startup, model/account listing, interactive startup, and at least one real prompt with the intended default provider. The bare commands `/tmp/pi-local-release/node/pi` and `/tmp/pi-local-release/bun/pi` start interactive mode; run each in tmux, submit a prompt, and wait for the model reply before considering the interactive smoke test passed. Failures are release blockers unless the user explicitly accepts the risk.
 
-3. **Run the release script**:
+3. **Prepare the release on a branch**. `main` is protected: pull request required, strict `build-check-test`, force-push and deletion blocked, no bypass. There is no admin override and protection is never relaxed for a release, so the release is prepared on a branch and the tag is pushed afterwards.
    ```bash
+   git checkout -b release/v<version> origin/main
    PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:patch    # fixes + additions
    PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:minor    # breaking changes
    ```
-   Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or shrinkwrap diffs the release creates before push.
+   Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or shrinkwrap diffs the release creates before pushing the branch.
 
-   The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check`, commits `Release fractaal-vX.Y.Z`, tags `fractaal-vX.Y.Z`, adds fresh `## [Unreleased]` changelog sections, commits `Add [Unreleased] section for next cycle`, then pushes `main` and the tag. Do not rerun the release script after a tag was pushed.
+   The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check` and the tests, commits `Release fractaal-vX.Y.Z`, creates the tag locally, adds fresh `## [Unreleased]` changelog sections, and commits `Add [Unreleased] section for next cycle`. It pushes nothing, and it refuses to run on `main`.
 
-4. **CI publishes npm packages**: pushing the `fractaal-vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The tag is the only publishable source, and every release output comes from one commit. `build` checks out the tag and `scripts/verify-release-source.mjs` fails the run unless the checked-out commit is the tag target, is reachable from `main`, has the subject `Release fractaal-vX.Y.Z`, and carries that version in every published manifest; `build` then exports that commit. `publish-npm` checks out that exact SHA rather than the tag, and immediately before publishing re-runs the verifier with `--remote`, which asks origin whether the public tag still points at it and fails closed if it moved after checkout. A recovery run reruns the same tag; there is no source-ref override. The `publish-npm` job runs check and test against the ordinary source tree, then applies `scripts/fractal-identity.mjs` and publishes through npm trusted publishing over GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, WebAuthn, or `NPM_TOKEN` is required. Publishing four packages by hand is retired.
+4. **Merge the release branch as a normal pull request**, with `build-check-test` green. **Merge it with a merge commit.** Squash and rebase merges create a new commit, which leaves the tag pointing at a commit that is not on `main`; the tag step then refuses to publish, by design. Both the release commit and the next-cycle commit stay reachable on `main`.
 
-5. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
+5. **Push the tag**:
+   ```bash
+   git checkout main && git pull
+   npm run release:tag -- fractaal-v<version>
+   ```
+   This is the irreversible step, so it proves everything first: the working tree is clean, `origin/main` is fetched fresh rather than read from a possibly stale local ref, the tag's commit carries the exact `Release fractaal-vX.Y.Z` subject and that version in every published manifest and is reachable from that fresh `origin/main`, and the remote tag is either absent or already exactly this commit. Rerunning after a successful push is a no-op. A remote tag pointing at a different commit is a hard stop: release tags are immutable, so publish a new version rather than moving one. Use `--dry-run` to verify without pushing.
+
+6. **CI publishes npm packages**: pushing the `fractaal-vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The tag is the only publishable source, and every release output comes from one commit. `build` checks out the tag and `scripts/verify-release-source.mjs` fails the run unless the checked-out commit is the tag target, is reachable from `main`, has the subject `Release fractaal-vX.Y.Z`, and carries that version in every published manifest; `build` then exports that commit. `publish-npm` checks out that exact SHA rather than the tag, and immediately before publishing re-runs the verifier with `--remote`, which asks origin whether the public tag still points at it and fails closed if it moved after checkout. A recovery run reruns the same tag; there is no source-ref override. The `publish-npm` job runs check and test against the ordinary source tree, then applies `scripts/fractal-identity.mjs` and publishes through npm trusted publishing over GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, WebAuthn, or `NPM_TOKEN` is required. Publishing four packages by hand is retired.
+
+7. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
 
 ## User Override
 
