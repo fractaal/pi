@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-08-22
+
+### Added
+
+- Added `Agent.drainQueuedMessages()` to return and clear all queued steering and follow-up messages regardless of queue mode, allowing runtimes to park them around transcript maintenance.
+
 ### Changed
 
-- `Agent.continue()` can prepend additional context to the next queued batch without changing steering or follow-up delivery order.
+- Changed `Agent.continue()` to accept optional additional messages, prepending them to queued steering or follow-up work without changing delivery order and using them as a new batch when no queued work exists.
 
 ### Fixed
 

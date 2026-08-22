@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+## [0.84.0] - 2026-08-22
+
 ### Added
 
 - Added OpenAI/Codex native compaction helpers that create and replay opaque checkpoints through the Responses API.
+
+### Fixed
+
+- Fixed OpenAI Responses reasoning summaries to remove provider-inserted HTML comment separators from visible thinking, including split deltas, while preserving signed replay payloads.
+- Fixed OpenAI Codex browser OAuth cancellation to close the loopback callback server and release port 1455 when login is aborted.
+- Fixed OpenAI Codex GPT-5.6 Sol, Terra, and Luna metadata to expose a 372,000-token context window.
 
 ## [0.83.0] - 2026-07-29
 
