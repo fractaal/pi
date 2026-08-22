@@ -294,6 +294,7 @@ export class ExtensionRunner {
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
+	private pendingIdleCallbacks: Set<() => void> = new Set();
 
 	constructor(
 		extensions: Extension[],
@@ -339,6 +340,7 @@ export class ExtensionRunner {
 		this.getModel = contextActions.getModel;
 		this.getScopedModels = contextActions.getScopedModels;
 		this.isIdleFn = contextActions.isIdle;
+		this.waitForIdleFn = contextActions.waitForIdle;
 		this.isProjectTrustedFn = contextActions.isProjectTrusted;
 		this.getSignalFn = contextActions.getSignal;
 		this.abortFn = contextActions.abort;
@@ -412,7 +414,6 @@ export class ExtensionRunner {
 
 	bindCommandContext(actions?: ExtensionCommandContextActions): void {
 		if (actions) {
-			this.waitForIdleFn = actions.waitForIdle;
 			this.newSessionHandler = actions.newSession;
 			this.forkHandler = actions.fork;
 			this.navigateTreeHandler = actions.navigateTree;
@@ -421,7 +422,6 @@ export class ExtensionRunner {
 			return;
 		}
 
-		this.waitForIdleFn = async () => {};
 		this.newSessionHandler = async () => ({ cancelled: false });
 		this.forkHandler = async () => ({ cancelled: false });
 		this.navigateTreeHandler = async () => ({ cancelled: false });
@@ -565,6 +565,53 @@ export class ExtensionRunner {
 		}
 	}
 
+	/**
+	 * Run `callback` once, at the next point where the agent loop is stopped and the current
+	 * run has fully unwound. Returns a function that cancels the pending callback.
+	 *
+	 * Deliberately callback-based rather than awaitable: extensions register from handlers
+	 * that the run itself is waiting on, so handing them a promise to await would let them
+	 * stall their own turn.
+	 *
+	 * Single delivery rests on two independent mechanisms, both load-bearing. The pending set
+	 * gates registration, so duplicate registrations of one reference do not each start their
+	 * own wait. Resolution then removes the entry before invoking, so a callback that already
+	 * fired can be registered again for a later idle point, and one that was unsubscribed does
+	 * not fire at all.
+	 *
+	 * `extensionPath` attributes a throwing callback to the extension that registered it.
+	 */
+	registerIdleCallback(callback: () => void, extensionPath = "<unknown>"): () => void {
+		const unsubscribe = (): void => {
+			this.pendingIdleCallbacks.delete(callback);
+		};
+		if (this.pendingIdleCallbacks.has(callback)) {
+			return unsubscribe;
+		}
+		this.pendingIdleCallbacks.add(callback);
+		const reportError = (err: unknown): void => {
+			this.emitError({
+				extensionPath,
+				event: "idle",
+				error: err instanceof Error ? err.message : String(err),
+				stack: err instanceof Error ? err.stack : undefined,
+			});
+		};
+		void this.waitForIdleFn().then(() => {
+			// Dropped if the caller unsubscribed, or if the session was replaced or reloaded
+			// while the callback was pending.
+			if (!this.pendingIdleCallbacks.delete(callback) || this.staleMessage) {
+				return;
+			}
+			try {
+				callback();
+			} catch (err) {
+				reportError(err);
+			}
+		}, reportError);
+		return unsubscribe;
+	}
+
 	hasHandlers(eventType: string): boolean {
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(eventType);
@@ -665,7 +712,7 @@ export class ExtensionRunner {
 	 * Create an ExtensionContext for use in event handlers and tool execution.
 	 * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
 	 */
-	createContext(): ExtensionContext {
+	createContext(extensionPath?: string): ExtensionContext {
 		const runner = this;
 		const getModel = this.getModel;
 		const getScopedModels = this.getScopedModels;
@@ -710,6 +757,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				return runner.isIdleFn();
 			},
+			onIdle: (callback) => {
+				runner.assertActive();
+				return runner.registerIdleCallback(callback, extensionPath);
+			},
 			isProjectTrusted: () => {
 				runner.assertActive();
 				return runner.isProjectTrustedFn();
@@ -745,13 +796,13 @@ export class ExtensionRunner {
 		};
 	}
 
-	createCommandContext(): ExtensionCommandContext {
+	createCommandContext(extensionPath?: string): ExtensionCommandContext {
 		// Use property descriptors instead of object spread so the guarded getters from
 		// createContext() stay lazy. A spread would eagerly read them once and freeze the
 		// old values into the returned object, bypassing stale-instance checks.
 		const context = Object.defineProperties(
 			{},
-			Object.getOwnPropertyDescriptors(this.createContext()),
+			Object.getOwnPropertyDescriptors(this.createContext(extensionPath)),
 		) as ExtensionCommandContext;
 		context.getSystemPromptOptions = () => {
 			this.assertActive();
@@ -794,12 +845,12 @@ export class ExtensionRunner {
 	}
 
 	async emit<TEvent extends RunnerEmitEvent>(event: TEvent): Promise<RunnerEmitResult<TEvent>> {
-		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -828,13 +879,13 @@ export class ExtensionRunner {
 	}
 
 	async emitMessageEnd(event: MessageEndEvent): Promise<AgentMessage | undefined> {
-		const ctx = this.createContext();
 		let currentMessage = event.message;
 		let modified = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("message_end");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -870,13 +921,13 @@ export class ExtensionRunner {
 	}
 
 	async emitToolResult(event: ToolResultEvent): Promise<ToolResultEventResult | undefined> {
-		const ctx = this.createContext();
 		const currentEvent: ToolResultEvent = { ...event };
 		let modified = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_result");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -925,12 +976,12 @@ export class ExtensionRunner {
 	}
 
 	async emitToolCall(event: ToolCallEvent): Promise<ToolCallEventResult | undefined> {
-		const ctx = this.createContext();
 		let result: ToolCallEventResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("tool_call");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				const handlerResult = await handler(event, ctx);
@@ -948,11 +999,10 @@ export class ExtensionRunner {
 	}
 
 	async emitUserBash(event: UserBashEvent): Promise<UserBashEventResult | undefined> {
-		const ctx = this.createContext();
-
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("user_bash");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -977,12 +1027,12 @@ export class ExtensionRunner {
 	}
 
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
-		const ctx = this.createContext();
 		let currentMessages = structuredClone(messages);
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("context");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -1009,12 +1059,12 @@ export class ExtensionRunner {
 	}
 
 	async emitBeforeProviderRequest(payload: unknown): Promise<unknown> {
-		const ctx = this.createContext();
 		let currentPayload = payload;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_provider_request");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -1043,11 +1093,10 @@ export class ExtensionRunner {
 	}
 
 	async emitBeforeProviderHeaders(headers: ProviderHeaders): Promise<ProviderHeaders> {
-		const ctx = this.createContext();
-
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_provider_headers");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -1081,20 +1130,20 @@ export class ExtensionRunner {
 		initiator: BeforeAgentStartEvent["initiator"] = "prompt",
 	): Promise<BeforeAgentStartCombinedResult | undefined> {
 		let currentSystemPrompt = systemPrompt;
-		const ctx = Object.defineProperties(
-			{},
-			Object.getOwnPropertyDescriptors(this.createContext()),
-		) as ExtensionContext;
-		ctx.getSystemPrompt = () => {
-			this.assertActive();
-			return currentSystemPrompt;
-		};
 		const messages: NonNullable<BeforeAgentStartEventResult["message"]>[] = [];
 		let systemPromptModified = false;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_agent_start");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = Object.defineProperties(
+				{},
+				Object.getOwnPropertyDescriptors(this.createContext(ext.path)),
+			) as ExtensionContext;
+			ctx.getSystemPrompt = () => {
+				this.assertActive();
+				return currentSystemPrompt;
+			};
 
 			for (const handler of handlers) {
 				try {
@@ -1149,7 +1198,6 @@ export class ExtensionRunner {
 		promptPaths: Array<{ path: string; extensionPath: string }>;
 		themePaths: Array<{ path: string; extensionPath: string }>;
 	}> {
-		const ctx = this.createContext();
 		const skillPaths: Array<{ path: string; extensionPath: string }> = [];
 		const promptPaths: Array<{ path: string; extensionPath: string }> = [];
 		const themePaths: Array<{ path: string; extensionPath: string }> = [];
@@ -1157,6 +1205,7 @@ export class ExtensionRunner {
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("resources_discover");
 			if (!handlers || handlers.length === 0) continue;
+			const ctx = this.createContext(ext.path);
 
 			for (const handler of handlers) {
 				try {
@@ -1196,11 +1245,11 @@ export class ExtensionRunner {
 		source: InputSource,
 		streamingBehavior?: "steer" | "followUp",
 	): Promise<InputEventResult> {
-		const ctx = this.createContext();
 		let currentText = text;
 		let currentImages = images;
 
 		for (const ext of this.extensions) {
+			const ctx = this.createContext(ext.path);
 			for (const handler of ext.handlers.get("input") ?? []) {
 				try {
 					const event: InputEvent = {

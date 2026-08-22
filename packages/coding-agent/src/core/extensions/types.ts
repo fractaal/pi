@@ -326,8 +326,27 @@ export interface ExtensionContext {
 	scopedModels: readonly ScopedModel[];
 	/** Current thinking level, when provided by the session runtime. */
 	thinkingLevel?: ThinkingLevel;
-	/** Whether the agent is idle (not streaming) */
+	/**
+	 * Whether the agent loop is stopped. False while Pi is processing an agent run,
+	 * automatic retry, compaction, or queued continuation.
+	 */
 	isIdle(): boolean;
+	/**
+	 * Run `callback` once, at the next point where the agent loop is stopped and the
+	 * current run has fully unwound, including automatic retries, compaction, and queued
+	 * continuations. Returns a function that cancels the pending callback.
+	 *
+	 * The callback never runs synchronously, so this is safe to call from any handler,
+	 * including ones Pi emits from within the run (`agent_settled`, `agent_end`,
+	 * `tool_result`, ...). Those handlers must return before the run can finish, so there
+	 * is deliberately nothing here to await.
+	 *
+	 * Registering a callback reference that is already pending is a no-op, the same way
+	 * `addEventListener` ignores a duplicate listener. Several events that collapse onto
+	 * one idle point therefore produce one callback, as long as the same function
+	 * reference is used each time.
+	 */
+	onIdle(callback: () => void): () => void;
 	/** Whether project-local trust is active for this context. */
 	isProjectTrusted(): boolean;
 	/** The current abort signal, or undefined when the agent is not streaming. */
@@ -354,7 +373,14 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	/** Get the current base system-prompt construction options. */
 	getSystemPromptOptions(): BuildSystemPromptOptions;
 
-	/** Wait for the agent to finish streaming */
+	/**
+	 * Wait for the agent loop to stop and the current run to fully unwind, including
+	 * automatic retries, compaction, and queued continuations.
+	 *
+	 * Only command handlers get this. A command runs alongside the agent loop, so
+	 * awaiting here is safe. Event handlers get {@link ExtensionContext.onIdle} instead,
+	 * because a run cannot finish until its handlers return.
+	 */
 	waitForIdle(): Promise<void>;
 
 	/** Start a new session, optionally with initialization. */
@@ -1625,6 +1651,7 @@ export interface ExtensionContextActions {
 	getModel: () => Model<any> | undefined;
 	getScopedModels: () => readonly ScopedModel[];
 	isIdle: () => boolean;
+	waitForIdle: () => Promise<void>;
 	isProjectTrusted: () => boolean;
 	getSignal: () => AbortSignal | undefined;
 	abort: () => void;
@@ -1641,7 +1668,6 @@ export interface ExtensionContextActions {
  * Only needed for interactive mode where extension commands are invokable.
  */
 export interface ExtensionCommandContextActions {
-	waitForIdle: () => Promise<void>;
 	newSession: (options?: {
 		parentSession?: string;
 		setup?: (sessionManager: SessionManager) => Promise<void>;

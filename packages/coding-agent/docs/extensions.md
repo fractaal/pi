@@ -1016,7 +1016,36 @@ pi.on("tool_result", async (event, ctx) => {
 
 ### ctx.isIdle() / ctx.abort() / ctx.hasPendingMessages()
 
-Control flow helpers. `ctx.isIdle()` is false while Pi is processing an agent run, automatic retry, auto-compaction retry, or queued continuation.
+Control flow helpers. `ctx.isIdle()` answers one question: is the agent loop running? It is false while Pi is processing an agent run, an automatic retry, a compaction (manual, threshold, or overflow, including the window between a manual compaction being requested and the barrier going up), or a queued continuation. Compaction counts as part of the loop, so extensions never have to model it separately.
+
+One boundary to know about: `ctx.isIdle()` flips to `true` the moment the loop stops, which is *before* `agent_settled` handlers run and before the run frame unwinds. Inside an `agent_settled` handler it therefore already reports `true`, while `ctx.onIdle()` has not fired yet. Use `ctx.isIdle()` to ask "is Pi busy right now"; use `ctx.onIdle()` when you need to act at the point the loop has actually finished.
+
+### ctx.onIdle(callback)
+
+Run `callback` once, at the next point where the agent loop is stopped and the current run has fully unwound, including automatic retries, compaction, and queued continuations. Returns a function that cancels the pending callback.
+
+```typescript
+pi.on("agent_settled", (_event, ctx) => {
+  ctx.onIdle(() => {
+    pi.sendUserMessage("continue");
+  });
+});
+```
+
+This is the level-triggered signal: it does not listen for an event, so it cannot miss one, and it does not care whether Pi is retrying, compacting, or draining a queued continuation on the way there. The callback never runs synchronously, so registering from a handler that the run itself is waiting on (`agent_settled`, `agent_end`, `tool_result`, ...) is safe. There is deliberately nothing to await: a run cannot finish until its handlers return, so an awaitable form would let an extension stall its own turn.
+
+Registering a callback reference that is already pending is a no-op, the same way `addEventListener` ignores a duplicate listener. This matters because several events routinely collapse onto one idle point, for example a settlement that is immediately followed by a compaction and its recovery run. Hold one stable function reference and register it as often as you like:
+
+```typescript
+const continueGoal = () => pi.sendUserMessage("continue");
+
+pi.on("agent_end", (_event, ctx) => ctx.onIdle(continueGoal));
+pi.on("agent_settled", (_event, ctx) => ctx.onIdle(continueGoal));
+```
+
+Registering a fresh arrow function each time defeats this and gives one callback per registration, which for a self-continuing extension means duplicate work at a single idle point.
+
+Command handlers additionally get [`ctx.waitForIdle()`](#ctxwaitforidle), an awaitable form that is safe there because a command runs alongside the agent loop rather than inside it.
 
 ### ctx.shutdown()
 
@@ -1098,16 +1127,18 @@ This reports the current base prompt inputs. It does not include per-turn `befor
 
 ### ctx.waitForIdle()
 
-Wait for the agent to fully settle, including automatic retries, auto-compaction retries, and queued continuations:
+Wait for the agent loop to stop and the current run to fully unwind, including automatic retries, compaction, and queued continuations:
 
 ```typescript
 pi.registerCommand("my-cmd", {
   handler: async (args, ctx) => {
     await ctx.waitForIdle();
-    // Agent is now idle, safe to modify session
+    // The agent loop is stopped, safe to modify the session.
   },
 });
 ```
+
+Only command handlers get this. A command runs alongside the agent loop, so awaiting here is safe. Event handlers get [`ctx.onIdle(callback)`](#ctxonidlecallback) instead, because a run cannot finish until its handlers return, and awaiting there would stall the turn.
 
 ### ctx.newSession(options?)
 

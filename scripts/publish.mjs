@@ -3,14 +3,12 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { PUBLISHABLE_PACKAGES } from "./fractal-identity.mjs";
 
-const packages = [
-	{ directory: "packages/ai", name: "@earendil-works/pi-ai" },
-	{ directory: "packages/agent", name: "@earendil-works/pi-agent-core" },
-	{ directory: "packages/storage/sqlite-node", name: "@earendil-works/pi-storage-sqlite-node" },
-	{ directory: "packages/tui", name: "@earendil-works/pi-tui" },
-	{ directory: "packages/coding-agent", name: "@earendil-works/pi-coding-agent" },
-];
+// This fork publishes the @fractaal/* family. scripts/fractal-identity.mjs applies
+// that identity to the manifests immediately before this script runs, and owns the
+// list so the packaging transform and the publish check cannot disagree.
+const packages = PUBLISHABLE_PACKAGES;
 
 const dryRun = process.argv.includes("--dry-run");
 const unknownArgs = process.argv.slice(2).filter((arg) => arg !== "--dry-run");
@@ -78,7 +76,10 @@ const packageVersions = new Map();
 for (const pkg of packages) {
 	const packageJson = readPackageJson(pkg.directory);
 	if (packageJson.name !== pkg.name) {
-		throw new Error(`${pkg.directory}/package.json has name ${packageJson.name}, expected ${pkg.name}`);
+		throw new Error(
+			`${pkg.directory}/package.json has name ${packageJson.name}, expected ${pkg.name}. ` +
+				`Run node scripts/fractal-identity.mjs <version> first.`,
+		);
 	}
 	packageVersions.set(pkg.name, packageJson.version);
 }

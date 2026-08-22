@@ -44,7 +44,6 @@ import {
 	APP_NAME,
 	APP_TITLE,
 	CONFIG_DIR_NAME,
-	DISPLAY_VERSION,
 	getAgentDir,
 	getAuthPath,
 	getDebugLogPath,
@@ -731,7 +730,7 @@ export class InteractiveMode {
 
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${DISPLAY_VERSION}`);
+			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${VERSION}`);
 
 			// Build startup instructions using keybinding hint helpers
 			const hint = (keybinding: AppKeybinding, description: string) => keyHint(keybinding, description);
@@ -1644,7 +1643,6 @@ export class InteractiveMode {
 				this.restoreQueuedMessagesToEditor({ abort: true });
 			},
 			commandContextActions: {
-				waitForIdle: () => this.session.waitForIdle(),
 				newSession: async (options) => {
 					this.clearStatusIndicator();
 					try {
@@ -1796,7 +1794,7 @@ export class InteractiveMode {
 		if (shortcuts.size === 0) return;
 
 		// Create a context for shortcut handlers
-		const createContext = (): ExtensionContext => ({
+		const createContext = (extensionPath: string): ExtensionContext => ({
 			ui: this.createExtensionUIContext(),
 			mode: "tui",
 			hasUI: true,
@@ -1807,6 +1805,7 @@ export class InteractiveMode {
 			scopedModels: this.session.scopedModels,
 			thinkingLevel: this.session.thinkingLevel,
 			isIdle: () => this.session.isIdle,
+			onIdle: (callback) => extensionRunner.registerIdleCallback(callback, extensionPath),
 			isProjectTrusted: () => this.settingsManager.isProjectTrusted(),
 			signal: this.session.agent.signal,
 			abort: () => {
@@ -1837,7 +1836,7 @@ export class InteractiveMode {
 				// Cast to KeyId - extension shortcuts use the same format
 				if (matchesKey(data, shortcutStr as KeyId)) {
 					// Run handler async, don't block input
-					Promise.resolve(shortcut.handler(createContext())).catch((err) => {
+					Promise.resolve(shortcut.handler(createContext(shortcut.extensionPath))).catch((err) => {
 						this.showError(`Shortcut handler error: ${err instanceof Error ? err.message : String(err)}`);
 					});
 					return true;

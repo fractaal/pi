@@ -4,8 +4,14 @@ import { getPiUserAgent } from "./pi-user-agent.ts";
 
 const LATEST_VERSION_URL = "https://pi.dev/api/latest-version";
 const DEFAULT_VERSION_CHECK_TIMEOUT_MS = 10000;
-/** The dist-tag this fork publishes under; also its piConfig.buildSignature. */
-const FORK_DIST_TAG = "fractal";
+/** Marks a build produced from this fork; carried in piConfig.buildSignature. */
+const FORK_BUILD_SIGNATURE = "fractal";
+/**
+ * Fork releases are ordinary stable SemVer on npm's ordinary `latest` tag, the
+ * same as any maintained package. The retired `fractal` dist-tag is deliberately
+ * not consulted: reading it would resurrect the parallel release channel.
+ */
+const FORK_DIST_TAG = "latest";
 /**
  * Scope the fork publishes under. Checked alongside the build signature because
  * this repo carries `buildSignature: "fractal"` in source while keeping upstream's
@@ -46,8 +52,7 @@ export function isNewerPackageVersion(candidateVersion: string, currentVersion: 
  * with upstream. Returning this fork's own name makes that clause unreachable.
  *
  * Fails closed: a registry error yields undefined ("no update available"), never
- * a fallback to upstream. Reads the `fractal` tag explicitly, never `latest`,
- * which is stale on this scope and would silently downgrade.
+ * a fallback to upstream.
  */
 async function getLatestForkRelease(
 	currentVersion: string,
@@ -74,7 +79,7 @@ export async function getLatestPiRelease(
 	options: { timeoutMs?: number } = {},
 ): Promise<LatestPiRelease | undefined> {
 	if (process.env.PI_OFFLINE) return undefined;
-	if (BUILD_SIGNATURE === FORK_DIST_TAG && PACKAGE_NAME.startsWith(FORK_PACKAGE_SCOPE)) {
+	if (BUILD_SIGNATURE === FORK_BUILD_SIGNATURE && PACKAGE_NAME.startsWith(FORK_PACKAGE_SCOPE)) {
 		return getLatestForkRelease(currentVersion, options);
 	}
 

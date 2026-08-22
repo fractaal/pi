@@ -491,8 +491,10 @@ export const APP_NAME: string = piConfigName || "pi";
 export const APP_TITLE: string = piConfigName ? APP_NAME : "π";
 export const CONFIG_DIR_NAME: string = pkg.piConfig?.configDir || ".pi";
 export const VERSION: string = pkg.version || "0.0.0";
+// Identifies a build produced from this fork. Internal only: it routes update checks
+// (see utils/version-check.ts) and must never be appended to the displayed version,
+// which is the exact published package version.
 export const BUILD_SIGNATURE: string | undefined = pkg.piConfig?.buildSignature;
-export const DISPLAY_VERSION: string = BUILD_SIGNATURE ? `${VERSION}-${BUILD_SIGNATURE}` : VERSION;
 
 // e.g., PI_CODING_AGENT_DIR or TAU_CODING_AGENT_DIR
 export const ENV_AGENT_DIR = `${APP_NAME.toUpperCase()}_CODING_AGENT_DIR`;

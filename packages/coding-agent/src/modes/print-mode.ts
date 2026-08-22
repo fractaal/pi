@@ -73,7 +73,6 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		await session.bindExtensions({
 			mode: mode === "json" ? "json" : "print",
 			commandContextActions: {
-				waitForIdle: () => session.waitForIdle(),
 				newSession: async (newSessionOptions) => runtimeHost.newSession(newSessionOptions),
 				fork: async (entryId, forkOptions) => {
 					const result = await runtimeHost.fork(entryId, forkOptions);

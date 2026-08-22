@@ -6,8 +6,18 @@
 
 - **OpenAI/Codex native compaction** — The coding-agent SDK can persist and replay opaque checkpoints through session resume, forks, and context-overflow recovery.
 
+### Breaking Changes
+
+- Moved `waitForIdle` from `ExtensionCommandContextActions` to `ExtensionContextActions`. Hosts that build these action objects themselves must now supply `waitForIdle` in the core context actions and remove it from the command context actions.
+- Added a required `onIdle` to `ExtensionContext`. Hosts that construct an extension context by hand, rather than through `ExtensionRunner.createContext()`, must supply it; `ExtensionRunner.registerIdleCallback()` is the intended implementation.
+
+### Added
+
+- Added `ctx.onIdle(callback)` to the base extension context, so event handlers, tools, and shortcuts can act when the agent loop stops without modelling compaction. Duplicate registrations of the same callback reference collapse to one call. See [ctx.onIdle(callback)](docs/extensions.md#ctxonidlecallback).
+
 ### Fixed
 
+- Fixed `ctx.isIdle()` and `session.isIdle` reporting idle while a requested manual compaction was already deferring new messages.
 - Fixed extension loading of `@earendil-works/pi-ai/api/openai-codex-responses` in Node and compiled builds.
 - Fixed messages queued during OpenAI native threshold compaction failing to resume from the opaque checkpoint.
 - Fixed length-truncated responses settling after threshold compaction instead of replaying empty output or continuing partial output.

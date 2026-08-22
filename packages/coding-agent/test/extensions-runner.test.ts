@@ -92,6 +92,7 @@ describe("ExtensionRunner", () => {
 	const extensionContextActions: ExtensionContextActions = {
 		getModel: () => undefined,
 		isIdle: () => true,
+		waitForIdle: async () => {},
 		isProjectTrusted: () => true,
 		getSignal: () => undefined,
 		abort: () => {},
@@ -914,7 +915,6 @@ describe("ExtensionRunner", () => {
 			const fork = vi.fn(async () => ({ cancelled: false }));
 
 			runner.bindCommandContext({
-				waitForIdle: async () => {},
 				newSession: async () => ({ cancelled: false }),
 				fork,
 				navigateTree: async () => ({ cancelled: false }),
@@ -928,6 +928,146 @@ describe("ExtensionRunner", () => {
 
 			await commandContext.fork("entry-2", { position: "at" });
 			expect(fork).toHaveBeenLastCalledWith("entry-2", { position: "at" });
+		});
+
+		it("keeps waitForIdle on the command context and off the event context", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			const waitForIdle = vi.fn(async () => {});
+			runner.bindCore(extensionActions, { ...extensionContextActions, waitForIdle });
+			// Hosts without command bindings: print mode, rpc mode, and Aria Local Runtime.
+			runner.bindCommandContext(undefined);
+
+			const eventContext = runner.createContext();
+			expect(eventContext.onIdle).toBeTypeOf("function");
+			expect((eventContext as unknown as Record<string, unknown>).waitForIdle).toBeUndefined();
+
+			// createCommandContext() copies property descriptors; waitForIdle must survive it.
+			const commandContext = runner.createCommandContext();
+			expect(commandContext.onIdle).toBeTypeOf("function");
+			await commandContext.waitForIdle();
+			expect(waitForIdle).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe("idle callbacks", () => {
+		it("registers a pending callback reference once and honours unsubscribe", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			let releaseIdle: () => void = () => undefined;
+			const idle = new Promise<void>((resolve) => {
+				releaseIdle = resolve;
+			});
+			runner.bindCore(extensionActions, { ...extensionContextActions, waitForIdle: () => idle });
+
+			const ctx = runner.createContext();
+			const callback = vi.fn();
+			const cancelled = vi.fn();
+			ctx.onIdle(callback);
+			ctx.onIdle(callback);
+			ctx.onIdle(callback);
+			const unsubscribe = ctx.onIdle(cancelled);
+			unsubscribe();
+
+			expect(callback).not.toHaveBeenCalled();
+			releaseIdle();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(callback).toHaveBeenCalledTimes(1);
+			expect(cancelled).not.toHaveBeenCalled();
+		});
+
+		it("starts one wait for duplicate registrations of the same callback", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			let releaseIdle: () => void = () => undefined;
+			const idle = new Promise<void>((resolve) => {
+				releaseIdle = resolve;
+			});
+			const waitForIdle = vi.fn(() => idle);
+			runner.bindCore(extensionActions, { ...extensionContextActions, waitForIdle });
+
+			const ctx = runner.createContext();
+			const callback = vi.fn();
+			ctx.onIdle(callback);
+			ctx.onIdle(callback);
+			ctx.onIdle(callback);
+
+			// A pending reference must not queue another wait behind it.
+			expect(waitForIdle).toHaveBeenCalledTimes(1);
+			releaseIdle();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(callback).toHaveBeenCalledTimes(1);
+		});
+
+		it("accepts the same callback again once it has fired", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			let releaseIdle: () => void = () => undefined;
+			const nextIdle = () =>
+				new Promise<void>((resolve) => {
+					releaseIdle = resolve;
+				});
+			let idle = nextIdle();
+			runner.bindCore(extensionActions, { ...extensionContextActions, waitForIdle: () => idle });
+
+			const ctx = runner.createContext();
+			const callback = vi.fn();
+			ctx.onIdle(callback);
+			releaseIdle();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(callback).toHaveBeenCalledTimes(1);
+
+			// Resolution must release the reference, or a self-continuing extension only ever
+			// gets one callback for the life of the session.
+			idle = nextIdle();
+			ctx.onIdle(callback);
+			releaseIdle();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(callback).toHaveBeenCalledTimes(2);
+		});
+
+		it("attributes a throwing idle callback to the extension that registered it", async () => {
+			const extensionCode = (marker: string) => `
+				export default function(pi) {
+					pi.on("context", async (_event, ctx) => {
+						ctx.onIdle(() => {
+							throw new Error("idle failure from ${marker}");
+						});
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "idle-a.ts"), extensionCode("a"));
+			fs.writeFileSync(path.join(extensionsDir, "idle-b.ts"), extensionCode("b"));
+
+			const loaded = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore(extensionActions, extensionContextActions);
+			const errors: Array<{ extensionPath: string; event: string; error: string }> = [];
+			runner.onError((error) => errors.push(error));
+
+			await runner.emitContext([]);
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(errors).toHaveLength(2);
+			expect(errors.every((error) => error.event === "idle")).toBe(true);
+			const attributed = errors.map((error) => `${path.basename(error.extensionPath)}:${error.error}`).sort();
+			expect(attributed).toEqual(["idle-a.ts:idle failure from a", "idle-b.ts:idle failure from b"]);
+		});
+
+		it("reports a throwing idle callback through the extension error channel", async () => {
+			const runtime = createExtensionRuntime();
+			const runner = new ExtensionRunner([], runtime, tempDir, sessionManager, modelRegistry);
+			runner.bindCore(extensionActions, extensionContextActions);
+			const errors: string[] = [];
+			runner.onError((error) => errors.push(`${error.event}:${error.error}`));
+
+			runner.createContext().onIdle(() => {
+				throw new Error("idle callback failed");
+			});
+			await new Promise((resolve) => setTimeout(resolve, 0));
+
+			expect(errors).toEqual(["idle:idle callback failed"]);
 		});
 	});
 

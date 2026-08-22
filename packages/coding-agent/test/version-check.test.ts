@@ -72,14 +72,16 @@ describe("version checks", () => {
 		});
 	});
 
-	it("resolves this fork's own dist-tag instead of the upstream version api", async () => {
+	it("resolves the fork package's latest dist-tag instead of the upstream version api", async () => {
 		vi.doMock("../src/config.ts", async (importOriginal) => ({
 			...(await importOriginal<typeof import("../src/config.ts")>()),
 			BUILD_SIGNATURE: "fractal",
 			PACKAGE_NAME: "@fractaal/pi-coding-agent",
 		}));
+		// The retired parallel channel is still served here. Reading it would be a
+		// silent regression to the old release model, so the fork must ignore it.
 		const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) =>
-			Response.json({ latest: "0.80.3", fractal: "0.83.0-fractal.2", requested: String(input) }),
+			Response.json({ latest: "0.84.0", fractal: "0.83.0-fractal.6", requested: String(input) }),
 		);
 		vi.stubGlobal("fetch", fetchMock);
 		vi.resetModules();
@@ -88,12 +90,43 @@ describe("version checks", () => {
 		// Returning the installed package name is the point: the self-update guard
 		// installs unconditionally when the reported name differs, so a fork build
 		// reporting upstream's name would replace itself with upstream.
-		await expect(forkAware("0.83.0-fractal.1")).resolves.toEqual({
+		await expect(forkAware("0.83.0")).resolves.toEqual({
 			packageName: "@fractaal/pi-coding-agent",
-			version: "0.83.0-fractal.2",
+			version: "0.84.0",
 		});
 		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("registry.npmjs.org");
+		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("%40fractaal%2Fpi-coding-agent");
 		expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain("pi.dev");
+		vi.doUnmock("../src/config.ts");
+	});
+
+	it("reports the exact package version, with no fork suffix", async () => {
+		// The published package is exactly 0.84.0; appending the build signature would
+		// make --version and the startup header state a version that does not exist.
+		const { BUILD_SIGNATURE, VERSION } = await import("../src/config.ts");
+		expect(BUILD_SIGNATURE).toBe("fractal");
+		expect(VERSION).not.toContain("-fractal");
+		expect(VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+	});
+
+	it("keeps an in-repo development build on the upstream version api", async () => {
+		// The source tree carries buildSignature "fractal" while keeping upstream's
+		// package name. Only a published fork build has both, and only a published
+		// build can be clobbered by a self-update.
+		vi.doMock("../src/config.ts", async (importOriginal) => ({
+			...(await importOriginal<typeof import("../src/config.ts")>()),
+			BUILD_SIGNATURE: "fractal",
+			PACKAGE_NAME: "@earendil-works/pi-coding-agent",
+		}));
+		const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+			Response.json({ version: "1.2.4" }),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		vi.resetModules();
+		const { getLatestPiRelease: devBuild } = await import("../src/utils/version-check.ts");
+
+		await expect(devBuild("1.2.3")).resolves.toEqual({ version: "1.2.4" });
+		expect(String(fetchMock.mock.calls[0]?.[0])).toContain("pi.dev");
 		vi.doUnmock("../src/config.ts");
 	});
 
@@ -110,7 +143,7 @@ describe("version checks", () => {
 		vi.resetModules();
 		const { getLatestPiRelease: forkAware } = await import("../src/utils/version-check.ts");
 
-		await expect(forkAware("0.83.0-fractal.1")).resolves.toBeUndefined();
+		await expect(forkAware("0.84.0")).resolves.toBeUndefined();
 		vi.doUnmock("../src/config.ts");
 	});
 

@@ -351,7 +351,9 @@ describe("AgentSession compaction characterization", () => {
 		expect(compactionStarted).toBe(true);
 		expect(providerTexts.filter((text) => text === "queued while settling")).toHaveLength(1);
 		expect(harness.session.pendingMessageCount).toBe(0);
-		expect(publicLifecycle).toEqual(["agent_settled:true:false", "compaction_start", "agent_settled:true:false"]);
+		// The first settlement happens with a manual compaction already requested, so the
+		// session is not idle: ingress is blocked and a send would be deferred.
+		expect(publicLifecycle).toEqual(["agent_settled:false:false", "compaction_start", "agent_settled:true:false"]);
 	});
 
 	it("keeps the manual barrier active while aborting an in-flight agent run", async () => {
@@ -1310,5 +1312,136 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(belowThresholdSpy).not.toHaveBeenCalled();
 		expect(disabledSpy).not.toHaveBeenCalled();
+	});
+
+	it("reports busy while a requested manual compaction is still deferring messages", async () => {
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", (event) => ({
+						compaction: {
+							summary: "pending window compaction",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+							details: {},
+						},
+					}));
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		// compact() marks the session as pending and yields before raising the barrier.
+		const compactPromise = harness.session.compact();
+		expect(harness.session.isCompactionIngressBlocked).toBe(true);
+		expect(harness.session.isIdle).toBe(false);
+
+		await expect(compactPromise).resolves.toMatchObject({ summary: "pending window compaction" });
+		expect(harness.session.isIdle).toBe(true);
+	});
+
+	it("runs ctx.onIdle() callbacks from an event handler only after the agent run settles", async () => {
+		const order: string[] = [];
+		let settledCallbackRan = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("agent_start", (_event, ctx) => {
+						ctx.onIdle(() => {
+							order.push("idle");
+						});
+					});
+					pi.on("agent_settled", (_event, ctx) => {
+						order.push("settled");
+						// Registering from a handler the run is waiting on is safe: the
+						// callback runs after the handler returns and the run unwinds.
+						ctx.onIdle(() => {
+							settledCallbackRan = true;
+						});
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		await harness.session.prompt("hello");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(order).toEqual(["settled", "idle"]);
+		expect(settledCallbackRan).toBe(true);
+	});
+
+	it("runs one ctx.onIdle() callback when several events collapse onto one idle point", async () => {
+		let continuations = 0;
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					// A stable reference, the way a Goal-style extension would hold one.
+					const onIdleContinue = () => {
+						continuations += 1;
+					};
+					pi.on("agent_start", (_event, ctx) => {
+						ctx.onIdle(onIdleContinue);
+					});
+					pi.on("agent_end", (_event, ctx) => {
+						ctx.onIdle(onIdleContinue);
+					});
+					pi.on("agent_settled", (_event, ctx) => {
+						ctx.onIdle(onIdleContinue);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		await harness.session.prompt("hello");
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(continuations).toBe(1);
+	});
+
+	it("keeps ctx.onIdle() pending for an event handler until compaction finishes", async () => {
+		let idleCallbackRan = false;
+		let finishCompaction: (() => void) | undefined;
+		const harness = await createHarness({
+			settings: { compaction: { keepRecentTokens: 1 } },
+			extensionFactories: [
+				(pi) => {
+					pi.on("session_before_compact", async (event, ctx) => {
+						ctx.onIdle(() => {
+							idleCallbackRan = true;
+						});
+						return await new Promise((resolve) => {
+							finishCompaction = () =>
+								resolve({
+									compaction: {
+										summary: "completed manual compaction",
+										firstKeptEntryId: event.preparation.firstKeptEntryId,
+										tokensBefore: event.preparation.tokensBefore,
+										details: {},
+									},
+								});
+						});
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+
+		const compactPromise = harness.session.compact();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(finishCompaction).toBeTypeOf("function");
+		expect(idleCallbackRan).toBe(false);
+
+		finishCompaction?.();
+		await expect(compactPromise).resolves.toMatchObject({ summary: "completed manual compaction" });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(idleCallbackRan).toBe(true);
 	});
 });

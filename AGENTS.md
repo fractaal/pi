@@ -121,6 +121,8 @@ Attribution:
 
 **Lockstep versioning**: all packages share one version; every release updates all together. `patch` = fixes + additions, `minor` = breaking changes. No major releases.
 
+**This fork publishes `@fractaal/pi-ai`, `@fractaal/pi-agent-core`, `@fractaal/pi-tui`, and `@fractaal/pi-coding-agent`** at ordinary stable SemVer on npm's ordinary `latest` tag. There is no `-fractal.N` version suffix and no `fractal` dist-tag. The source tree keeps upstream's `@earendil-works/*` names so upstream merges stay mechanical; `scripts/fractal-identity.mjs` applies the fork identity to the manifests in CI, immediately before publishing, and is the only place that transformation exists. Release tags are `fractaal-vX.Y.Z`, because upstream `v*` tags arrive through merges and share the same Git tag namespace.
+
 1. **Update CHANGELOGs**: ask the user whether they ran the `/cl` prompt on the latest commit on `main`. If not, they must run `/cl` first to audit and update each package's `[Unreleased]` section before releasing.
 
 2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
@@ -142,6 +144,8 @@ Attribution:
    /tmp/pi-local-release/bun/pi -p "Say exactly: ok"
    /tmp/pi-local-release/bun/pi
    ```
+   Before a version exists on npm, add `--skip-bun-install` and apply the fork identity first (`node scripts/fractal-identity.mjs <version>`), then restore the manifests afterwards. The published internal edges are npm aliases (`"@earendil-works/pi-ai": "npm:@fractaal/pi-ai@X"`); npm `overrides` redirect those to the local tarballs, but Bun resolves the alias from the registry regardless and cannot install an unpublished version. The Bun binary smoke at `bun/pi` is unaffected, because it is built from the workspace rather than from tarballs.
+
    Verify both Node and Bun startup, model/account listing, interactive startup, and at least one real prompt with the intended default provider. The bare commands `/tmp/pi-local-release/node/pi` and `/tmp/pi-local-release/bun/pi` start interactive mode; run each in tmux, submit a prompt, and wait for the model reply before considering the interactive smoke test passed. Failures are release blockers unless the user explicitly accepts the risk.
 
 3. **Run the release script**:
@@ -151,9 +155,9 @@ Attribution:
    ```
    Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or shrinkwrap diffs the release creates before push.
 
-   The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check`, commits `Release vX.Y.Z`, tags `vX.Y.Z`, adds fresh `## [Unreleased]` changelog sections, commits `Add [Unreleased] section for next cycle`, then pushes `main` and the tag. Do not rerun the release script after a tag was pushed.
+   The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check`, commits `Release fractaal-vX.Y.Z`, tags `fractaal-vX.Y.Z`, adds fresh `## [Unreleased]` changelog sections, commits `Add [Unreleased] section for next cycle`, then pushes `main` and the tag. Do not rerun the release script after a tag was pushed.
 
-4. **CI publishes npm packages**: pushing the `vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The `publish-npm` job uses npm trusted publishing through GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, or WebAuthn flow is required.
+4. **CI publishes npm packages**: pushing the `fractaal-vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The tag is the only publishable source, and every release output comes from one commit. `build` checks out the tag and `scripts/verify-release-source.mjs` fails the run unless the checked-out commit is the tag target, is reachable from `main`, has the subject `Release fractaal-vX.Y.Z`, and carries that version in every published manifest; `build` then exports that commit. `publish-npm` checks out that exact SHA rather than the tag, and immediately before publishing re-runs the verifier with `--remote`, which asks origin whether the public tag still points at it and fails closed if it moved after checkout. A recovery run reruns the same tag; there is no source-ref override. The `publish-npm` job runs check and test against the ordinary source tree, then applies `scripts/fractal-identity.mjs` and publishes through npm trusted publishing over GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, WebAuthn, or `NPM_TOKEN` is required. Publishing four packages by hand is retired.
 
 5. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
 
