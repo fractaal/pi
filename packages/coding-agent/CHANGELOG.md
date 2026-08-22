@@ -2,26 +2,34 @@
 
 ## [Unreleased]
 
-### New Features
+### Added
 
 - **OpenAI/Codex native compaction** — The coding-agent SDK can persist and replay opaque checkpoints through session resume, forks, and context-overflow recovery.
+- Added `ctx.onIdle(callback)` to the base extension context, so event handlers, tools, and shortcuts can act when the agent loop stops without modelling compaction. Duplicate registrations of the same callback reference collapse to one call. See [ctx.onIdle(callback)](docs/extensions.md#ctxonidlecallback).
+- Added `BeforeAgentStartEvent.initiator` (`"prompt"` or `"custom_message"`) so extensions can distinguish normal prompts from idle custom trigger turns.
 
 ### Breaking Changes
 
-- Moved `waitForIdle` from `ExtensionCommandContextActions` to `ExtensionContextActions`. Hosts that build these action objects themselves must now supply `waitForIdle` in the core context actions and remove it from the command context actions.
-- Added a required `onIdle` to `ExtensionContext`. Hosts that construct an extension context by hand, rather than through `ExtensionRunner.createContext()`, must supply it; `ExtensionRunner.registerIdleCallback()` is the intended implementation.
+- Changed the extension action binding contract: `ExtensionContextActions` now supplies required `waitForIdle`, while `ExtensionCommandContextActions` no longer does. `ExtensionCommandContext.waitForIdle()` remains the awaitable API for command handlers; event handlers use `ctx.onIdle(callback)` instead.
+- Added a required `onIdle` to `ExtensionContext`. Hosts that construct an extension context by hand must supply it; `ExtensionRunner.createContext()` supplies it automatically.
+- Changed `AgentSessionEvent.auto_retry_start.maxAttempts` from `number` to `number | null`; consumers must handle `null` for the default unbounded retry mode.
 
-### Added
+### Changed
 
-- Added `ctx.onIdle(callback)` to the base extension context, so event handlers, tools, and shortcuts can act when the agent loop stops without modelling compaction. Duplicate registrations of the same callback reference collapse to one call. See [ctx.onIdle(callback)](docs/extensions.md#ctxonidlecallback).
+- Changed the default agent-level retry policy from three attempts to unbounded retries when `retry.maxRetries` is unset; exponential backoff remains capped at 10 seconds, and a finite setting still caps attempts.
+- Changed compaction `willRetry` semantics to mean that Pi core will resume the interrupted turn, including threshold compaction after a length-truncated response, not only overflow recovery.
 
 ### Fixed
 
-- Fixed `ctx.isIdle()` and `session.isIdle` reporting idle while a requested manual compaction was already deferring new messages.
+- Fixed compaction and overflow recovery to use a stop-the-world barrier that parks queued steering, follow-ups, and extension-triggered turns, prevents overflow messages from being masked, resumes parked work after successful recovery, and leaves it recoverable after cancellation or failure.
+- Fixed compaction cut-point selection to count custom messages and keep provider-valid tool-call/result suffixes, removing orphan tool results instead of emitting broken replay context.
+- Fixed idle `triggerTurn` custom messages to run `before_agent_start` before their agent loop and reset run-scoped system-prompt overrides after settlement; queued and append-only custom messages do not rerun the hook.
+- Fixed `ctx.isIdle()` and `session.isIdle` to remain busy during retries, compaction, manual-compaction pending state, and queued continuations.
 - Fixed extension loading of `@earendil-works/pi-ai/api/openai-codex-responses` in Node and compiled builds.
 - Fixed messages queued during OpenAI native threshold compaction failing to resume from the opaque checkpoint.
 - Fixed length-truncated responses settling after threshold compaction instead of replaying empty output or continuing partial output.
-- Fixed GPT-5.6 models resolving to a smaller context window after remote catalog refreshes.
+- Fixed fork self-update checks to read the published `@fractaal` package's npm `latest` tag and fail closed instead of replacing the fork with upstream.
+- Fixed GPT-5.6 Codex models retaining their 372,000-token context windows after remote catalog refreshes.
 
 ## [0.83.0] - 2026-07-29
 
