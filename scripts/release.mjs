@@ -16,11 +16,16 @@
  * 7. Add new [Unreleased] section to changelogs
  * 8. Commit next-cycle changelog updates
  * 9. Push main and the tag to trigger CI publishing
+ *
+ * The fork tags `fractaal-vX.Y.Z`. Upstream `v*` tags arrive through merges and
+ * share the same Git tag namespace, so the release workflow keys off the fork
+ * prefix only.
  */
 
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { RELEASE_TAG_PREFIX } from "./fractal-identity.mjs";
 import { findPackageDirectories } from "./package-workspaces.mjs";
 
 const RELEASE_TARGET = process.argv[2];
@@ -222,9 +227,10 @@ console.log();
 
 // 6. Commit and tag
 console.log("Committing and tagging...");
+const releaseTag = `${RELEASE_TAG_PREFIX}${version}`;
 stageChangedFiles();
-run(`git commit -m "Release v${version}"`);
-run(`git tag v${version}`);
+run(`git commit -m "Release ${releaseTag}"`);
+run(`git tag ${releaseTag}`);
 console.log();
 
 // 7. Add new [Unreleased] sections
@@ -241,7 +247,7 @@ console.log();
 // 9. Push
 console.log("Pushing to remote...");
 run("git push origin main");
-run(`git push origin v${version}`);
+run(`git push origin ${releaseTag}`);
 console.log();
 
-console.log(`=== Prepared release v${version}; CI publishing starts after the tag push ===`);
+console.log(`=== Prepared release ${releaseTag}; CI publishing starts after the tag push ===`);

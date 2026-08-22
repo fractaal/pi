@@ -42,6 +42,3 @@ plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
-
-# Fork release staging (scripts/publish-fractal.mjs)
-.publish/
