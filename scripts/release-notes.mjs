@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { FORK_REPOSITORY, RELEASE_TAG_PREFIX } from "./fractal-identity.mjs";
 
 const DEFAULT_REPO = "earendil-works/pi";
 const DEFAULT_BASE_PATH = "packages/coding-agent";
@@ -63,7 +64,7 @@ function parseOptions(args) {
 		changelog: DEFAULT_CHANGELOG,
 		dryRun: false,
 		out: undefined,
-		repo: DEFAULT_REPO,
+		repo: undefined,
 		sinceTag: DEFAULT_FIX_SINCE_TAG,
 		tag: undefined,
 		version: undefined,
@@ -106,11 +107,18 @@ function normalizeTag(tagOrVersion) {
 	if (!tagOrVersion) {
 		return undefined;
 	}
-	return tagOrVersion.startsWith("v") ? tagOrVersion : `v${tagOrVersion}`;
+	return tagOrVersion.startsWith(RELEASE_TAG_PREFIX) || tagOrVersion.startsWith("v")
+		? tagOrVersion
+		: `v${tagOrVersion}`;
 }
 
 function versionFromTag(tag) {
+	if (tag.startsWith(RELEASE_TAG_PREFIX)) return tag.slice(RELEASE_TAG_PREFIX.length);
 	return tag.startsWith("v") ? tag.slice(1) : tag;
+}
+
+function repositoryForTag(tag) {
+	return tag?.startsWith(RELEASE_TAG_PREFIX) ? FORK_REPOSITORY : DEFAULT_REPO;
 }
 
 function compareVersions(a, b) {
@@ -258,10 +266,11 @@ function extractReleaseNotes(options) {
 	}
 
 	const tag = normalizeTag(options.tag ?? version);
+	const repo = options.repo ?? repositoryForTag(tag);
 	const changelog = readFileSync(options.changelog, "utf8");
 	const section = extractChangelogSection(changelog, version);
 	const rawNotes = section ? `${section}\n` : `Release ${version}\n`;
-	const { markdown } = normalizeReleaseNoteLinks(rawNotes, { basePath: options.basePath, repo: options.repo, tag });
+	const { markdown } = normalizeReleaseNoteLinks(rawNotes, { basePath: options.basePath, repo, tag });
 	writeOutput(markdown, options.out);
 }
 
@@ -304,7 +313,8 @@ function updateGithubRelease(repo, tag, body) {
 function fixGithubReleases(options) {
 	const tagFilter = normalizeTag(options.tag);
 	const sinceTag = normalizeTag(options.sinceTag);
-	const matchingReleases = listGithubReleases(options.repo).filter((release) => !tagFilter || release.tag_name === tagFilter);
+	const repo = options.repo ?? repositoryForTag(tagFilter ?? sinceTag);
+	const matchingReleases = listGithubReleases(repo).filter((release) => !tagFilter || release.tag_name === tagFilter);
 
 	if (tagFilter && matchingReleases.length === 0) {
 		throw new Error(`Release not found: ${tagFilter}`);
@@ -321,7 +331,7 @@ function fixGithubReleases(options) {
 	for (const release of releases) {
 		const tag = release.tag_name;
 		const body = release.body ?? "";
-		const result = normalizeReleaseNoteLinks(body, { basePath: options.basePath, repo: options.repo, tag });
+		const result = normalizeReleaseNoteLinks(body, { basePath: options.basePath, repo, tag });
 		if (result.markdown === body) {
 			continue;
 		}
@@ -335,7 +345,7 @@ function fixGithubReleases(options) {
 		}
 
 		if (!options.dryRun) {
-			updateGithubRelease(options.repo, tag, result.markdown);
+			updateGithubRelease(repo, tag, result.markdown);
 		}
 	}
 

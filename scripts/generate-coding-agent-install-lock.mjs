@@ -3,30 +3,57 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	FORK_INSTALL_PACKAGE_NAME,
+	FORK_PACKAGE_SCOPE,
+	PUBLISHABLE_PACKAGES,
+	UPSTREAM_PACKAGE_SCOPE,
+	assertReleaseVersion,
+	toFractalManifest,
+} from "./fractal-identity.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const codingAgentDir = join(repoRoot, "packages/coding-agent");
-const outputDir = join(codingAgentDir, "install-lock");
+const defaultOutputDir = join(codingAgentDir, "install-lock");
 const rootLockfilePath = join(repoRoot, "package-lock.json");
-const outputPackageJsonPath = join(outputDir, "package.json");
-const outputLockfilePath = join(outputDir, "package-lock.json");
-const internalPackagePrefix = "@earendil-works/pi-";
-const installPackageName = "@earendil-works/pi-coding-agent-install";
+const internalPackagePrefix = `${UPSTREAM_PACKAGE_SCOPE}pi-`;
+const installPackageName = `${UPSTREAM_PACKAGE_SCOPE}pi-coding-agent-install`;
 const allowedInstallScriptPackages = new Map([
 	["@google/genai@1.52.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.5", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
 
-const args = new Set(process.argv.slice(2));
-const checkOnly = args.has("--check");
-
-for (const arg of args) {
-	if (arg !== "--check") {
-		console.error(`Unknown argument: ${arg}`);
-		process.exit(1);
+let checkOnly = false;
+let identityVersion;
+let outputDir = defaultOutputDir;
+const rawArgs = process.argv.slice(2);
+for (let index = 0; index < rawArgs.length; index++) {
+	const arg = rawArgs[index];
+	if (arg === "--check") {
+		checkOnly = true;
+		continue;
 	}
+	if (arg === "--fork-identity") {
+		identityVersion = assertReleaseVersion(rawArgs[++index]);
+		continue;
+	}
+	if (arg === "--out-dir") {
+		const value = rawArgs[++index];
+		if (!value) throw new Error("--out-dir requires a directory");
+		outputDir = resolve(value);
+		continue;
+	}
+	throw new Error(`Unknown argument: ${arg}`);
 }
+if (checkOnly && (identityVersion || outputDir !== defaultOutputDir)) {
+	throw new Error("--check cannot be combined with --fork-identity or --out-dir");
+}
+if (identityVersion && outputDir === defaultOutputDir) {
+	throw new Error("--fork-identity requires --out-dir so source-controlled lock assets remain upstream-owned");
+}
+const outputPackageJsonPath = join(outputDir, "package.json");
+const outputLockfilePath = join(outputDir, "package-lock.json");
 
 function readJson(path) {
 	return JSON.parse(readFileSync(path, "utf8"));
@@ -136,7 +163,7 @@ function isExactVersionSpec(spec) {
 	return /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(spec);
 }
 
-function getInternalWorkspaces(lockPackages) {
+function getInternalWorkspaces(lockPackages, identityVersion) {
 	const workspaces = new Map();
 
 	for (const [lockPath, entry] of Object.entries(lockPackages)) {
@@ -147,10 +174,16 @@ function getInternalWorkspaces(lockPackages) {
 			continue;
 		}
 
-		workspaces.set(entry.name, {
-			lockPath,
-			packageJson: readJson(join(repoRoot, lockPath, "package.json")),
-		});
+		const sourcePackageJson = readJson(join(repoRoot, lockPath, "package.json"));
+		const isPublishable = PUBLISHABLE_PACKAGES.some((pkg) => pkg.upstreamName === sourcePackageJson.name);
+		const packageJson = identityVersion && isPublishable
+			? toFractalManifest(sourcePackageJson, identityVersion)
+			: sourcePackageJson;
+		const workspace = { lockPath, packageJson };
+		workspaces.set(entry.name, workspace);
+		if (identityVersion) {
+			workspaces.set(packageJson.name, workspace);
+		}
 	}
 
 	return workspaces;
@@ -203,7 +236,7 @@ function addInternalWorkspace(installLockPackages, addedPaths, queue, name, work
 	const packageJson = workspace.packageJson;
 	const outputPath = `node_modules/${name}`;
 	const entry = copyPackageJsonEntry(packageJson, { includeName: false });
-	entry.resolved = registryTarballUrl(name, packageJson.version);
+	entry.resolved = registryTarballUrl(packageJson.name, packageJson.version);
 
 	installLockPackages[outputPath] = sortedPackageEntry(entry);
 	addedPaths.add(outputPath);
@@ -228,9 +261,9 @@ function addExternalPackage(lockPackages, installLockPackages, addedPaths, queue
 	}
 }
 
-function createInstallerPackageJson(codingAgentPackage) {
+function createInstallerPackageJson(codingAgentPackage, identityVersion) {
 	const packageJson = {
-		name: installPackageName,
+		name: identityVersion ? FORK_INSTALL_PACKAGE_NAME : installPackageName,
 		version: codingAgentPackage.version,
 		private: true,
 		description: "Lockfile root used by the Pi installer and updater.",
@@ -355,16 +388,60 @@ function validateGeneratedFiles(installerPackageJson, installLock, internalNames
 	}
 }
 
-function generateInstallLock() {
+function validateForkIdentity(installerPackageJson, installLock, identityVersion) {
+	if (!identityVersion) return;
+	const errors = [];
+	const rootDependency = installerPackageJson.dependencies[FORK_PACKAGE_SCOPE + "pi-coding-agent"];
+	if (installerPackageJson.name !== FORK_INSTALL_PACKAGE_NAME) {
+		errors.push(`fork installer package name is ${installerPackageJson.name}`);
+	}
+	if (rootDependency !== identityVersion) {
+		errors.push(`fork installer root dependency is ${rootDependency}`);
+	}
+
+	for (const pkg of PUBLISHABLE_PACKAGES) {
+		const expectedResolved = registryTarballUrl(pkg.name, identityVersion);
+		const found = Object.values(installLock.packages).some(
+			(entry) => entry.version === identityVersion && entry.resolved === expectedResolved,
+		);
+		if (!found) {
+			errors.push(`fork package ${pkg.name}@${identityVersion} is missing from resolved lock targets`);
+		}
+	}
+
+	for (const [lockPath, entry] of Object.entries(installLock.packages)) {
+		if (typeof entry.resolved === "string" && entry.resolved.includes(`${UPSTREAM_PACKAGE_SCOPE}pi-`)) {
+			errors.push(`${lockPath} resolves to an upstream internal package`);
+		}
+		for (const [dependencyName, dependencySpec] of Object.entries(packageDependencies(entry))) {
+			if (dependencyName.startsWith(internalPackagePrefix)) {
+				const target = PUBLISHABLE_PACKAGES.find((pkg) => pkg.upstreamName === dependencyName);
+				const expected = target ? `npm:${target.name}@${identityVersion}` : undefined;
+				if (!expected || dependencySpec !== expected) {
+					errors.push(`${lockPath || "root"} has ${dependencyName}@${dependencySpec}, expected ${expected ?? "a published fork alias"}`);
+				}
+			}
+		}
+	}
+
+	if (errors.length > 0) {
+		throw new Error(`Generated fork installer identity failed:\n${errors.map((error) => `  - ${error}`).join("\n")}`);
+	}
+}
+
+function generateInstallLock(identityVersion) {
 	const rootLock = readJson(rootLockfilePath);
 	if (rootLock.lockfileVersion !== 3 || !rootLock.packages) {
 		throw new Error("package-lock.json must be lockfileVersion 3 and contain a packages map");
 	}
 
 	const lockPackages = rootLock.packages;
-	const codingAgentPackage = readJson(join(codingAgentDir, "package.json"));
-	const installerPackageJson = createInstallerPackageJson(codingAgentPackage);
-	const internalWorkspaces = getInternalWorkspaces(lockPackages);
+	const sourceCodingAgentPackage = readJson(join(codingAgentDir, "package.json"));
+	const codingAgentPackage = identityVersion
+		? toFractalManifest(sourceCodingAgentPackage, identityVersion)
+		: sourceCodingAgentPackage;
+	const installerPackageJson = createInstallerPackageJson(codingAgentPackage, identityVersion);
+	const internalWorkspaces = getInternalWorkspaces(lockPackages, identityVersion);
 	const installLockPackages = {
 		"": createRootLockEntry(installerPackageJson),
 	};
@@ -400,11 +477,12 @@ function generateInstallLock() {
 	};
 
 	validateGeneratedFiles(installerPackageJson, installLock, internalNames);
+	validateForkIdentity(installerPackageJson, installLock, identityVersion);
 	return { installerPackageJson, installLock };
 }
 
 try {
-	const { installerPackageJson, installLock } = generateInstallLock();
+	const { installerPackageJson, installLock } = generateInstallLock(identityVersion);
 	const packageJsonContent = `${JSON.stringify(installerPackageJson, null, "\t")}\n`;
 	const lockfileContent = `${JSON.stringify(installLock, null, "\t")}\n`;
 
@@ -430,7 +508,7 @@ try {
 		const platformPackageCount = Object.values(installLock.packages).filter((entry) => entry.os || entry.cpu || entry.libc)
 			.length;
 		console.log(
-			`Wrote packages/coding-agent/install-lock/package.json and package-lock.json (${packageCount} packages, ${platformPackageCount} platform-specific).`,
+			`Wrote ${outputDir}/package.json and package-lock.json (${packageCount} packages, ${platformPackageCount} platform-specific).`,
 		);
 	}
 } catch (error) {

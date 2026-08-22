@@ -4,13 +4,14 @@
 # Mirrors .github/workflows/build-binaries.yml
 #
 # Usage:
-#   ./scripts/build-binaries.sh [--skip-install] [--skip-deps] [--skip-build] [--offline-model-data] [--platform <platform>] [--out <dir>]
+#   ./scripts/build-binaries.sh [--skip-install] [--skip-deps] [--skip-build] [--offline-model-data] [--fork-identity <version>] [--platform <platform>] [--out <dir>]
 #
 # Options:
 #   --skip-install       Skip npm ci
 #   --skip-deps          Skip installing cross-platform dependencies
 #   --skip-build         Skip the package build
 #   --offline-model-data Build with bundled model data instead of refreshing it
+#   --fork-identity      Transform staged package.json sidecars before archive creation
 #   --platform <name>    Build only for specified platform (darwin-arm64, darwin-x64, linux-x64, linux-arm64, windows-x64, windows-arm64)
 #   --out <dir>          Output directory (default: packages/coding-agent/binaries)
 #
@@ -26,11 +27,13 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+REPO_ROOT="$PWD"
 
 SKIP_INSTALL=false
 SKIP_DEPS=false
 SKIP_BUILD=false
 OFFLINE_MODEL_DATA=false
+FORK_IDENTITY_VERSION=""
 PLATFORM=""
 OUTPUT_DIR=""
 
@@ -51,6 +54,10 @@ while [[ $# -gt 0 ]]; do
         --offline-model-data)
             OFFLINE_MODEL_DATA=true
             shift
+            ;;
+        --fork-identity)
+            FORK_IDENTITY_VERSION="$2"
+            shift 2
             ;;
         --platform)
             PLATFORM="$2"
@@ -156,6 +163,11 @@ echo "==> Creating release archives..."
 # Copy shared files to each platform directory
 for platform in "${PLATFORMS[@]}"; do
     cp package.json "$OUTPUT_DIR/$platform/"
+    if [[ -n "$FORK_IDENTITY_VERSION" ]]; then
+        node "$REPO_ROOT/scripts/fractal-identity.mjs" \
+            --manifest "$OUTPUT_DIR/$platform/package.json" \
+            "$FORK_IDENTITY_VERSION"
+    fi
     cp README.md "$OUTPUT_DIR/$platform/"
     cp CHANGELOG.md "$OUTPUT_DIR/$platform/"
     cp ../../node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm "$OUTPUT_DIR/$platform/"
