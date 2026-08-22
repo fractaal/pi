@@ -9,6 +9,7 @@ import test from "node:test";
 
 import {
 	applyFractalIdentity,
+	applyFractalIdentityToManifestFile,
 	assertReleaseVersion,
 	PUBLISHABLE_PACKAGES,
 	toFractalManifest,
@@ -134,6 +135,34 @@ test("applies the identity across the tree and drops the upstream-pinned shrinkw
 	}
 });
 
+test("transforms a staged binary sidecar without changing source-tree cleanup state", async (t) => {
+	const root = await mkdtemp(join(tmpdir(), "fractal-sidecar-"));
+	t.after(() => rm(root, { force: true, recursive: true }));
+	const manifestPath = join(root, "linux-x64", "package.json");
+	await writeManifest(root, "linux-x64", upstreamManifest("@earendil-works/pi-coding-agent", {
+		version: "0.84.0",
+		piConfig: { buildSignature: "fractal" },
+		dependencies: {
+			"@earendil-works/pi-agent-core": "^0.84.0",
+			"@earendil-works/pi-ai": "^0.84.0",
+			"@earendil-works/pi-tui": "^0.84.0",
+		},
+	}));
+
+	const result = applyFractalIdentityToManifestFile(manifestPath, "0.84.0");
+	const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+
+	assert.equal(result.name, "@fractaal/pi-coding-agent");
+	assert.equal(manifest.name, "@fractaal/pi-coding-agent");
+	assert.equal(manifest.version, "0.84.0");
+	assert.equal(manifest.piConfig.buildSignature, "fractal");
+	assert.deepEqual(manifest.dependencies, {
+		"@earendil-works/pi-agent-core": "npm:@fractaal/pi-agent-core@0.84.0",
+		"@earendil-works/pi-ai": "npm:@fractaal/pi-ai@0.84.0",
+		"@earendil-works/pi-tui": "npm:@fractaal/pi-tui@0.84.0",
+	});
+});
+
 /**
  * The CLI resolves the repository from its own location, so it is copied into the
  * sandbox before running. Invoking the real script would rewrite the real tree,
@@ -170,4 +199,18 @@ test("the CLI applies the identity for a stable version", async (t) => {
 	assert.match(result.stdout, /@fractaal\/pi-coding-agent@0\.84\.0/);
 	assert.equal((await readManifest(root, "packages/ai")).name, "@fractaal/pi-ai");
 	assert.equal((await readManifest(root, "packages/ai")).version, "0.84.0");
+});
+
+test("the CLI applies identity to a staged sidecar manifest", async (t) => {
+	const { root, script } = await sandboxedCli(t);
+	await writeManifest(root, "binary/linux-x64", upstreamManifest("@earendil-works/pi-coding-agent", {
+		piConfig: { buildSignature: "fractal" },
+	}));
+	const manifestPath = join(root, "binary/linux-x64/package.json");
+
+	const result = spawnSync(process.execPath, [script, "--manifest", manifestPath, "0.84.0"], { encoding: "utf8" });
+
+	assert.equal(result.status, 0, result.stderr);
+	assert.match(result.stdout, /@fractaal\/pi-coding-agent@0\.84\.0/);
+	assert.equal(JSON.parse(await readFile(manifestPath, "utf8")).name, "@fractaal/pi-coding-agent");
 });

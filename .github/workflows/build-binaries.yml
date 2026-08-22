@@ -78,6 +78,7 @@ jobs:
           tar -xzf "release-assets/pi-${VERSION}-source.tar.gz" -C "${build_root}"
           "${build_root}/pi-${VERSION}/scripts/build-binaries.sh" \
             --offline-model-data \
+            --fork-identity "${VERSION}" \
             --out "${GITHUB_WORKSPACE}/packages/coding-agent/binaries"
 
       - name: Prepare GitHub release payload
@@ -88,9 +89,13 @@ jobs:
 
           VERSION="${RELEASE_VERSION}"
           node scripts/release-notes.mjs extract --version "${VERSION}" --tag "${RELEASE_TAG}" --out release-assets/RELEASE_NOTES.md
-          node scripts/generate-coding-agent-install-lock.mjs --check
-          cp packages/coding-agent/install-lock/package.json release-assets/pi-coding-agent-install-package.json
-          cp packages/coding-agent/install-lock/package-lock.json release-assets/pi-coding-agent-install-package-lock.json
+          fork_install_lock="$(mktemp -d)"
+          trap 'rm -rf "${fork_install_lock}"' EXIT
+          node scripts/generate-coding-agent-install-lock.mjs \
+            --fork-identity "${VERSION}" \
+            --out-dir "${fork_install_lock}"
+          cp "${fork_install_lock}/package.json" release-assets/pi-coding-agent-install-package.json
+          cp "${fork_install_lock}/package-lock.json" release-assets/pi-coding-agent-install-package-lock.json
 
           cd packages/coding-agent/binaries
 

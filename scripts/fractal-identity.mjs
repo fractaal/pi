@@ -38,15 +38,17 @@ export const PUBLISHABLE_PACKAGES = [
  * fires on an upstream tag.
  */
 export const RELEASE_TAG_PREFIX = "fractaal-v";
-
-export const FORK_REPOSITORY_URL = "git+https://github.com/fractaal/pi.git";
-export const FORK_HOMEPAGE = "https://github.com/fractaal/pi";
-export const FORK_BUGS_URL = "https://github.com/fractaal/pi/issues";
+export const FORK_REPOSITORY = "fractaal/pi";
+export const FORK_PACKAGE_SCOPE = "@fractaal/";
+export const FORK_INSTALL_PACKAGE_NAME = `${FORK_PACKAGE_SCOPE}pi-coding-agent-install`;
+export const FORK_REPOSITORY_URL = `git+https://github.com/${FORK_REPOSITORY}.git`;
+export const FORK_HOMEPAGE = `https://github.com/${FORK_REPOSITORY}`;
+export const FORK_BUGS_URL = `https://github.com/${FORK_REPOSITORY}/issues`;
 
 /** Fork releases are ordinary stable SemVer on the ordinary `latest` tag. */
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const DEPENDENCY_GROUPS = ["dependencies", "peerDependencies", "optionalDependencies"];
-const UPSTREAM_SCOPE = "@earendil-works/";
+export const UPSTREAM_PACKAGE_SCOPE = "@earendil-works/";
 
 export function assertReleaseVersion(version) {
 	if (typeof version !== "string" || !VERSION_PATTERN.test(version)) {
@@ -83,7 +85,7 @@ export function toFractalManifest(manifest, version) {
 		if (!deps) continue;
 		const rewritten = { ...deps };
 		for (const dependency of Object.keys(rewritten)) {
-			if (!dependency.startsWith(UPSTREAM_SCOPE)) continue;
+			if (!dependency.startsWith(UPSTREAM_PACKAGE_SCOPE)) continue;
 			const target = PUBLISHABLE_PACKAGES.find((candidate) => candidate.upstreamName === dependency);
 			if (!target) {
 				// A fork package depending on an upstream package the fork does not
@@ -113,15 +115,19 @@ export function toFractalManifest(manifest, version) {
  */
 const SHRINKWRAP = join("packages/coding-agent", "npm-shrinkwrap.json");
 
+export function applyFractalIdentityToManifestFile(manifestPath, version) {
+	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+	const next = toFractalManifest(manifest, version);
+	writeFileSync(manifestPath, `${JSON.stringify(next, null, "\t")}\n`);
+	return { name: next.name, version: next.version, manifestPath };
+}
+
 export function applyFractalIdentity(repoRoot, version) {
 	assertReleaseVersion(version);
 	const applied = [];
 	for (const pkg of PUBLISHABLE_PACKAGES) {
 		const manifestPath = join(repoRoot, pkg.directory, "package.json");
-		const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-		const next = toFractalManifest(manifest, version);
-		writeFileSync(manifestPath, `${JSON.stringify(next, null, "\t")}\n`);
-		applied.push({ name: next.name, version: next.version, manifestPath });
+		applied.push(applyFractalIdentityToManifestFile(manifestPath, version));
 	}
 
 	const shrinkwrapPath = join(repoRoot, SHRINKWRAP);
@@ -135,21 +141,33 @@ export function applyFractalIdentity(repoRoot, version) {
 
 const isDirectInvocation = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isDirectInvocation) {
-	const version = process.argv[2];
+	const args = process.argv.slice(2);
+	const manifestMode = args[0] === "--manifest";
+	const manifestPath = manifestMode ? args[1] : undefined;
+	const version = manifestMode ? args[2] : args[0];
 	try {
 		assertReleaseVersion(version);
+		if (manifestMode && !manifestPath) throw new Error("--manifest requires a path");
+		if (!manifestMode && args.length !== 1) throw new Error("expected exactly one release version");
+		if (manifestMode && args.length !== 3) throw new Error("--manifest requires a path and release version");
 	} catch (error) {
 		console.error(String(error.message ?? error));
 		console.error("usage: node scripts/fractal-identity.mjs <x.y.z>");
+		console.error("   or: node scripts/fractal-identity.mjs --manifest <package.json> <x.y.z>");
 		process.exit(1);
 	}
 
-	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const result = applyFractalIdentity(repoRoot, version);
-	for (const applied of result.packages) {
+	if (manifestMode) {
+		const applied = applyFractalIdentityToManifestFile(manifestPath, version);
 		console.log(`  ${applied.name}@${applied.version}`);
-	}
-	if (result.removedShrinkwrap) {
-		console.log(`  removed ${SHRINKWRAP} (pins upstream tarballs)`);
+	} else {
+		const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+		const result = applyFractalIdentity(repoRoot, version);
+		for (const applied of result.packages) {
+			console.log(`  ${applied.name}@${applied.version}`);
+		}
+		if (result.removedShrinkwrap) {
+			console.log(`  removed ${SHRINKWRAP} (pins upstream tarballs)`);
+		}
 	}
 }

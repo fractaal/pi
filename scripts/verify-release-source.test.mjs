@@ -377,6 +377,22 @@ test("the release workflow pins publication to the verified build commit", async
 	const workflow = parseYaml(await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8"));
 	const build = workflow.jobs.build;
 	const publish = workflow.jobs["publish-npm"];
+	const buildBinaries = build.steps.find((step) => step.name === "Build binaries from source archive");
+	const preparePayload = build.steps.find((step) => step.name === "Prepare GitHub release payload");
+	const binaryRun = String(buildBinaries?.run ?? "");
+	const payloadRun = String(preparePayload?.run ?? "");
+	const binaryBuildIndex = binaryRun.indexOf("build-binaries.sh");
+	const forkIdentityIndex = binaryRun.indexOf("--fork-identity");
+	const buildScript = await readFile(join(repoRoot, "scripts/build-binaries.sh"), "utf8");
+	const sidecarTransformIndex = buildScript.indexOf("fractal-identity.mjs");
+	const archiveCreationIndex = buildScript.indexOf("# Create archives");
+	assert.ok(binaryBuildIndex !== -1, "release binaries must be built from the source archive");
+	assert.ok(forkIdentityIndex > binaryBuildIndex, "CI must pass fork identity into the binary build");
+	assert.ok(sidecarTransformIndex !== -1 && sidecarTransformIndex < archiveCreationIndex, "binary sidecars must be transformed before archives");
+	assert.doesNotMatch(binaryRun, /fractal-identity\.mjs --manifest/, "CI must not transform extracted archives after compression");
+	assert.match(payloadRun, /generate-coding-agent-install-lock\.mjs[\s\\]+--fork-identity/);
+	assert.match(payloadRun, /--out-dir/);
+	assert.doesNotMatch(payloadRun, /generate-coding-agent-install-lock\.mjs --check/);
 
 	// build must publish the commit it verified, not just the version.
 	assert.match(build.outputs.commit, /steps\.release\.outputs\.commit/);
