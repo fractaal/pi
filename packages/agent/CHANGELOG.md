@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `toolBatchDidNotTerminate` to low-level `turn_end`, distinguishing non-terminating tool batches from terminating or tool-free turns without claiming that a later stop hook cannot end the run.
+
 ## [0.84.2] - 2026-08-24
 
 ## [0.84.1] - 2026-08-22

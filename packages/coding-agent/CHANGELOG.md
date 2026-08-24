@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Exposed `TurnEndEvent.toolResultsRequireContinuation` to extensions so they can join an inevitable tool-loop request without accidentally creating one after a terminating tool.
+
 ## [0.84.2] - 2026-08-24
 
 ### Added

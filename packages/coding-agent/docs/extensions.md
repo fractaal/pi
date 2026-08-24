@@ -583,6 +583,8 @@ pi.on("turn_start", async (event, ctx) => {
 
 pi.on("turn_end", async (event, ctx) => {
   // event.turnIndex, event.message, event.toolResults
+  // event.toolResultsRequireContinuation is true only when the completed tool
+  // batch already requires another provider call before queued input is considered.
 });
 ```
 

@@ -1182,6 +1182,9 @@ describe("agentLoop with AgentMessage", () => {
 		expect(callbackToolResultIds).toEqual(["tool-1"]);
 		expect(callbackContextRoles).toEqual(["user", "assistant", "toolResult"]);
 		expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
+		expect(
+			events.filter((event) => event.type === "turn_end").map((event) => event.toolBatchDidNotTerminate),
+		).toEqual([true]);
 		expect(events.map((event) => event.type)).toEqual([
 			"agent_start",
 			"turn_start",
@@ -1247,7 +1250,9 @@ describe("agentLoop with AgentMessage", () => {
 		const messages = await stream.result();
 		expect(llmCalls).toBe(1);
 		expect(messages.map((message) => message.role)).toEqual(["user", "assistant", "toolResult"]);
-		expect(events.filter((event) => event.type === "turn_end")).toHaveLength(1);
+		const turnEnds = events.filter((event) => event.type === "turn_end");
+		expect(turnEnds).toHaveLength(1);
+		expect(turnEnds[0]?.toolBatchDidNotTerminate).toBe(false);
 	});
 
 	it("should continue after parallel tool calls when not all tool results terminate", async () => {
@@ -1300,12 +1305,16 @@ describe("agentLoop with AgentMessage", () => {
 			return mockStream;
 		});
 
-		for await (const _event of stream) {
-			// consume
+		const events: AgentEvent[] = [];
+		for await (const event of stream) {
+			events.push(event);
 		}
 
 		const messages = await stream.result();
 		expect(callIndex).toBe(2);
+		expect(
+			events.filter((event) => event.type === "turn_end").map((event) => event.toolBatchDidNotTerminate),
+		).toEqual([true, false]);
 		expect(messages.map((message) => message.role)).toEqual([
 			"user",
 			"assistant",
