@@ -2498,6 +2498,16 @@ const ok = await ctx.ui.confirm("Delete?", "This cannot be undone");
 // Text input
 const name = await ctx.ui.input("Name:", "placeholder");
 
+// Confirmation form with an opt-in Markdown body and optional input
+const decision = await ctx.ui.confirmWithInput({
+  title: "Confirm Goal",
+  message: "# Ship it\\n\\n- First criterion\\n- `exact-token`",
+  messageFormat: "markdown",
+  inputLabel: "Comments or reservations (optional)",
+  inputPlaceholder: "Write additional comments or reservations here…",
+});
+// decision.confirmed is the selected choice; decision.input is omitted when empty.
+
 // Multi-line editor
 const text = await ctx.ui.editor("Edit:", "prefilled text");
 

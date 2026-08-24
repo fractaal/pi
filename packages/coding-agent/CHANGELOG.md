@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added generic `ctx.ui.confirmWithInput()` support for Markdown confirmation bodies and optional structured text input in interactive and RPC modes. Existing `ctx.ui.confirm()` callers are unchanged.
+
 ## [0.84.1] - 2026-08-22
 
 ## [0.84.0] - 2026-08-22

@@ -13,6 +13,7 @@ function createUiContext(
 	return {
 		select: async () => undefined,
 		confirm: async () => false,
+		confirmWithInput: async () => ({ confirmed: false }),
 		input: async () => undefined,
 		notify: onNotify,
 		onTerminalInput: () => () => {},

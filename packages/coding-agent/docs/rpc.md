@@ -1219,6 +1219,31 @@ Prompt the user for free-form text.
 
 Expected response: `extension_ui_response` with `value` (the entered text) or `cancelled: true`.
 
+#### confirmWithInput
+
+Prompt the user with an optional Markdown body and a text input. The response carries the selected confirmation and the entered input in one decision.
+
+```json
+{
+  "type": "extension_ui_request",
+  "id": "uuid-10",
+  "method": "confirmWithInput",
+  "title": "Confirm Goal",
+  "message": "# Ship it\\n\\n- First criterion",
+  "messageFormat": "markdown",
+  "inputLabel": "Comments or reservations (optional)",
+  "inputPlaceholder": "Write additional comments or reservations here…"
+}
+```
+
+Expected response:
+
+```json
+{"type":"extension_ui_response","id":"uuid-10","confirmed":true,"input":"Looks good."}
+```
+
+The `input` field is omitted when empty. A cancelled form returns `cancelled: true` and submits no input.
+
 #### editor
 
 Open a multi-line text editor with optional prefilled content.
@@ -1325,6 +1350,8 @@ Responses are sent for dialog methods only (`select`, `confirm`, `input`, `edito
 ```json
 {"type": "extension_ui_response", "id": "uuid-2", "confirmed": true}
 ```
+
+`confirmWithInput` uses the same `confirmed` field and may include an optional `input` string.
 
 #### Cancellation response (any dialog)
 

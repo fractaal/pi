@@ -10,6 +10,7 @@ export { CustomMessageComponent } from "./custom-message.ts";
 export { DaxnutsComponent } from "./daxnuts.ts";
 export { type RenderDiffOptions, renderDiff } from "./diff.ts";
 export { DynamicBorder } from "./dynamic-border.ts";
+export { ExtensionConfirmInputComponent } from "./extension-confirm-input.ts";
 export { ExtensionEditorComponent } from "./extension-editor.ts";
 export { ExtensionInputComponent } from "./extension-input.ts";
 export { ExtensionSelectorComponent } from "./extension-selector.ts";
