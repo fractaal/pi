@@ -783,6 +783,8 @@ export interface TurnEndEvent {
 	turnIndex: number;
 	message: AgentMessage;
 	toolResults: ToolResultMessage[];
+	/** True when this tool batch already requires another provider call before queued input is considered. */
+	toolResultsRequireContinuation: boolean;
 }
 
 /** Fired when a message starts (user, assistant, or toolResult) */

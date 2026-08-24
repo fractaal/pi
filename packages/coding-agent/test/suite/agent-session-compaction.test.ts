@@ -921,6 +921,7 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.clearQueue()).toEqual({
 			steering: ["trigger after compaction", "default after compaction"],
 			followUp: [],
+			nextTurn: [],
 		});
 	});
 

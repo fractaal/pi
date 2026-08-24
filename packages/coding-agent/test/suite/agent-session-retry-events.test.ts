@@ -303,6 +303,37 @@ describe("AgentSession retry and event characterization", () => {
 		]);
 	});
 
+	it("tells extensions whether tool results already require another provider call", async () => {
+		const continuationFacts: boolean[] = [];
+		const continueTool: AgentTool = {
+			name: "continue_tool",
+			label: "Continue",
+			description: "Continue after this tool",
+			parameters: Type.Object({}),
+			execute: async () => ({ content: [{ type: "text", text: "continue" }], details: {} }),
+		};
+		const harness = await createHarness({
+			tools: [continueTool],
+			extensionFactories: [
+				(pi) => {
+					pi.on("turn_end", (event) => {
+						continuationFacts.push(event.toolResultsRequireContinuation);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage([fauxToolCall("continue_tool", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+
+		await harness.session.prompt("continue once");
+
+		expect(continuationFacts).toEqual([true, false]);
+		expect(harness.faux.state.callCount).toBe(2);
+	});
+
 	it("emits streaming deltas for text, thinking, and tool calls in message_update events", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

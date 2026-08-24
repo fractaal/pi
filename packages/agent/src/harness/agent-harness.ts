@@ -573,7 +573,10 @@ export class AgentHarness<
 		const failureMessage = createFailureMessage(model, error, aborted);
 		await this.handleAgentEvent({ type: "message_start", message: failureMessage }, signal);
 		await this.handleAgentEvent({ type: "message_end", message: failureMessage }, signal);
-		await this.handleAgentEvent({ type: "turn_end", message: failureMessage, toolResults: [] }, signal);
+		await this.handleAgentEvent(
+			{ type: "turn_end", message: failureMessage, toolResults: [], toolBatchDidNotTerminate: false },
+			signal,
+		);
 		await this.handleAgentEvent({ type: "agent_end", messages: [failureMessage] }, signal);
 		return [failureMessage];
 	}

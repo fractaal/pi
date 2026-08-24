@@ -704,6 +704,12 @@ export class AgentSession {
 		}
 	}
 
+	private _drainPendingNextTurnMessages(): string[] {
+		const messages = this._pendingNextTurnMessages;
+		this._pendingNextTurnMessages = [];
+		return messages.map((message) => this._getMessageText(message)).filter((text) => text.length > 0);
+	}
+
 	private _flushDeferredCompactionMessages(): void {
 		if (this._deferredCompactionMessages.length === 0) return;
 		const deferred = this._deferredCompactionMessages;
@@ -958,6 +964,7 @@ export class AgentSession {
 				turnIndex: this._turnIndex,
 				message: event.message,
 				toolResults: event.toolResults,
+				toolResultsRequireContinuation: event.toolBatchDidNotTerminate,
 			};
 			await this._extensionRunner.emit(extensionEvent);
 			this._turnIndex++;
@@ -1822,23 +1829,29 @@ export class AgentSession {
 	/**
 	 * Clear all queued messages and return them.
 	 * Useful for restoring to editor when user aborts.
-	 * @returns Object with steering and followUp arrays
+	 * @returns Object with steering, followUp, and nextTurn arrays
 	 */
-	clearQueue(): { steering: string[]; followUp: string[] } {
+	clearQueue(): { steering: string[]; followUp: string[]; nextTurn: string[] } {
 		const deferred = this._getDeferredCompactionQueueTexts();
 		const steering = [...this._steeringMessages, ...deferred.steering];
 		const followUp = [...this._followUpMessages, ...deferred.followUp];
+		const nextTurn = this._drainPendingNextTurnMessages();
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this._deferredCompactionMessages = [];
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
-		return { steering, followUp };
+		return { steering, followUp, nextTurn };
 	}
 
-	/** Number of pending messages (includes both steering and follow-up) */
+	/** Number of pending messages across steering, follow-up, next-turn, and compaction-deferred queues. */
 	get pendingMessageCount(): number {
-		return this._steeringMessages.length + this._followUpMessages.length + this._deferredCompactionMessages.length;
+		return (
+			this._steeringMessages.length +
+			this._followUpMessages.length +
+			this._pendingNextTurnMessages.length +
+			this._deferredCompactionMessages.length
+		);
 	}
 
 	/** Get pending steering messages (read-only) */
@@ -3086,6 +3099,7 @@ export class AgentSession {
 	async reload(options?: { beforeSessionStart?: () => void | Promise<void> }): Promise<void> {
 		const previousFlagValues = this._extensionRunner.getFlagValues();
 		await emitSessionShutdownEvent(this._extensionRunner, { type: "session_shutdown", reason: "reload" });
+		this._drainPendingNextTurnMessages();
 		await this.settingsManager.reload();
 		this.syncQueueModesFromSettings();
 		resetApiProviders();
@@ -3566,6 +3580,9 @@ export class AgentSession {
 			if (label && !summaryText) {
 				this.sessionManager.appendLabelChange(targetId, label);
 			}
+
+			// Drop branch-owned next-turn context before restored extensions publish current state.
+			this._drainPendingNextTurnMessages();
 
 			// Update agent state
 			const sessionContext = this.sessionManager.buildSessionContext();

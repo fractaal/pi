@@ -425,7 +425,13 @@ export type AgentEvent =
 	| { type: "agent_end"; messages: AgentMessage[] }
 	// Turn lifecycle - a turn is one assistant response + any tool calls/results
 	| { type: "turn_start" }
-	| { type: "turn_end"; message: AgentMessage; toolResults: ToolResultMessage[] }
+	| {
+			type: "turn_end";
+			message: AgentMessage;
+			toolResults: ToolResultMessage[];
+			/** True when the tool batch did not terminate the loop. A later stop hook can still end the run. */
+			toolBatchDidNotTerminate: boolean;
+	  }
 	// Message lifecycle - emitted for user, assistant, and toolResult messages
 	| { type: "message_start"; message: AgentMessage }
 	// Only emitted for assistant messages during streaming
