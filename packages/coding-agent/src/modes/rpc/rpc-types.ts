@@ -241,6 +241,17 @@ export type RpcExtensionUIRequest =
 	| {
 			type: "extension_ui_request";
 			id: string;
+			method: "confirmWithInput";
+			title: string;
+			message: string;
+			messageFormat?: "plain" | "markdown";
+			inputLabel?: string;
+			inputPlaceholder?: string;
+			timeout?: number;
+	  }
+	| {
+			type: "extension_ui_request";
+			id: string;
 			method: "input";
 			title: string;
 			placeholder?: string;
@@ -279,7 +290,7 @@ export type RpcExtensionUIRequest =
 /** Response to an extension UI request */
 export type RpcExtensionUIResponse =
 	| { type: "extension_ui_response"; id: string; value: string }
-	| { type: "extension_ui_response"; id: string; confirmed: boolean }
+	| { type: "extension_ui_response"; id: string; confirmed: boolean; input?: string }
 	| { type: "extension_ui_response"; id: string; cancelled: true };
 
 // ============================================================================

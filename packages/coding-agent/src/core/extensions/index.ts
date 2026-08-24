@@ -75,6 +75,8 @@ export type {
 	// Runtime
 	ExtensionRuntime,
 	ExtensionShortcut,
+	ExtensionUIConfirmWithInputOptions,
+	ExtensionUIConfirmWithInputResult,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,

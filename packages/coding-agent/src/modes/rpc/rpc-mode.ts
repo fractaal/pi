@@ -14,6 +14,8 @@
 import * as crypto from "node:crypto";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
+	ExtensionUIConfirmWithInputOptions,
+	ExtensionUIConfirmWithInputResult,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -141,6 +143,26 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		confirm: (title, message, opts) =>
 			createDialogPromise(opts, false, { method: "confirm", title, message, timeout: opts?.timeout }, (r) =>
 				"cancelled" in r && r.cancelled ? false : "confirmed" in r ? r.confirmed : false,
+			),
+
+		confirmWithInput: (options: ExtensionUIConfirmWithInputOptions) =>
+			createDialogPromise<ExtensionUIConfirmWithInputResult>(
+				options,
+				{ confirmed: false },
+				{
+					method: "confirmWithInput",
+					title: options.title,
+					message: options.message,
+					messageFormat: options.messageFormat,
+					inputLabel: options.inputLabel,
+					inputPlaceholder: options.inputPlaceholder,
+					timeout: options.timeout,
+				},
+				(response) => {
+					if ("cancelled" in response && response.cancelled) return { confirmed: false };
+					if (!("confirmed" in response)) return { confirmed: false };
+					return { confirmed: response.confirmed, ...(response.input ? { input: response.input } : {}) };
+				},
 			),
 
 		input: (title, placeholder, opts) =>

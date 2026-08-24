@@ -66,6 +66,8 @@ import type {
 	ExtensionCommandContext,
 	ExtensionContext,
 	ExtensionRunner,
+	ExtensionUIConfirmWithInputOptions,
+	ExtensionUIConfirmWithInputResult,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
 	ExtensionWidgetOptions,
@@ -113,6 +115,7 @@ import { CustomMessageComponent } from "./components/custom-message.ts";
 import { DaxnutsComponent } from "./components/daxnuts.ts";
 import { DynamicBorder } from "./components/dynamic-border.ts";
 import { EarendilAnnouncementComponent } from "./components/earendil-announcement.ts";
+import { ExtensionConfirmInputComponent } from "./components/extension-confirm-input.ts";
 import { ExtensionEditorComponent } from "./components/extension-editor.ts";
 import { ExtensionInputComponent } from "./components/extension-input.ts";
 import { ExtensionSelectorComponent } from "./components/extension-selector.ts";
@@ -406,6 +409,7 @@ export class InteractiveMode {
 	// Extension UI state
 	private extensionSelector: ExtensionSelectorComponent | undefined = undefined;
 	private extensionInput: ExtensionInputComponent | undefined = undefined;
+	private extensionConfirmInput: ExtensionConfirmInputComponent | undefined = undefined;
 	private extensionEditor: ExtensionEditorComponent | undefined = undefined;
 	private extensionTerminalInputUnsubscribers = new Set<() => void>();
 
@@ -1978,6 +1982,9 @@ export class InteractiveMode {
 		if (this.extensionInput) {
 			this.hideExtensionInput();
 		}
+		if (this.extensionConfirmInput) {
+			this.hideExtensionConfirmWithInput();
+		}
 		if (this.extensionEditor) {
 			this.hideExtensionEditor();
 		}
@@ -2157,6 +2164,7 @@ export class InteractiveMode {
 		return {
 			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
 			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
+			confirmWithInput: (options) => this.showExtensionConfirmWithInput(options),
 			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
 			notify: (message, type) => this.showExtensionNotify(message, type),
 			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
@@ -2272,6 +2280,59 @@ export class InteractiveMode {
 	): Promise<boolean> {
 		const result = await this.showExtensionSelector(`${title}\n${message}`, ["Yes", "No"], opts);
 		return result === "Yes";
+	}
+
+	private showExtensionConfirmWithInput(
+		options: ExtensionUIConfirmWithInputOptions,
+	): Promise<ExtensionUIConfirmWithInputResult> {
+		return new Promise((resolve) => {
+			if (options.signal?.aborted) {
+				resolve({ confirmed: false });
+				return;
+			}
+
+			const onAbort = () => {
+				this.hideExtensionConfirmWithInput();
+				resolve({ confirmed: false });
+			};
+			options.signal?.addEventListener("abort", onAbort, { once: true });
+
+			this.extensionConfirmInput = new ExtensionConfirmInputComponent(
+				options.title,
+				options.message,
+				(result) => {
+					options.signal?.removeEventListener("abort", onAbort);
+					this.hideExtensionConfirmWithInput();
+					resolve(result);
+				},
+				() => {
+					options.signal?.removeEventListener("abort", onAbort);
+					this.hideExtensionConfirmWithInput();
+					resolve({ confirmed: false });
+				},
+				{
+					tui: this.ui,
+					timeout: options.timeout,
+					markdownTheme: this.getMarkdownThemeWithSettings(),
+					messageFormat: options.messageFormat,
+					inputLabel: options.inputLabel,
+					inputPlaceholder: options.inputPlaceholder,
+				},
+			);
+			this.editorContainer.clear();
+			this.editorContainer.addChild(this.extensionConfirmInput);
+			this.ui.setFocus(this.extensionConfirmInput);
+			this.ui.requestRender();
+		});
+	}
+
+	private hideExtensionConfirmWithInput(): void {
+		this.extensionConfirmInput?.dispose();
+		this.editorContainer.clear();
+		this.editorContainer.addChild(this.editor);
+		this.extensionConfirmInput = undefined;
+		this.ui.setFocus(this.editor);
+		this.ui.requestRender();
 	}
 
 	private async promptForMissingSessionCwd(error: MissingSessionCwdError): Promise<string | undefined> {

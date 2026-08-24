@@ -100,6 +100,21 @@ export interface ExtensionUIDialogOptions {
 	timeout?: number;
 }
 
+/** Options for the generic extension confirmation form. */
+export interface ExtensionUIConfirmWithInputOptions extends ExtensionUIDialogOptions {
+	title: string;
+	message: string;
+	messageFormat?: "plain" | "markdown";
+	inputLabel?: string;
+	inputPlaceholder?: string;
+}
+
+/** Structured result from the generic extension confirmation form. */
+export interface ExtensionUIConfirmWithInputResult {
+	confirmed: boolean;
+	input?: string;
+}
+
 /** Placement for extension widgets. */
 export type WidgetPlacement = "aboveEditor" | "belowEditor";
 
@@ -134,6 +149,9 @@ export interface ExtensionUIContext {
 
 	/** Show a confirmation dialog. */
 	confirm(title: string, message: string, opts?: ExtensionUIDialogOptions): Promise<boolean>;
+
+	/** Show a confirmation form with an optional formatted message and text input. */
+	confirmWithInput?(options: ExtensionUIConfirmWithInputOptions): Promise<ExtensionUIConfirmWithInputResult>;
 
 	/** Show a text input dialog. */
 	input(title: string, placeholder?: string, opts?: ExtensionUIDialogOptions): Promise<string | undefined>;
