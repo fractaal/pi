@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Removed the fork-only GPT-5.6 372,000-token catalog override so normal 272,000-token catalog updates apply unchanged.
+
 ## [0.84.3] - 2026-08-24
 
 ### Added
