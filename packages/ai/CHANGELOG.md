@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.84.4] - 2026-08-25
+
+### Changed
+
+- Restored OpenAI Codex GPT-5.6 Sol, Terra, and Luna to the 272,000-token default context window.
+
 ## [0.84.3] - 2026-08-24
 
 ## [0.84.2] - 2026-08-24

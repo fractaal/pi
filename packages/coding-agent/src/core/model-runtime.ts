@@ -37,7 +37,6 @@ import {
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
 import { getAgentDir } from "../config.ts";
 import { AuthStorage as DefaultAuthStorage } from "./auth-storage.ts";
-import { withFractalModelCatalogOverrides } from "./fractal-model-catalog.ts";
 import { ModelConfig } from "./model-config.ts";
 import { FileModelsStore, InMemoryCodingAgentModelsStore } from "./models-store.ts";
 import {
@@ -152,12 +151,9 @@ export class ModelRuntime implements Models {
 		const providers = builtinProviderCatalog
 			.builtinProviders()
 			.map((provider) =>
-				withFractalModelCatalogOverrides(
-					provider,
-					provider.id === "radius"
-						? provider
-						: withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt),
-				),
+				provider.id === "radius"
+					? provider
+					: withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt),
 			);
 		const runtime = new ModelRuntime(
 			credentials,
