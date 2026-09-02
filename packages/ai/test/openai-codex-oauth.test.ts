@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openaiCodexOAuth } from "../src/auth/oauth/openai-codex.ts";
+import {
+	isOpenAICodexReauthenticationRequired,
+	OpenAICodexOAuthRefreshError,
+} from "../src/auth/oauth/openai-codex-errors.ts";
 
 function jsonResponse(body: unknown, status: number = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -491,21 +495,97 @@ describe("OpenAI Codex OAuth", () => {
 		);
 	});
 
+	it.each([
+		[401, { error: { type: "invalid_request_error" } }],
+		[403, { error: { type: "forbidden" } }],
+		[400, { error: "invalid_grant" }],
+	] as const)("classifies HTTP %i credential rejection as requiring reauthentication", async (status, body) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => jsonResponse(body, status)),
+		);
+
+		const error = await openaiCodexOAuth
+			.refresh({
+				type: "oauth",
+				access: "invalid-access-token",
+				refresh: "invalid-refresh-token",
+				expires: 0,
+			})
+			.catch((reason: unknown) => reason);
+
+		expect(error).toBeInstanceOf(OpenAICodexOAuthRefreshError);
+		expect(error).toMatchObject({ code: "reauth_required", status });
+		expect(isOpenAICodexReauthenticationRequired(error)).toBe(true);
+		expect(String(error)).not.toContain("invalid-refresh-token");
+	});
+
+	it.each([429, 500, 503])("classifies HTTP %i refresh failures as transient", async (status) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => jsonResponse({ error: "server_error" }, status)),
+		);
+
+		const error = await openaiCodexOAuth
+			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 })
+			.catch((reason: unknown) => reason);
+
+		expect(error).toMatchObject({ code: "transient", status });
+		expect(isOpenAICodexReauthenticationRequired(error)).toBe(false);
+	});
+
+	it("classifies network refresh failures as transient", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => Promise.reject(new Error("network unavailable"))),
+		);
+
+		const error = await openaiCodexOAuth
+			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 })
+			.catch((reason: unknown) => reason);
+
+		expect(error).toMatchObject({ code: "transient" });
+		expect(isOpenAICodexReauthenticationRequired(error)).toBe(false);
+	});
+
+	it("classifies malformed successful refresh responses without exposing token fields", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => jsonResponse({ access_token: "sensitive-access-token", expires_in: 3600 })),
+		);
+
+		const error = await openaiCodexOAuth
+			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 })
+			.catch((reason: unknown) => reason);
+
+		expect(error).toMatchObject({ code: "invalid_response" });
+		expect(String(error)).not.toContain("sensitive-access-token");
+		expect(isOpenAICodexReauthenticationRequired(error)).toBe(false);
+	});
+
+	it("passes cancellation to refresh fetch and classifies it separately", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+			expect(init?.signal).toBe(controller.signal);
+			throw new Error("aborted transport");
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const error = await openaiCodexOAuth
+			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 }, controller.signal)
+			.catch((reason: unknown) => reason);
+
+		expect(error).toMatchObject({ code: "aborted" });
+		expect(isOpenAICodexReauthenticationRequired(error)).toBe(false);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
 	it("does not write token refresh failures to stderr", async () => {
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (): Promise<Response> => {
-				return new Response(
-					JSON.stringify({
-						error: {
-							message: "Could not validate your token. Please try signing in again.",
-							type: "invalid_request_error",
-						},
-					}),
-					{ status: 401, statusText: "Unauthorized", headers: { "Content-Type": "application/json" } },
-				);
-			}),
+			vi.fn(async () => jsonResponse({ error: "invalid_grant" }, 400)),
 		);
 
 		await expect(
@@ -515,7 +595,7 @@ describe("OpenAI Codex OAuth", () => {
 				refresh: "invalid-refresh-token",
 				expires: 0,
 			}),
-		).rejects.toThrow(/OpenAI Codex token refresh failed \(401\).*Could not validate your token/);
+		).rejects.toMatchObject({ code: "reauth_required" });
 		expect(consoleError).not.toHaveBeenCalled();
 	});
 });

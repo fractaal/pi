@@ -1,6 +1,6 @@
 import { zstdDecompressSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compactOpenAICodexResponses } from "../src/api/openai-codex-responses.ts";
+import { compactOpenAICodexResponses, OpenAICodexNativeCompactionError } from "../src/api/openai-codex-responses.ts";
 import type { Context, Model } from "../src/types.ts";
 
 const model: Model<"openai-codex-responses"> = {
@@ -154,6 +154,32 @@ describe("OpenAI Codex native compaction", () => {
 		await expect(compactOpenAICodexResponses(model, context, { apiKey: token() })).rejects.toThrow(
 			/did not complete \(length\)/,
 		);
+	});
+
+	it("preserves a typed provider code when compaction fails", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						`data: ${JSON.stringify({
+							type: "error",
+							error: { code: "usage_limit_reached", message: "private upstream detail" },
+						})}\n\n`,
+						{ status: 200, headers: { "content-type": "text/event-stream" } },
+					),
+			),
+		);
+
+		const error = await compactOpenAICodexResponses(model, context, { apiKey: token() }).catch(
+			(reason: unknown) => reason,
+		);
+		expect(error).toBeInstanceOf(OpenAICodexNativeCompactionError);
+		expect(error).toMatchObject({
+			name: "OpenAICodexNativeCompactionError",
+			code: "usage_limit_reached",
+			status: undefined,
+		});
 	});
 
 	it("rejects malformed checkpoint output", async () => {

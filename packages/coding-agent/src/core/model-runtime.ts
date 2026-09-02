@@ -30,7 +30,7 @@ import {
 	type StreamOptions,
 } from "@earendil-works/pi-ai";
 import {
-	compactOpenAICodexResponses,
+	isOpenAICodexProvider,
 	type OpenAICodexNativeCompactionResult,
 	type OpenAICodexSimpleStreamOptions,
 } from "@earendil-works/pi-ai/api/openai-codex-responses";
@@ -505,7 +505,12 @@ export class ModelRuntime implements Models {
 			throw new ModelsError("provider", `OpenAI native compaction is unavailable for ${model.provider}/${model.id}`);
 		}
 		const prepared = await this.prepareRequest(model, options);
-		return compactOpenAICodexResponses(
+		const registered = this.nativeExtensionProviders.get(model.provider);
+		const provider = isOpenAICodexProvider(registered) ? registered : this.builtins.get(model.provider);
+		if (!isOpenAICodexProvider(provider)) {
+			throw new ModelsError("provider", `OpenAI native compaction is unavailable for ${model.provider}/${model.id}`);
+		}
+		return provider.compactOpenAICodexResponses(
 			prepared.model as Model<"openai-codex-responses">,
 			context,
 			prepared.options as OpenAICodexSimpleStreamOptions,
