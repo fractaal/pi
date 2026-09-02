@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.84.5] - 2026-09-02
+
 ### Added
 
 - Added typed OpenAI Codex refresh failures and a provider-owned native compaction capability for host integrations.

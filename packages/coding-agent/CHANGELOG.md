@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.84.5] - 2026-09-02
+
 ### Changed
 
 - OpenAI native compaction now delegates to a registered native Codex provider when it supplies the operation.
