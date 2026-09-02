@@ -6,6 +6,8 @@ import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	closeOpenAICodexWebSocketSessions,
+	getOpenAICodexResponseErrorCode,
+	getOpenAICodexResponseFailure,
 	getOpenAICodexWebSocketDebugStats,
 	resetOpenAICodexWebSocketDebugStats,
 	stream as streamOpenAICodexResponses,
@@ -1575,6 +1577,97 @@ describe("openai-codex streaming", () => {
 		expect(result.stopReason).toBe("stop");
 		expect(connections).toBe(2);
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("preserves a typed websocket provider failure without retrying another transport", async () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		class MockWebSocket extends EventTarget {
+			constructor() {
+				super();
+				queueMicrotask(() => this.dispatchEvent(new Event("open")));
+			}
+
+			send(): void {
+				const event = {
+					type: "error",
+					error: { code: "usage_limit_reached", message: "private upstream detail" },
+				};
+				queueMicrotask(() => {
+					this.dispatchEvent(Object.assign(new Event("message"), { data: JSON.stringify(event) }));
+				});
+			}
+
+			close(): void {}
+		}
+
+		vi.stubGlobal("WebSocket", MockWebSocket);
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+
+		const result = await streamOpenAICodexResponses(
+			model,
+			{ systemPrompt: "", messages: [] },
+			{
+				apiKey: mockToken(),
+			},
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(getOpenAICodexResponseErrorCode(result)).toBe("usage_limit_reached");
+		expect(result.diagnostics?.[0]?.error?.message).toBe("OpenAI Codex response failed");
+		expect(result.diagnostics?.[0]?.error?.message).not.toContain("private upstream detail");
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("preserves a typed SSE HTTP failure", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({ error: { code: "usage_not_included", message: "private upstream detail" } }),
+						{ status: 429, headers: { "content-type": "application/json" } },
+					),
+			),
+		);
+		const model: Model<"openai-codex-responses"> = {
+			id: "gpt-5.1-codex",
+			name: "GPT-5.1 Codex",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://chatgpt.com/backend-api",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400000,
+			maxTokens: 128000,
+		};
+
+		const result = await streamOpenAICodexResponses(
+			model,
+			{ systemPrompt: "", messages: [] },
+			{
+				apiKey: mockToken(),
+				transport: "sse",
+			},
+		).result();
+
+		expect(result.stopReason).toBe("error");
+		expect(getOpenAICodexResponseErrorCode(result)).toBe("usage_not_included");
+		expect(getOpenAICodexResponseFailure(result)).toEqual({ code: "usage_not_included", status: 429 });
+		expect(result.diagnostics?.[0]?.error?.message).toBe("OpenAI Codex response failed");
 	});
 
 	it("falls back to SSE when a websocket is idle before the first event", async () => {

@@ -21,6 +21,7 @@ import { getProviderEnvValue } from "../../utils/provider-env.ts";
 import type { AuthInteraction, OAuthAuth, OAuthCredential } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
+import { OpenAICodexOAuthRefreshError } from "./openai-codex-errors.ts";
 import { generatePKCE } from "./pkce.ts";
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -168,7 +169,21 @@ async function exchangeAuthorizationCode(
 	return readTokenResponse(response, "exchange");
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<OAuthToken> {
+async function readRefreshErrorCode(response: Response): Promise<string | undefined> {
+	try {
+		const json = (await response.json()) as {
+			error?: string | { code?: unknown; type?: unknown };
+		} | null;
+		if (typeof json?.error === "string") return json.error;
+		if (json?.error && typeof json.error === "object") {
+			if (typeof json.error.code === "string") return json.error.code;
+			if (typeof json.error.type === "string") return json.error.type;
+		}
+	} catch {}
+	return undefined;
+}
+
+async function refreshAccessToken(refreshToken: string, signal?: AbortSignal): Promise<OAuthToken> {
 	let response: Response;
 	try {
 		response = await fetch(TOKEN_URL, {
@@ -179,12 +194,61 @@ async function refreshAccessToken(refreshToken: string): Promise<OAuthToken> {
 				refresh_token: refreshToken,
 				client_id: CLIENT_ID,
 			}),
+			signal,
 		});
-	} catch (error) {
-		throw new Error(`OpenAI Codex token refresh error: ${error instanceof Error ? error.message : String(error)}`);
+	} catch {
+		if (signal?.aborted) {
+			throw new OpenAICodexOAuthRefreshError("aborted", "OpenAI Codex token refresh was cancelled");
+		}
+		throw new OpenAICodexOAuthRefreshError("transient", "OpenAI Codex token refresh request failed");
 	}
 
-	return readTokenResponse(response, "refresh");
+	if (!response.ok) {
+		const oauthCode = await readRefreshErrorCode(response);
+		if (response.status === 401 || response.status === 403 || oauthCode === "invalid_grant") {
+			throw new OpenAICodexOAuthRefreshError(
+				"reauth_required",
+				"OpenAI Codex authentication must be renewed",
+				response.status,
+			);
+		}
+		if (response.status === 429 || response.status >= 500) {
+			throw new OpenAICodexOAuthRefreshError(
+				"transient",
+				"OpenAI Codex token refresh is temporarily unavailable",
+				response.status,
+			);
+		}
+		throw new OpenAICodexOAuthRefreshError(
+			"invalid_response",
+			"OpenAI Codex token refresh was rejected",
+			response.status,
+		);
+	}
+
+	let json: { access_token?: string; refresh_token?: string; expires_in?: number } | null;
+	try {
+		json = (await response.json()) as typeof json;
+	} catch {
+		throw new OpenAICodexOAuthRefreshError(
+			"invalid_response",
+			"OpenAI Codex token refresh returned invalid JSON",
+			response.status,
+		);
+	}
+	if (!json?.access_token || !json.refresh_token || typeof json.expires_in !== "number") {
+		throw new OpenAICodexOAuthRefreshError(
+			"invalid_response",
+			"OpenAI Codex token refresh response was missing required fields",
+			response.status,
+		);
+	}
+
+	return {
+		access: json.access_token,
+		refresh: json.refresh_token,
+		expires: Date.now() + json.expires_in * 1000,
+	};
 }
 
 async function startOpenAICodexDeviceAuth(signal?: AbortSignal): Promise<DeviceAuthInfo> {
@@ -532,8 +596,16 @@ async function loginOpenAICodex(interaction: AuthInteraction): Promise<OAuthCred
 /**
  * Refresh OpenAI Codex OAuth token
  */
-async function refreshOpenAICodexToken(refreshToken: string): Promise<OAuthCredential> {
-	return credentialsFromToken(await refreshAccessToken(refreshToken));
+async function refreshOpenAICodexToken(refreshToken: string, signal?: AbortSignal): Promise<OAuthCredential> {
+	try {
+		return credentialsFromToken(await refreshAccessToken(refreshToken, signal));
+	} catch (error) {
+		if (error instanceof OpenAICodexOAuthRefreshError) throw error;
+		throw new OpenAICodexOAuthRefreshError(
+			"invalid_response",
+			"OpenAI Codex token refresh returned an invalid credential",
+		);
+	}
 }
 
 export const openaiCodexOAuth: OAuthAuth = {
@@ -559,7 +631,7 @@ export const openaiCodexOAuth: OAuthAuth = {
 		return loginOpenAICodex(interaction);
 	},
 
-	refresh: (credential) => refreshOpenAICodexToken(credential.refresh),
+	refresh: (credential, signal) => refreshOpenAICodexToken(credential.refresh, signal),
 
 	async toAuth(credential) {
 		return { apiKey: credential.access };

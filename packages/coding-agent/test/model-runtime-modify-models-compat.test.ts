@@ -2,10 +2,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { InMemoryModelsStore, type Model, type Provider } from "@earendil-works/pi-ai";
-import { describe, expect, it } from "vitest";
+import type { OpenAICodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
 
 function model(id: string): Model<"openai-completions"> {
 	return {
@@ -82,6 +87,141 @@ describe("extension provider model lifecycle", () => {
 
 		registry.unregisterProvider("extension-native");
 		expect(registry.getProvider("extension-native")).toBeUndefined();
+	});
+
+	it("delegates native compaction to a registered OpenAI Codex provider", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const nativeModel: Model<"openai-codex-responses"> = {
+			id: "gpt-native",
+			name: "GPT Native",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://example.test",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		const compactOpenAICodexResponses = vi.fn(async () => ({
+			item: { type: "compaction" as const, encrypted_content: "opaque" },
+			tokensBefore: 12,
+			usage: {
+				input: 12,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 13,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+		}));
+		const provider: OpenAICodexProvider = {
+			id: "openai-codex",
+			name: "Wrapped Codex",
+			auth: {
+				apiKey: {
+					name: "Codex key",
+					resolve: async ({ credential }) =>
+						credential?.key ? { auth: { apiKey: credential.key }, source: "stored" } : undefined,
+				},
+			},
+			getModels: () => [nativeModel],
+			stream: () => {
+				throw new Error("unused");
+			},
+			streamSimple: () => {
+				throw new Error("unused");
+			},
+			compactOpenAICodexResponses,
+		};
+
+		runtime.registerNativeProvider(provider);
+		await runtime.setRuntimeApiKey("openai-codex", "synthetic-key", { allowNetwork: false });
+
+		await expect(
+			runtime.compactOpenAICodexResponses(nativeModel, { systemPrompt: "", messages: [] }),
+		).resolves.toMatchObject({ item: { encrypted_content: "opaque" } });
+		expect(compactOpenAICodexResponses).toHaveBeenCalledWith(
+			nativeModel,
+			{ systemPrompt: "", messages: [] },
+			expect.objectContaining({ apiKey: "synthetic-key" }),
+		);
+	});
+
+	it("preserves built-in native compaction for older registered providers without the capability", async () => {
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsStore: new InMemoryModelsStore(),
+			modelsPath: null,
+			allowModelNetwork: false,
+		});
+		const nativeModel: Model<"openai-codex-responses"> = {
+			id: "gpt-native",
+			name: "GPT Native",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			baseUrl: "https://example.test",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 1000,
+			maxTokens: 100,
+		};
+		const provider: Provider<"openai-codex-responses"> = {
+			id: "openai-codex",
+			name: "Older Wrapped Codex",
+			auth: {
+				apiKey: {
+					name: "Codex key",
+					resolve: async ({ credential }) =>
+						credential?.key ? { auth: { apiKey: credential.key }, source: "stored" } : undefined,
+				},
+			},
+			getModels: () => [nativeModel],
+			stream: () => {
+				throw new Error("unused");
+			},
+			streamSimple: () => {
+				throw new Error("unused");
+			},
+		};
+		const tokenPayload = Buffer.from(
+			JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } }),
+		).toString("base64");
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(
+						`${[
+							`data: ${JSON.stringify({
+								type: "response.output_item.done",
+								item: { type: "compaction", encrypted_content: "opaque" },
+							})}`,
+							`data: ${JSON.stringify({
+								type: "response.completed",
+								response: {
+									status: "completed",
+									usage: { input_tokens: 12, output_tokens: 1, total_tokens: 13 },
+								},
+							})}`,
+						].join("\n\n")}\n\n`,
+						{ status: 200, headers: { "content-type": "text/event-stream" } },
+					),
+			),
+		);
+
+		runtime.registerNativeProvider(provider);
+		await runtime.setRuntimeApiKey("openai-codex", `aaa.${tokenPayload}.bbb`, { allowNetwork: false });
+
+		await expect(
+			runtime.compactOpenAICodexResponses(nativeModel, { systemPrompt: "", messages: [] }),
+		).resolves.toMatchObject({ item: { encrypted_content: "opaque" } });
 	});
 
 	it("applies models.json overrides above native providers", async () => {

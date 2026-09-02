@@ -22,7 +22,7 @@ function loadNodeOs(): typeof NodeOs | null {
 // NEVER convert to top-level runtime imports - breaks browser/Vite builds
 const _os: typeof NodeOs | null = loadNodeOs();
 
-import { clampThinkingLevel } from "../models.ts";
+import { clampThinkingLevel, type Provider } from "../models.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
 	Api,
@@ -116,6 +116,58 @@ export interface OpenAICodexNativeCompactionResult {
 	item: OpenAINativeCompactionItem;
 	tokensBefore: number;
 	usage: Usage;
+}
+
+export interface OpenAICodexProvider extends Provider<"openai-codex-responses"> {
+	compactOpenAICodexResponses(
+		model: Model<"openai-codex-responses">,
+		context: Context,
+		options?: OpenAICodexSimpleStreamOptions,
+	): Promise<OpenAICodexNativeCompactionResult>;
+}
+
+export function isOpenAICodexProvider(provider: Provider | undefined): provider is OpenAICodexProvider {
+	if (!provider || provider.id !== "openai-codex") return false;
+	const candidate = provider as Provider & { compactOpenAICodexResponses?: unknown };
+	return typeof candidate.compactOpenAICodexResponses === "function";
+}
+
+export class OpenAICodexNativeCompactionError extends Error {
+	readonly code?: string;
+	readonly status?: number;
+
+	constructor(message: string, failure?: OpenAICodexResponseFailure) {
+		super(message);
+		this.name = "OpenAICodexNativeCompactionError";
+		this.code = failure?.code;
+		this.status = failure?.status;
+	}
+}
+
+const OPENAI_CODEX_RESPONSE_FAILURE_DIAGNOSTIC = "openai_codex_response_failure";
+
+export interface OpenAICodexResponseFailure {
+	code?: string;
+	status?: number;
+}
+
+export function getOpenAICodexResponseFailure(
+	message: Pick<AssistantMessage, "diagnostics">,
+): OpenAICodexResponseFailure | undefined {
+	const diagnostic = message.diagnostics?.find(
+		(candidate) => candidate.type === OPENAI_CODEX_RESPONSE_FAILURE_DIAGNOSTIC,
+	);
+	if (!diagnostic) return undefined;
+	const code = diagnostic.error?.code;
+	const status = diagnostic.details?.status;
+	return {
+		code: typeof code === "string" ? code : undefined,
+		status: typeof status === "number" ? status : undefined,
+	};
+}
+
+export function getOpenAICodexResponseErrorCode(message: Pick<AssistantMessage, "diagnostics">): string | undefined {
+	return getOpenAICodexResponseFailure(message)?.code;
 }
 
 function isOpenAINativeCompactionItem(item: unknown): item is OpenAINativeCompactionItem {
@@ -481,7 +533,10 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						statusText: response.statusText,
 					});
 					const info = await parseErrorResponse(fakeResponse);
-					throw new Error(info.friendlyMessage || info.message);
+					throw new CodexApiError(info.friendlyMessage || info.message, {
+						code: info.code,
+						status: response.status,
+					});
 				} catch (error) {
 					if (error instanceof Error) {
 						if (error.name === "AbortError" || error.message === "Request was aborted") {
@@ -525,6 +580,18 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			stream.push({ type: "done", reason: output.stopReason, message: output });
 			stream.end();
 		} catch (error) {
+			if (error instanceof CodexApiError && (error.code || error.status !== undefined)) {
+				appendAssistantMessageDiagnostic(output, {
+					type: OPENAI_CODEX_RESPONSE_FAILURE_DIAGNOSTIC,
+					timestamp: Date.now(),
+					error: {
+						name: error.name,
+						message: "OpenAI Codex response failed",
+						code: error.code,
+					},
+					details: error.status === undefined ? undefined : { status: error.status },
+				});
+			}
 			for (const block of output.content) {
 				// Streaming scratch buffers are only used during parsing; never persist them.
 				delete (block as { partialJson?: string }).partialJson;
@@ -579,7 +646,10 @@ export async function compactOpenAICodexResponses(
 	}).result();
 
 	if (result.stopReason !== "stop") {
-		throw new Error(result.errorMessage || `OpenAI native compaction did not complete (${result.stopReason})`);
+		throw new OpenAICodexNativeCompactionError(
+			result.errorMessage || `OpenAI native compaction did not complete (${result.stopReason})`,
+			getOpenAICodexResponseFailure(result),
+		);
 	}
 	if (items.length !== 1) {
 		throw new Error(`OpenAI native compaction returned ${items.length} checkpoint items; expected exactly one`);
@@ -773,12 +843,17 @@ async function processStream(
 
 class CodexApiError extends Error {
 	readonly code?: string;
+	readonly status?: number;
 	readonly payload?: Record<string, unknown>;
 
-	constructor(message: string, options?: { code?: string; payload?: Record<string, unknown>; cause?: unknown }) {
+	constructor(
+		message: string,
+		options?: { code?: string; status?: number; payload?: Record<string, unknown>; cause?: unknown },
+	) {
 		super(message);
 		this.name = "CodexApiError";
 		this.code = options?.code;
+		this.status = options?.status;
 		this.payload = options?.payload;
 		this.cause = options?.cause;
 	}
@@ -837,6 +912,7 @@ async function* mapCodexEvents(
 			const { code, message } = extractCodexEventError(event);
 			throw new CodexApiError(`Codex error: ${message || code || JSON.stringify(event)}`, {
 				code,
+				status: typeof event.status === "number" ? event.status : undefined,
 				payload: event,
 			});
 		}
@@ -1640,10 +1716,13 @@ async function processWebSocketStream(
 // Error Handling
 // ============================================================================
 
-async function parseErrorResponse(response: Response): Promise<{ message: string; friendlyMessage?: string }> {
+async function parseErrorResponse(
+	response: Response,
+): Promise<{ message: string; friendlyMessage?: string; code?: string }> {
 	const raw = await response.text();
 	let message = raw || response.statusText || "Request failed";
 	let friendlyMessage: string | undefined;
+	let code: string | undefined;
 
 	try {
 		const parsed = JSON.parse(raw) as {
@@ -1651,8 +1730,11 @@ async function parseErrorResponse(response: Response): Promise<{ message: string
 		};
 		const err = parsed?.error;
 		if (err) {
-			const code = err.code || err.type || "";
-			if (/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code) || response.status === 429) {
+			code = err.code || err.type;
+			if (
+				/usage_limit_reached|usage_not_included|rate_limit_exceeded/i.test(code ?? "") ||
+				response.status === 429
+			) {
 				const plan = err.plan_type ? ` (${err.plan_type.toLowerCase()} plan)` : "";
 				const mins = err.resets_at
 					? Math.max(0, Math.round((err.resets_at * 1000 - Date.now()) / 60000))
@@ -1664,7 +1746,7 @@ async function parseErrorResponse(response: Response): Promise<{ message: string
 		}
 	} catch {}
 
-	return { message, friendlyMessage };
+	return { message, friendlyMessage, code };
 }
 
 // ============================================================================

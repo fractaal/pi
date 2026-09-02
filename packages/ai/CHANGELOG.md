@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added typed OpenAI Codex refresh failures and a provider-owned native compaction capability for host integrations.
+
+### Fixed
+
+- Preserved redacted OpenAI Codex response error codes in assistant diagnostics, including native compaction failures.
+
 ## [0.84.4] - 2026-08-25
 
 ### Changed
