@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6 Astra for OpenAI API keys and OpenAI Codex subscriptions.
+
+### Changed
+
+- Restored the GPT-5.6 Codex models to their 272,000-token default context window.
+
 ## [0.84.5] - 2026-09-02
 
 ### Added
