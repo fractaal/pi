@@ -12,6 +12,25 @@ function mockToken(): string {
 }
 
 describe("max thinking level", () => {
+	it.each(["openai", "openai-codex"] as const)("keeps GPT-6 Astra at the ordinary 272K context for %s", (provider) => {
+		const model = getModel(provider, "gpt-6-astra");
+		expect(model).toMatchObject({
+			id: "gpt-6-astra",
+			contextWindow: 272000,
+			maxTokens: 128000,
+		});
+		expect(model?.contextWindow).not.toBe(1050000);
+	});
+
+	it.each(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"] as const)(
+		"keeps GPT-5.6 Codex %s at the ordinary 272K context",
+		(modelId) => {
+			const model = getModel("openai-codex", modelId);
+			expect(model?.contextWindow).toBe(272000);
+			expect(model?.contextWindow).not.toBe(1050000);
+		},
+	);
+
 	it("is opt-in for ordinary reasoning models", () => {
 		const model: Model<"openai-completions"> = {
 			id: "ordinary-reasoning",
@@ -67,8 +86,8 @@ describe("max thinking level", () => {
 		expect(clampThinkingLevel(model, "xhigh")).toBe("max");
 	});
 
-	it("sends max to the Codex Responses API", async () => {
-		const model = getModel("openai-codex", "gpt-5.6-sol")!;
+	it.each(["gpt-5.6-sol", "gpt-6-astra"] as const)("sends max to the Codex Responses API for %s", async (modelId) => {
+		const model = getModel("openai-codex", modelId)!;
 		const context: Context = {
 			systemPrompt: "You are a helpful assistant.",
 			messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
