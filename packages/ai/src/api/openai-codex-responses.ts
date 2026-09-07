@@ -885,7 +885,14 @@ function isPreviousResponseNotFoundError(error: unknown): boolean {
 function extractCodexEventError(event: Record<string, unknown>): { code?: string; message?: string } {
 	const nested = event.error && typeof event.error === "object" ? (event.error as Record<string, unknown>) : undefined;
 	return {
-		code: typeof event.code === "string" ? event.code : typeof nested?.code === "string" ? nested.code : undefined,
+		code:
+			typeof event.code === "string"
+				? event.code
+				: typeof nested?.code === "string"
+					? nested.code
+					: typeof nested?.type === "string"
+						? nested.type
+						: undefined,
 		message:
 			typeof event.message === "string"
 				? event.message
@@ -918,9 +925,10 @@ async function* mapCodexEvents(
 		}
 
 		if (type === "response.failed") {
-			const response = (event as { response?: { error?: { code?: string; message?: string } } }).response;
-			const code = response?.error?.code;
-			const message = response?.error?.message;
+			const response = event.response;
+			const { code, message } = extractCodexEventError(
+				response && typeof response === "object" ? (response as Record<string, unknown>) : {},
+			);
 			throw new CodexApiError(message || "Codex response failed", { code, payload: event });
 		}
 

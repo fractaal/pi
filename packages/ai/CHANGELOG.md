@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.84.7] - 2026-09-07
+
+### Fixed
+
+- Preserved Codex streaming error types in typed failure diagnostics so host integrations can recover from quota exhaustion reported through `error.type`.
+
 ## [0.84.6] - 2026-09-05
 
 ### Added
