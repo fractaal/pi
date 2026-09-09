@@ -1889,7 +1889,51 @@ export class AgentSession {
 	// =========================================================================
 
 	get compactionMode(): "openai-native" | undefined {
+		const entries = this.sessionManager.getBranch();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i];
+			if (entry.type !== "custom" || entry.customType !== "pi-compaction-mode-v1") continue;
+			const data = entry.data as { mode?: unknown } | undefined;
+			if (data?.mode === "openai-native") return "openai-native";
+			if (data?.mode === "fractal") return undefined;
+		}
 		return this.sessionManager.getHeader()?.compactionMode;
+	}
+
+	/** Change future compaction strategy without discarding the active checkpoint. */
+	setCompactionMode(mode: "openai-native" | "fractal"): void {
+		if (mode !== "openai-native" && mode !== "fractal") throw new Error("Unknown compaction mode");
+		if (
+			mode === "openai-native" &&
+			(!this.model || this.model.provider !== "openai-codex" || this.model.api !== "openai-codex-responses")
+		) {
+			throw new Error("Select a compatible Codex model before enabling native compaction");
+		}
+		if ((this.compactionMode ?? "fractal") === mode) return;
+		this.sessionManager.appendCustomEntry("pi-compaction-mode-v1", { mode });
+	}
+
+	getCompactionControl() {
+		const checkpoint = this._latestNativeCompaction();
+		return {
+			mode: this.compactionMode ?? "fractal",
+			lockedModel: checkpoint ? { provider: checkpoint.provider, modelId: checkpoint.modelId } : null,
+			conversionPending: Boolean(checkpoint && this.compactionMode !== "openai-native"),
+		};
+	}
+
+	isModelAllowed(model: Model<any>): boolean {
+		const checkpoint = this._latestNativeCompaction();
+		if (checkpoint)
+			return (
+				model.provider === checkpoint.provider &&
+				model.id === checkpoint.modelId &&
+				model.api === "openai-codex-responses"
+			);
+		return (
+			this.compactionMode !== "openai-native" ||
+			(model.provider === "openai-codex" && model.api === "openai-codex-responses")
+		);
 	}
 
 	private _latestNativeCompaction(): OpenAINativeCompactionEntry | undefined {
@@ -1899,7 +1943,7 @@ export class AgentSession {
 
 	private _assertModelAllowedByNativeCheckpoint(model: Model<any>): void {
 		const checkpoint = this._latestNativeCompaction();
-		if (!checkpoint || (model.provider === checkpoint.provider && model.id === checkpoint.modelId)) return;
+		if (!checkpoint || this.isModelAllowed(model)) return;
 		throw new Error(
 			`This session contains an OpenAI native compaction checkpoint and is locked to ${checkpoint.provider}/${checkpoint.modelId}; cannot switch to ${model.provider}/${model.id}`,
 		);
@@ -1926,10 +1970,18 @@ export class AgentSession {
 	 */
 	async setModel(model: Model<any>): Promise<void> {
 		this._assertModelAllowedByNativeCheckpoint(model);
+		if (!this.isModelAllowed(model))
+			throw new Error(
+				"Native compaction requires a compatible Codex model; turn native compaction off to use another provider",
+			);
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
 
+		if (this.isCompacting) throw new Error("Wait for the current compaction before changing models");
+		// Auth may have awaited while compaction completed and installed a checkpoint.
+		this._assertModelAllowedByNativeCheckpoint(model);
+		if (!this.isModelAllowed(model)) throw new Error("Native compaction requires a compatible Codex model");
 		const previousModel = this.model;
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = model;
@@ -1949,7 +2001,7 @@ export class AgentSession {
 	 * @returns The new model info, or undefined if only one model available
 	 */
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
-		if (this._latestNativeCompaction()) return undefined;
+		if (this.isCompacting || this._latestNativeCompaction()) return undefined;
 		if (this._scopedModels.length > 0) {
 			return this._cycleScopedModel(direction);
 		}
@@ -1963,7 +2015,10 @@ export class AgentSession {
 				auth: await this._modelRuntime.checkAuth(scoped.model.provider),
 			})),
 		);
-		const scopedModels = checks.filter(({ auth }) => auth !== undefined).map(({ scoped }) => scoped);
+		if (this.isCompacting || this._latestNativeCompaction()) return undefined;
+		const scopedModels = checks
+			.filter(({ auth, scoped }) => auth !== undefined && this.isModelAllowed(scoped.model))
+			.map(({ scoped }) => scoped);
 		if (scopedModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -1992,8 +2047,8 @@ export class AgentSession {
 	}
 
 	private async _cycleAvailableModel(direction: "forward" | "backward"): Promise<ModelCycleResult | undefined> {
-		const availableModels = await this._modelRuntime.getAvailable();
-		if (availableModels.length <= 1) return undefined;
+		const availableModels = (await this._modelRuntime.getAvailable()).filter((model) => this.isModelAllowed(model));
+		if (this.isCompacting || this._latestNativeCompaction() || availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
 		let currentIndex = availableModels.findIndex((m) => modelsAreEqual(m, currentModel));
@@ -2126,6 +2181,43 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
+	private _nativeConversion(signal: AbortSignal) {
+		const checkpoint = this._latestNativeCompaction();
+		let completed = false;
+		const summarizeNativeContext = checkpoint
+			? async (context: Context, options: { maxTokens: number }): Promise<AssistantMessage> => {
+					if (!this.model) throw new Error(formatNoModelSelectedMessage());
+					this._assertModelAllowedByNativeCheckpoint(this.model);
+					const response = await (
+						await this.agent.streamFunction(this.model, context, {
+							maxTokens: options.maxTokens,
+							signal,
+							reasoning: this.thinkingLevel === "off" ? undefined : this.thinkingLevel,
+							sessionId: this.agent.sessionId,
+							onPayload: this.agent.onPayload,
+							onResponse: this.agent.onResponse,
+						})
+					).result();
+					if (signal.aborted || response.stopReason !== "stop" || !contentText(response.content).trim()) {
+						throw new Error("Native-to-text compaction did not produce a complete summary; checkpoint preserved");
+					}
+					completed = true;
+					return response;
+				}
+			: undefined;
+		return {
+			summarizeNativeContext,
+			assertComplete: (summary?: string) => {
+				if (!checkpoint) return;
+				if (!completed || !summary?.trim() || this._latestNativeCompaction()?.id !== checkpoint.id) {
+					throw new Error(
+						"Native checkpoint conversion requires a checkpoint-aware summarizer; checkpoint preserved",
+					);
+				}
+			},
+		};
+	}
+
 	private async _runOpenAINativeCompaction(signal: AbortSignal): Promise<{
 		item: OpenAINativeCompactionItem;
 		tokensBefore: number;
@@ -2218,6 +2310,7 @@ export class AgentSession {
 				throw new Error("Nothing to compact (session too small)");
 			}
 
+			const conversion = nativeMode ? undefined : this._nativeConversion(this._compactionAbortController.signal);
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
 
@@ -2230,6 +2323,7 @@ export class AgentSession {
 					reason: "manual",
 					willRetry: false,
 					signal: this._compactionAbortController.signal,
+					summarizeNativeContext: conversion?.summarizeNativeContext,
 				})) as SessionBeforeCompactResult | undefined;
 
 				if (result?.cancel) {
@@ -2265,6 +2359,7 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
+				conversion?.assertComplete();
 				const result = await compact(
 					preparation,
 					this.model,
@@ -2289,6 +2384,7 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
+			conversion?.assertComplete(summary);
 			const savedEntryId = nativeItem
 				? this.sessionManager.appendOpenAINativeCompaction(this.model.id, nativeItem, tokensBefore, usage!)
 				: this.sessionManager.appendCompaction(
@@ -2532,6 +2628,7 @@ export class AgentSession {
 			this._autoCompactionAbortController = new AbortController();
 			started = true;
 
+			const conversion = nativeMode ? undefined : this._nativeConversion(this._autoCompactionAbortController.signal);
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
 
@@ -2544,6 +2641,7 @@ export class AgentSession {
 					reason,
 					willRetry,
 					signal: this._autoCompactionAbortController.signal,
+					summarizeNativeContext: conversion?.summarizeNativeContext,
 				})) as SessionBeforeCompactResult | undefined;
 
 				if (extensionResult?.cancel) {
@@ -2587,6 +2685,7 @@ export class AgentSession {
 				details = extensionCompaction.details;
 			} else {
 				// Generate compaction result
+				conversion?.assertComplete();
 				const compactResult = await compact(
 					preparation,
 					this.model,
@@ -2619,6 +2718,7 @@ export class AgentSession {
 				return false;
 			}
 
+			conversion?.assertComplete(summary);
 			const savedEntryId = nativeItem
 				? this.sessionManager.appendOpenAINativeCompaction(this.model.id, nativeItem, tokensBefore, usage!)
 				: this.sessionManager.appendCompaction(

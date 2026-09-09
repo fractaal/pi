@@ -17,6 +17,7 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import type {
 	Api,
+	AssistantMessage,
 	AssistantMessageEvent,
 	AssistantMessageEventStream,
 	ConstrainedSamplingConfig,
@@ -643,6 +644,8 @@ export interface SessionBeforeCompactEvent {
 	/** True when Pi core resumes the interrupted turn after this compaction */
 	willRetry: boolean;
 	signal: AbortSignal;
+	/** Required when supplied: summarizes with the active opaque checkpoint on its owning provider. */
+	summarizeNativeContext?: (context: Context, options: { maxTokens: number }) => Promise<AssistantMessage>;
 }
 
 /** Fired after context compaction */

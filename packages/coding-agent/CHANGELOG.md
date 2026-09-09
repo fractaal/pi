@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added branch-local compaction mode controls and a checkpoint-aware summarization callback for extensions converting native OpenAI context back to text. Model restrictions lift only after successful conversion.
+
+### Fixed
+
+- Prevented model changes during compaction and rechecked checkpoint restrictions after asynchronous authentication.
+
 ## [0.84.7] - 2026-09-07
 
 ## [0.84.6] - 2026-09-05

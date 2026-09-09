@@ -6,6 +6,7 @@ import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { AssistantMessage, Model, Usage } from "@earendil-works/pi-ai/compat";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenAINativeCompactionFunction } from "../../src/core/agent-session.ts";
+import { convertToLlm } from "../../src/core/messages.ts";
 import { hasRestorableSessionContext, SessionManager } from "../../src/core/session-manager.ts";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
 
@@ -107,6 +108,115 @@ async function nativeHarness(compact: OpenAINativeCompactionFunction, seed = tru
 }
 
 describe("AgentSession OpenAI native compaction", () => {
+	it("changes desired mode without discarding a native checkpoint, and restores branch-specific intent", async () => {
+		const h = await nativeHarness(async () => ({
+			item: { type: "compaction", encrypted_content: "opaque" },
+			tokensBefore: 240,
+			usage: nativeUsage(),
+		}));
+		await h.session.compact();
+		const nativeLeaf = h.sessionManager.getLeafId()!;
+		h.session.setCompactionMode("fractal");
+		expect(h.session.getCompactionControl()).toMatchObject({
+			mode: "fractal",
+			conversionPending: true,
+			lockedModel: { modelId: "gpt-native-test" },
+		});
+		expect(h.session.isModelAllowed({ ...h.session.model!, provider: "other" })).toBe(false);
+		h.sessionManager.branch(nativeLeaf);
+		expect(h.session.compactionMode).toBe("openai-native");
+	});
+
+	it("restricts new native mode to Codex, and disabling before a checkpoint immediately unlocks", async () => {
+		const h = await nativeHarness(async () => {
+			throw new Error("not called");
+		});
+		const other = { ...h.session.model!, provider: "other" };
+		expect(h.session.isModelAllowed(other)).toBe(false);
+		h.session.setCompactionMode("fractal");
+		expect(h.session.isModelAllowed(other)).toBe(true);
+		h.session.setCompactionMode("openai-native");
+		expect(h.session.isModelAllowed({ ...h.session.model!, id: "another-codex" })).toBe(true);
+	});
+
+	it("refuses a tail-only conversion and preserves the checkpoint", async () => {
+		const h = await nativeHarness(async () => ({
+			item: { type: "compaction", encrypted_content: "opaque" },
+			tokensBefore: 240,
+			usage: nativeUsage(),
+		}));
+		await h.session.compact();
+		h.session.setCompactionMode("fractal");
+		seedConversation(h);
+		const before = h.sessionManager.getEntries().length;
+		await expect(h.session.compact()).rejects.toThrow("checkpoint-aware summarizer");
+		expect(h.sessionManager.getEntries()).toHaveLength(before);
+		expect(h.session.getCompactionControl().conversionPending).toBe(true);
+	});
+
+	it.each(["stop", "length", "error", "aborted"] as const)(
+		"conversion %s only unlocks after a complete plaintext summary",
+		async (stopReason) => {
+			const h = await createHarness({
+				compactionMode: "openai-native",
+				settings: { compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 } },
+				extensionFactories: [
+					(pi) => {
+						pi.on("session_before_compact", async (event) => {
+							const response = await event.summarizeNativeContext!(
+								{
+									systemPrompt: "Summarize faithfully",
+									messages: [{ role: "user", content: "selected tail", timestamp: 1 }],
+								},
+								{ maxTokens: 90 },
+							);
+							return {
+								compaction: {
+									summary: getMessageText(response),
+									firstKeptEntryId: event.preparation.firstKeptEntryId,
+									tokensBefore: event.preparation.tokensBefore,
+								},
+							};
+						});
+					},
+				],
+			});
+			harnesses.push(h);
+			Object.assign(h.session.model!, {
+				provider: "openai-codex",
+				api: "openai-codex-responses",
+				id: "gpt-native-test",
+			});
+			h.sessionManager.appendOpenAINativeCompaction(
+				"gpt-native-test",
+				{ type: "compaction", encrypted_content: "opaque" },
+				240,
+				nativeUsage(),
+			);
+			h.session.setCompactionMode("fractal");
+			seedConversation(h);
+			h.session.agent.streamFunction = responseStream([
+				{ ...assistant("gpt-native-test", "faithful summary"), stopReason },
+			]);
+			if (stopReason === "stop") {
+				await h.session.compact();
+				expect(h.session.getCompactionControl()).toMatchObject({
+					mode: "fractal",
+					lockedModel: null,
+					conversionPending: false,
+				});
+				expect(h.sessionManager.getBranch().some((e) => e.type === "openai_native_compaction")).toBe(true);
+				expect(convertToLlm(h.session.messages).some((m) => getMessageText(m).includes("faithful summary"))).toBe(
+					true,
+				);
+			} else {
+				await expect(h.session.compact()).rejects.toThrow();
+				expect(h.session.getCompactionControl().conversionPending).toBe(true);
+				expect(h.sessionManager.getBranch().some((e) => e.type === "compaction")).toBe(false);
+			}
+		},
+	);
+
 	it("persists one opaque checkpoint only after provider success", async () => {
 		const compact = vi.fn(async (_model: Model<"openai-codex-responses">, context: { messages: unknown[] }) => {
 			expect(context.messages).toHaveLength(4);
@@ -337,6 +447,7 @@ describe("AgentSession OpenAI native compaction", () => {
 		});
 		harnesses.push(harness);
 		const modelB = harness.getModel("model-b")!;
+		harness.session.setCompactionMode("fractal");
 		await expect(harness.session.setModel(modelB)).resolves.toBeUndefined();
 
 		harness.sessionManager.appendOpenAINativeCompaction(
@@ -381,6 +492,7 @@ describe("AgentSession OpenAI native compaction", () => {
 		harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 
 		await harness.session.navigateTree(beforeCheckpointId);
+		harness.session.setCompactionMode("fractal");
 		await harness.session.setModel(harness.getModel("model-b")!);
 		await harness.session.navigateTree(checkpointId);
 		harness.session.agent.streamFunction = responseStream([assistant("model-a", "continued after branch restore")]);
