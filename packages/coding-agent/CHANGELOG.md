@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.84.8] - 2026-09-09
+
+### New Features
+
+- **SDK compaction mode controls:** Choose the strategy per session branch while preserving native OpenAI checkpoints. Extensions can convert the checkpoint to text through its owning provider; other models unlock only after successful conversion. See [#21](https://github.com/fractaal/pi/pull/21).
+
 ### Added
 
 - Added branch-local compaction mode controls and a checkpoint-aware summarization callback for extensions converting native OpenAI context back to text. Model restrictions lift only after successful conversion.
