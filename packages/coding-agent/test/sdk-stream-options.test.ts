@@ -220,6 +220,25 @@ describe("createAgentSession stream options", () => {
 						pi.on("before_provider_headers", (event) => {
 							event.headers["x-hook"] = `${event.headers["HTTP-Referer"]}:${event.headers["x-provider"]}`;
 						});
+						pi.on("session_before_compact", async (event) => {
+							const response = await event.summarizeNativeContext!(
+								{
+									systemPrompt: "Keep all prior decisions",
+									messages: [{ role: "user", content: "Summarize the selected tail", timestamp: 1 }],
+								},
+								{ maxTokens: 90 },
+							);
+							return {
+								compaction: {
+									summary: response.content
+										.filter((c) => c.type === "text")
+										.map((c) => c.text)
+										.join(""),
+									firstKeptEntryId: event.preparation.firstKeptEntryId,
+									tokensBefore: event.preparation.tokensBefore,
+								},
+							};
+						});
 					},
 				],
 				cwd,
@@ -324,6 +343,23 @@ describe("createAgentSession stream options", () => {
 				"X-OpenRouter-Title": "pi",
 				"x-hook": "https://pi.dev:provider",
 			});
+			session.setCompactionMode("fractal");
+			for (let turn = 0; turn < 3; turn++) {
+				sessionManager.appendMessage({
+					role: "user",
+					content: "Tail to preserve ".repeat(30),
+					timestamp: Date.now(),
+				});
+				sessionManager.appendMessage(await createDoneStream(model.api).result());
+			}
+			session.agent.state.messages = sessionManager.buildSessionContext().messages;
+			await session.compact();
+			expect(capturedReplayOptions?.nativeCompactionCheckpoint).toMatchObject({
+				item: { encrypted_content: "opaque" },
+			});
+			expect(session.getCompactionControl()).toMatchObject({ lockedModel: null, conversionPending: false });
+			await (await session.agent.streamFunction(model, { messages: [] })).result();
+			expect(capturedReplayOptions).not.toHaveProperty("nativeCompactionCheckpoint");
 		} finally {
 			session.dispose();
 			modelRegistry.unregisterProvider(model.provider);
