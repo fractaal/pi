@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added explicit caller-authenticated HTTP transport support for Codex streaming and native compaction, without requiring or forwarding an OpenAI token.
+
 ## [0.84.8] - 2026-09-09
 
 ## [0.84.7] - 2026-09-07
