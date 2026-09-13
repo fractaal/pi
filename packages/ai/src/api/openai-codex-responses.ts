@@ -96,11 +96,19 @@ export interface OpenAINativeCompactionCheckpoint {
 	item: OpenAINativeCompactionItem;
 }
 
-export interface OpenAICodexSimpleStreamOptions extends SimpleStreamOptions {
+interface OpenAICodexAuthOptions {
+	/**
+	 * Token auth is the default. Transport auth requires a custom fetch that owns
+	 * authentication, forces SSE, and omits provider bearer/account headers.
+	 */
+	authMode?: "token" | "transport";
+}
+
+export interface OpenAICodexSimpleStreamOptions extends SimpleStreamOptions, OpenAICodexAuthOptions {
 	nativeCompactionCheckpoint?: OpenAINativeCompactionCheckpoint;
 }
 
-export interface OpenAICodexResponsesOptions extends StreamOptions {
+export interface OpenAICodexResponsesOptions extends StreamOptions, OpenAICodexAuthOptions {
 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	reasoningSummary?: "auto" | "concise" | "detailed" | "off" | "on" | null;
 	serviceTier?: ResponseCreateParamsStreaming["service_tier"];
@@ -358,12 +366,16 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 		};
 
 		try {
-			const apiKey = options?.apiKey;
-			if (!apiKey) {
+			const transportAuth = options?.authMode === "transport";
+			if (transportAuth && (!options?.fetch || options.fetch === globalThis.fetch)) {
+				throw new Error("Codex transport auth requires a custom fetch that owns authentication");
+			}
+			const apiKey = transportAuth ? undefined : options?.apiKey;
+			if (!transportAuth && !apiKey) {
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 
-			const accountId = extractAccountId(apiKey);
+			const accountId = apiKey ? extractAccountId(apiKey) : undefined;
 			const grammarToolInputProperties = createGrammarToolInputProperties(
 				context.tools,
 				model.compat?.supportsOpenAIGrammarTools ?? false,
@@ -387,7 +399,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			const bodyJson = JSON.stringify(body);
 			const httpTimeoutMs = normalizeTimeoutMs(options?.timeoutMs);
 			const websocketConnectTimeoutMs = normalizeTimeoutMs(options?.websocketConnectTimeoutMs);
-			const transport = options?.transport || "auto";
+			const transport = transportAuth ? "sse" : options?.transport || "auto";
 			let startEmitted = false;
 			const websocketDisabledForSession = transport !== "sse" && isWebSocketSseFallbackActive(cacheSessionId);
 			if (websocketDisabledForSession) {
@@ -613,7 +625,7 @@ function buildSimpleCodexOptions(
 	options?: OpenAICodexSimpleStreamOptions,
 ): OpenAICodexResponsesOptions {
 	const apiKey = options?.apiKey;
-	if (!apiKey) {
+	if (!apiKey && options?.authMode !== "transport") {
 		throw new Error(`No API key for provider: ${model.provider}`);
 	}
 
@@ -621,6 +633,7 @@ function buildSimpleCodexOptions(
 	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
 	return {
 		...base,
+		authMode: options?.authMode,
 		reasoningEffort: clampedReasoning === "off" ? undefined : clampedReasoning,
 		nativeCompactionCheckpoint: options?.nativeCompactionCheckpoint,
 	};
@@ -1777,8 +1790,8 @@ function extractAccountId(token: string): string {
 function buildBaseCodexHeaders(
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
-	accountId: string,
-	token: string,
+	accountId: string | undefined,
+	token: string | undefined,
 ): Headers {
 	const headers = new Headers(initHeaders);
 	for (const [key, value] of Object.entries(additionalHeaders || {})) {
@@ -1788,8 +1801,14 @@ function buildBaseCodexHeaders(
 			headers.set(key, value);
 		}
 	}
-	headers.set("Authorization", `Bearer ${token}`);
-	headers.set("chatgpt-account-id", accountId);
+	if (token && accountId) {
+		headers.set("Authorization", `Bearer ${token}`);
+		headers.set("chatgpt-account-id", accountId);
+	} else {
+		// The custom transport supplies its own authentication, never a copied token.
+		headers.delete("Authorization");
+		headers.delete("chatgpt-account-id");
+	}
 	headers.set("originator", "pi");
 	const userAgent = _os ? `pi (${_os.platform()} ${_os.release()}; ${_os.arch()})` : "pi (browser)";
 	headers.set("User-Agent", userAgent);
@@ -1799,8 +1818,8 @@ function buildBaseCodexHeaders(
 function buildSSEHeaders(
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
-	accountId: string,
-	token: string,
+	accountId: string | undefined,
+	token: string | undefined,
 	sessionId?: string,
 ): Headers {
 	const headers = buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token);
@@ -1819,8 +1838,8 @@ function buildSSEHeaders(
 function buildWebSocketHeaders(
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
-	accountId: string,
-	token: string,
+	accountId: string | undefined,
+	token: string | undefined,
 	requestId: string,
 ): Headers {
 	const headers = buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token);

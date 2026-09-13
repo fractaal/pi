@@ -123,7 +123,7 @@ Attribution:
 
 **This fork publishes `@fractaal/pi-ai`, `@fractaal/pi-agent-core`, `@fractaal/pi-tui`, and `@fractaal/pi-coding-agent`** at ordinary stable SemVer on npm's ordinary `latest` tag. There is no `-fractal.N` version suffix and no `fractal` dist-tag. The source tree keeps upstream's `@earendil-works/*` names so upstream merges stay mechanical; `scripts/fractal-identity.mjs` applies the fork identity to the manifests in CI, immediately before publishing, and is the only place that transformation exists. Release tags are `fractaal-vX.Y.Z`, because upstream `v*` tags arrive through merges and share the same Git tag namespace.
 
-1. **Update CHANGELOGs**: ask the user whether they ran the `/cl` prompt on the latest commit on `main`. If not, they must run `/cl` first to audit and update each package's `[Unreleased]` section before releasing.
+1. **Update CHANGELOGs**: review the changes since the previous release and update each affected package's `[Unreleased]` section as part of release preparation. No separate prompt or user-run changelog audit is required.
 
 2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
    ```bash
