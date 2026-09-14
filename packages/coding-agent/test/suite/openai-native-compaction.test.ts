@@ -185,6 +185,7 @@ describe("AgentSession OpenAI native compaction", () => {
 			apiKey: "synthetic-key",
 			models: [first, second],
 		});
+		await h.session.modelRuntime.refresh({ allowNetwork: false });
 		await h.session.compact();
 		const checkpoint = h.sessionManager.getBranch().at(-1);
 		await h.session.setModel(second);
