@@ -1,6 +1,9 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
-import type { OpenAINativeCompactionItem } from "@earendil-works/pi-ai/api/openai-codex-responses";
+import type {
+	OpenAINativeCompactionCheckpoint,
+	OpenAINativeCompactionItem,
+} from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { randomUUID } from "crypto";
 import {
 	appendFileSync,
@@ -89,6 +92,7 @@ export interface OpenAINativeCompactionEntry extends SessionEntryBase {
 	provider: "openai-codex";
 	modelId: string;
 	item: OpenAINativeCompactionItem;
+	retainedInput?: OpenAINativeCompactionCheckpoint["retainedInput"];
 	tokensBefore: number;
 	usage: Usage;
 }
@@ -1126,6 +1130,7 @@ export class SessionManager {
 		item: OpenAINativeCompactionItem,
 		tokensBefore: number,
 		usage: Usage,
+		retainedInput?: OpenAINativeCompactionCheckpoint["retainedInput"],
 	): string {
 		const entry: OpenAINativeCompactionEntry = {
 			type: "openai_native_compaction",
@@ -1135,6 +1140,7 @@ export class SessionManager {
 			provider: "openai-codex",
 			modelId,
 			item,
+			retainedInput,
 			tokensBefore,
 			usage,
 		};

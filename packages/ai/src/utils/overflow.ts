@@ -140,7 +140,7 @@ export function isContextOverflow(message: AssistantMessage, contextWindow?: num
 	}
 
 	// Case 2: Silent overflow (z.ai style) - successful but usage exceeds context
-	if (contextWindow && message.stopReason === "stop") {
+	if (contextWindow && (message.stopReason === "stop" || message.stopReason === "toolUse")) {
 		const inputTokens = message.usage.input + message.usage.cacheRead;
 		if (inputTokens > contextWindow) {
 			return true;

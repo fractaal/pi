@@ -47,8 +47,10 @@ import { formatProviderError, normalizeProviderError } from "../utils/error-body
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
+import { isRetryableAssistantError, retryAssistantCall } from "../utils/retry.ts";
 import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
+import { retainCodexCompactionInput, trimCodexCompactionToolOutputs } from "./openai-codex-compaction-history.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
@@ -94,6 +96,8 @@ export interface OpenAINativeCompactionCheckpoint {
 	provider: "openai-codex";
 	modelId: string;
 	item: OpenAINativeCompactionItem;
+	/** Recent input retained before the opaque checkpoint; absent in older sessions. */
+	retainedInput?: ResponseInput;
 }
 
 interface OpenAICodexAuthOptions {
@@ -106,7 +110,11 @@ interface OpenAICodexAuthOptions {
 
 export interface OpenAICodexSimpleStreamOptions extends SimpleStreamOptions, OpenAICodexAuthOptions {
 	nativeCompactionCheckpoint?: OpenAINativeCompactionCheckpoint;
+	/** Input selected by the harness before generated context is converted into API user messages. */
+	nativeCompactionRetainedMessages?: Context["messages"];
 }
+
+export { estimateOpenAINativeCompactionTokens } from "./openai-codex-compaction-history.ts";
 
 export interface OpenAICodexResponsesOptions extends StreamOptions, OpenAICodexAuthOptions {
 	reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -122,6 +130,8 @@ export interface OpenAICodexResponsesOptions extends StreamOptions, OpenAICodexA
 
 export interface OpenAICodexNativeCompactionResult {
 	item: OpenAINativeCompactionItem;
+	/** Recent input retained before the opaque checkpoint; absent in older sessions. */
+	retainedInput?: ResponseInput;
 	tokensBefore: number;
 	usage: Usage;
 }
@@ -651,12 +661,25 @@ export async function compactOpenAICodexResponses(
 	options?: OpenAICodexSimpleStreamOptions,
 ): Promise<OpenAICodexNativeCompactionResult> {
 	const items: unknown[] = [];
-	const result = await stream(model, context, {
-		...buildSimpleCodexOptions(model, context, options),
-		transport: "sse",
-		nativeCompaction: true,
-		onNativeCompactionItem: (item) => items.push(item),
-	}).result();
+	const base = buildSimpleCodexOptions(model, context, options);
+	let transport = base.transport;
+	const produce = () => {
+		items.length = 0;
+		return stream(model, context, {
+			...base,
+			transport,
+			// Own one bounded stream retry budget; do not multiply HTTP retries.
+			maxRetries: 0,
+			nativeCompaction: true,
+			onNativeCompactionItem: (item) => items.push(item),
+		}).result();
+	};
+	const policy = { enabled: true, maxRetries: 2, baseDelayMs: BASE_DELAY_MS };
+	let result = await retryAssistantCall(produce, policy, options?.signal);
+	if (transport !== "sse" && base.authMode !== "transport" && isRetryableAssistantError(result)) {
+		transport = "sse";
+		result = await retryAssistantCall(produce, policy, options?.signal);
+	}
 
 	if (result.stopReason !== "stop") {
 		throw new OpenAICodexNativeCompactionError(
@@ -672,13 +695,21 @@ export async function compactOpenAICodexResponses(
 		throw new Error("OpenAI native compaction returned a malformed checkpoint item");
 	}
 
-	closeOpenAICodexWebSocketSessions(options?.sessionId);
 	return {
-		item: {
-			type: "compaction",
-			encrypted_content: item.encrypted_content,
-			id: typeof item.id === "string" ? item.id : undefined,
-		},
+		item: { ...item },
+		retainedInput: retainCodexCompactionInput(
+			buildRequestBody(
+				model,
+				{
+					...context,
+					messages: (options?.nativeCompactionRetainedMessages ?? context.messages).filter(
+						(message) => message.role === "user",
+					),
+				},
+				base,
+				undefined,
+			).input ?? [],
+		),
 		tokensBefore: result.usage.input + result.usage.cacheRead,
 		usage: result.usage,
 	};
@@ -701,7 +732,12 @@ function buildRequestBody(
 	const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
 	const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
 	const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
-	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+	const checkpoint = options?.nativeCompactionCheckpoint;
+	const checkpointInput: ResponseInput = checkpoint ? [...(checkpoint.retainedInput ?? []), checkpoint.item] : [];
+	const requestContext = options?.nativeCompaction
+		? trimCodexCompactionToolOutputs(context, checkpointInput, model.contextWindow)
+		: context;
+	const messages = convertResponsesMessages(model, requestContext, CODEX_TOOL_CALL_PROVIDERS, {
 		includeSystemPrompt: false,
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
@@ -712,17 +748,18 @@ function buildRequestBody(
 		},
 	});
 
-	const checkpoint = options?.nativeCompactionCheckpoint;
 	if (checkpoint) {
-		if (checkpoint.provider !== model.provider || checkpoint.modelId !== model.id) {
+		if (checkpoint.provider !== model.provider || model.api !== "openai-codex-responses") {
 			throw new Error(
-				`OpenAI native compaction checkpoint requires ${checkpoint.provider}/${checkpoint.modelId}; current model is ${model.provider}/${model.id}`,
+				`OpenAI native compaction checkpoint requires the openai-codex Responses route; current model is ${model.provider}/${model.id}`,
 			);
 		}
 		if (!isOpenAINativeCompactionItem(checkpoint.item)) {
 			throw new Error("Stored OpenAI native compaction checkpoint is malformed");
 		}
-		messages.unshift({ ...checkpoint.item } satisfies ResponseCompactionItemParam);
+		messages.unshift(...(checkpoint.retainedInput ?? []), {
+			...checkpoint.item,
+		} satisfies ResponseCompactionItemParam);
 	}
 
 	if (options?.nativeCompaction) {
@@ -1696,7 +1733,7 @@ async function processWebSocketStream(
 		socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
 		await processResponsesStream(
 			startWebSocketOutputOnFirstEvent(
-				mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs)),
+				mapCodexEvents(parseWebSocket(socket, options?.signal, idleTimeoutMs), options?.onNativeCompactionItem),
 				onStart,
 			),
 			output,
@@ -1711,6 +1748,9 @@ async function processWebSocketStream(
 		);
 		if (options?.signal?.aborted) {
 			keepConnection = false;
+		} else if (options?.nativeCompaction && entry) {
+			// The rewritten history must be sent in full, but the connection stays reusable.
+			entry.continuation = undefined;
 		} else if (useCachedContext && entry && output.responseId) {
 			const responseItems = convertResponsesMessages(model, { messages: [output] }, CODEX_TOOL_CALL_PROVIDERS, {
 				includeSystemPrompt: false,

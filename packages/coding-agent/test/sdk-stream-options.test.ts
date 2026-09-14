@@ -334,7 +334,7 @@ describe("createAgentSession stream options", () => {
 			});
 			expect(providerStream).toHaveBeenCalledTimes(1);
 			expect(() => session.agent.streamFunction({ ...model, api: "openai-completions" }, { messages: [] })).toThrow(
-				/checkpoint requires openai-codex\/capture-model/,
+				/checkpoint requires the openai-codex Responses route/,
 			);
 			expect(providerStream).toHaveBeenCalledTimes(1);
 			expect(transformedHeaders).toMatchObject({
@@ -357,7 +357,7 @@ describe("createAgentSession stream options", () => {
 			expect(capturedReplayOptions?.nativeCompactionCheckpoint).toMatchObject({
 				item: { encrypted_content: "opaque" },
 			});
-			expect(session.getCompactionControl()).toMatchObject({ lockedModel: null, conversionPending: false });
+			expect(session.getCompactionControl()).toMatchObject({ lockedProvider: null, conversionPending: false });
 			await (await session.agent.streamFunction(model, { messages: [] })).result();
 			expect(capturedReplayOptions).not.toHaveProperty("nativeCompactionCheckpoint");
 		} finally {

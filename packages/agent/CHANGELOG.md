@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.85.0] - 2026-09-14
+
+### Added
+
+- Exposed the existing loop-level stop-after-turn hook through Agent options so hosts can compact after completed tool results and before the next provider request.
+
 ## [0.84.9] - 2026-09-12
 
 ## [0.84.8] - 2026-09-09
