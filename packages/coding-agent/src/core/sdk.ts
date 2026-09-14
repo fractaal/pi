@@ -93,6 +93,8 @@ export interface CreateAgentSessionOptions {
 	sessionManager?: SessionManager;
 	/** Latched compaction mode for a newly created default session manager. */
 	compactionMode?: SessionCompactionMode;
+	/** Exclude regenerated context from separately retained native-compaction input. */
+	nativeCompactionRetainMessage?: (message: AgentMessage) => boolean;
 
 	/** Settings manager. Default: SettingsManager.create(cwd, agentDir) */
 	settingsManager?: SettingsManager;
@@ -346,13 +348,9 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		};
 		const checkpoint = getLatestCompactionCheckpoint(sessionManager.getBranch());
 		if (checkpoint?.type !== "openai_native_compaction") return enriched;
-		if (
-			requestModel.provider !== checkpoint.provider ||
-			requestModel.id !== checkpoint.modelId ||
-			requestModel.api !== "openai-codex-responses"
-		) {
+		if (requestModel.provider !== checkpoint.provider || requestModel.api !== "openai-codex-responses") {
 			throw new Error(
-				`OpenAI native compaction checkpoint requires ${checkpoint.provider}/${checkpoint.modelId} on openai-codex-responses; current model is ${requestModel.provider}/${requestModel.id} on ${requestModel.api}`,
+				`OpenAI native compaction checkpoint requires the openai-codex Responses route; current model is ${requestModel.provider}/${requestModel.id} on ${requestModel.api}`,
 			);
 		}
 		return { ...enriched, nativeCompactionCheckpoint: checkpoint };
@@ -427,6 +425,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		nativeCompactionRetainMessage: options.nativeCompactionRetainMessage,
 		openaiNativeCompaction: (requestModel, context, requestOptions) =>
 			modelRuntime.compactOpenAICodexResponses(
 				requestModel,

@@ -17,6 +17,7 @@ import type {
 import { registerFauxProvider, streamSimple } from "@earendil-works/pi-ai/compat";
 import {
 	AgentSession,
+	type AgentSessionConfig,
 	type AgentSessionEvent,
 	type OpenAINativeCompactionFunction,
 } from "../../src/core/agent-session.ts";
@@ -78,6 +79,7 @@ export interface HarnessOptions {
 	modelsJson?: Record<string, unknown>;
 	compactionMode?: SessionCompactionMode;
 	openaiNativeCompaction?: OpenAINativeCompactionFunction;
+	nativeCompactionRetainMessage?: AgentSessionConfig["nativeCompactionRetainMessage"];
 }
 
 export interface Harness {
@@ -198,6 +200,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
 		excludedToolNames: options.excludedToolNames,
 		extensionRunnerRef,
 		openaiNativeCompaction: options.openaiNativeCompaction,
+		nativeCompactionRetainMessage: options.nativeCompactionRetainMessage,
 	});
 
 	const events: AgentSessionEvent[] = [];

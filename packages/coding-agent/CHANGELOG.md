@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Replaced the compaction control's exact-model restriction with a provider restriction: consumers should use lockedProvider instead of lockedModel. Native checkpoints allow switching between compatible Codex models; switching providers still requires successful conversion to text.
+
+### Added
+
+- Added an SDK filter for regenerated context that should not be retained as user/extension input beside native checkpoints.
+
+### Fixed
+
+- Compact after completed tool batches when context crosses the configured threshold, then continue without rerunning tools or losing queued input.
+- Preserve recent user/extension input before native checkpoints, estimate checkpoint context before the next provider response, and allow native compaction independently of plaintext tail cut points.
+- Keep plaintext compaction effective when a large trailing tool result exceeds the recent-tail budget.
+
 ## [0.84.9] - 2026-09-12
 
 ## [0.84.8] - 2026-09-09

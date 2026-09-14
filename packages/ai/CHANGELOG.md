@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Native Codex compaction retains up to 64K estimated tokens of recent user input before the opaque checkpoint, preserves that input across subsequent compactions, and allows replay by compatible Codex models.
+- Native compaction uses the active transport with bounded stream retries, keeps healthy WebSocket connections reusable, and trims oversized trailing tool results only in the compaction request.
+
+### Fixed
+
+- Detect configured context overflow in successful tool-call responses as well as final answers.
+
 ## [0.84.9] - 2026-09-12
 
 ### Added

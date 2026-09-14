@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenAINativeCompactionFunction } from "../../src/core/agent-session.ts";
 import { convertToLlm } from "../../src/core/messages.ts";
 import { hasRestorableSessionContext, SessionManager } from "../../src/core/session-manager.ts";
-import { createHarness, getMessageText, type Harness } from "./harness.ts";
+import { createHarness, getMessageText, type Harness, type HarnessOptions } from "./harness.ts";
 
 const harnesses: Harness[] = [];
 const tempDirs: string[] = [];
@@ -82,8 +82,13 @@ function seedConversation(harness: Harness): void {
 	harness.session.agent.state.messages = harness.sessionManager.buildSessionContext().messages;
 }
 
-async function nativeHarness(compact: OpenAINativeCompactionFunction, seed = true): Promise<Harness> {
+async function nativeHarness(
+	compact: OpenAINativeCompactionFunction,
+	seed = true,
+	options: Partial<HarnessOptions> = {},
+): Promise<Harness> {
 	const harness = await createHarness({
+		...options,
 		compactionMode: "openai-native",
 		openaiNativeCompaction: compact,
 		settings: { compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 } },
@@ -108,6 +113,86 @@ async function nativeHarness(compact: OpenAINativeCompactionFunction, seed = tru
 }
 
 describe("AgentSession OpenAI native compaction", () => {
+	it("compacts full history but retains original input without shell output, summaries, or regenerated context", async () => {
+		const compact = vi.fn<OpenAINativeCompactionFunction>(async () => ({
+			item: { type: "compaction", encrypted_content: "opaque" },
+			tokensBefore: 240,
+			usage: nativeUsage(),
+		}));
+		const h = await nativeHarness(compact, false, {
+			nativeCompactionRetainMessage: (message) =>
+				message.role !== "custom" || message.customType !== "regenerated-context",
+		});
+		h.session.agent.state.systemPrompt = "Current project directives";
+		h.session.agent.state.messages = [
+			{ role: "user", content: "Use plan B", timestamp: 1 },
+			assistant("gpt-native-test", "I will implement plan B"),
+			{
+				role: "bashExecution",
+				command: "echo shell-result",
+				output: "shell-result",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				timestamp: 2,
+			},
+			{ role: "compactionSummary", summary: "older summary", tokensBefore: 10, timestamp: 3 },
+			{ role: "custom", customType: "hook", content: "Extension instruction", display: false, timestamp: 4 },
+			{
+				role: "custom",
+				customType: "regenerated-context",
+				content: "Current project directives",
+				display: false,
+				timestamp: 5,
+			},
+		];
+		await h.session.compact();
+		const [, context, options] = compact.mock.calls[0]!;
+		expect(context.systemPrompt).toBe("Current project directives");
+		expect(context.messages.map(getMessageText).join("\n")).toContain("shell-result");
+		expect(context.messages.map(getMessageText).join("\n")).toContain("older summary");
+		expect(options?.nativeCompactionRetainedMessages?.map(getMessageText)).toEqual([
+			"Use plan B",
+			"Extension instruction",
+		]);
+	});
+
+	it("accounts for both encrypted context and retained input before the next model response", async () => {
+		const h = await nativeHarness(async () => ({
+			item: { type: "compaction", encrypted_content: "x".repeat(4_000) },
+			retainedInput: [{ role: "user", content: "u".repeat(4_000) }],
+			tokensBefore: 10_000,
+			usage: nativeUsage(),
+		}));
+		h.session.model!.contextWindow = 100_000;
+		const result = await h.session.compact();
+		expect(h.session.getContextUsage()?.tokens).toBeGreaterThanOrEqual(1_588);
+		expect(result.estimatedTokensAfter).toBe(h.session.getContextUsage()?.tokens);
+		expect(h.session.messages).toEqual([]);
+	});
+
+	it("switches and cycles Codex models while preserving the native checkpoint", async () => {
+		const h = await nativeHarness(async () => ({
+			item: { type: "compaction", encrypted_content: "opaque" },
+			tokensBefore: 240,
+			usage: nativeUsage(),
+		}));
+		const first = h.session.model! as Model<"openai-codex-responses">;
+		const second = { ...first, id: "another-codex" };
+		h.session.modelRuntime.registerProvider("openai-codex", {
+			baseUrl: first.baseUrl,
+			api: first.api,
+			apiKey: "synthetic-key",
+			models: [first, second],
+		});
+		await h.session.compact();
+		const checkpoint = h.sessionManager.getBranch().at(-1);
+		await h.session.setModel(second);
+		expect(h.session.model?.id).toBe(second.id);
+		expect((await h.session.cycleModel())?.model.id).toBe(first.id);
+		expect(h.sessionManager.getBranch()).toContainEqual(checkpoint);
+		expect(h.session.isModelAllowed({ ...first, provider: "anthropic" })).toBe(false);
+	});
 	it("changes desired mode without discarding a native checkpoint, and restores branch-specific intent", async () => {
 		const h = await nativeHarness(async () => ({
 			item: { type: "compaction", encrypted_content: "opaque" },
@@ -120,19 +205,19 @@ describe("AgentSession OpenAI native compaction", () => {
 		expect(h.session.getCompactionControl()).toMatchObject({
 			mode: "fractal",
 			conversionPending: true,
-			lockedModel: { modelId: "gpt-native-test" },
+			lockedProvider: "openai-codex",
 		});
 		expect(h.session.isModelAllowed({ ...h.session.model!, provider: "other" })).toBe(false);
 		h.sessionManager.branch(nativeLeaf);
 		expect(h.session.compactionMode).toBe("openai-native");
 	});
 
-	it("restricts new native mode to Codex, and disabling before a checkpoint immediately unlocks", async () => {
+	it("allows choosing another provider before a checkpoint exists", async () => {
 		const h = await nativeHarness(async () => {
 			throw new Error("not called");
 		});
 		const other = { ...h.session.model!, provider: "other" };
-		expect(h.session.isModelAllowed(other)).toBe(false);
+		expect(h.session.isModelAllowed(other)).toBe(true);
 		h.session.setCompactionMode("fractal");
 		expect(h.session.isModelAllowed(other)).toBe(true);
 		h.session.setCompactionMode("openai-native");
@@ -202,7 +287,7 @@ describe("AgentSession OpenAI native compaction", () => {
 				await h.session.compact();
 				expect(h.session.getCompactionControl()).toMatchObject({
 					mode: "fractal",
-					lockedModel: null,
+					lockedProvider: null,
 					conversionPending: false,
 				});
 				expect(h.sessionManager.getBranch().some((e) => e.type === "openai_native_compaction")).toBe(true);
@@ -440,7 +525,7 @@ describe("AgentSession OpenAI native compaction", () => {
 		]);
 	});
 
-	it("allows model changes before a checkpoint and locks the exact model after one", async () => {
+	it("requires the Codex route after a checkpoint", async () => {
 		const harness = await createHarness({
 			compactionMode: "openai-native",
 			models: [{ id: "model-a" }, { id: "model-b" }],
@@ -460,7 +545,7 @@ describe("AgentSession OpenAI native compaction", () => {
 			nativeUsage(),
 		);
 		await expect(harness.session.setModel(harness.getModel("model-a")!)).rejects.toThrow(
-			/locked to openai-codex\/model-b/,
+			/convert it to text before switching outside/,
 		);
 		await expect(harness.session.cycleModel()).resolves.toBeUndefined();
 	});
@@ -516,12 +601,16 @@ describe("AgentSession OpenAI native compaction", () => {
 			{ type: "compaction", encrypted_content: "opaque-restart" },
 			100,
 			nativeUsage(),
+			[{ role: "user", content: "Keep the original constraint." }],
 		);
 		expect(manager.buildSessionContext().messages).toEqual([]);
 		expect(hasRestorableSessionContext(manager.buildSessionContext(), manager.getBranch())).toBe(true);
 		manager.appendMessage({ role: "user", content: "after", timestamp: 2 });
 
 		const restarted = SessionManager.open(path);
+		expect(restarted.getEntry(checkpointId)).toMatchObject({
+			retainedInput: [{ role: "user", content: "Keep the original constraint." }],
+		});
 		expect(restarted.getHeader()?.compactionMode).toBe("openai-native");
 		expect(restarted.buildSessionContext().messages.map((message) => message.role)).toEqual(["user"]);
 		restarted.createBranchedSession(restarted.getLeafId()!);
