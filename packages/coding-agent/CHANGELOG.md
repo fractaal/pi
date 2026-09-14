@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.85.1] - 2026-09-14
+
+### Fixed
+
+- Wait for the synthetic model catalog to refresh before validating model cycling after native compaction.
+
 ## [0.85.0] - 2026-09-14
 
 ### Breaking Changes
