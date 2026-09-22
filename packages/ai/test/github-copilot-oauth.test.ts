@@ -77,7 +77,7 @@ describe("GitHub Copilot OAuth device flow", () => {
 				return jsonResponse({
 					data: [
 						{
-							id: "gpt-4.1",
+							id: "gpt-5.4",
 							model_picker_enabled: true,
 							capabilities: { supports: { tool_calls: true } },
 						},
@@ -107,13 +107,13 @@ describe("GitHub Copilot OAuth device flow", () => {
 			refresh: "ghu_refresh_token",
 			expires: 0,
 		});
-		expect(credentials.availableModelIds).toEqual(["gpt-4.1"]);
+		expect(credentials.availableModelIds).toEqual(["gpt-5.4"]);
 
 		const store = new InMemoryCredentialStore();
 		await store.modify("github-copilot", async () => ({ ...credentials, type: "oauth" }));
 		const models = createModels({ credentials: store });
 		models.setProvider(githubCopilotProvider());
-		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual(["gpt-4.1"]);
+		expect((await models.getAvailable("github-copilot")).map((model) => model.id)).toEqual(["gpt-5.4"]);
 	});
 
 	it("reports device-code details through onDeviceCode", async () => {
