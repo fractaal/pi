@@ -6,6 +6,7 @@ const EXPECTED_CURRENT_ADAPTIVE_THINKING_MODELS = [
 	"anthropic/claude-fable-5",
 	"anthropic/claude-opus-4-8",
 	"anthropic/claude-opus-5",
+	"anthropic/claude-opus-5-5",
 	"anthropic/claude-sonnet-5",
 	"cloudflare-ai-gateway/claude-fable-5",
 	"kimi-coding/kimi-for-coding",

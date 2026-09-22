@@ -203,8 +203,8 @@ describe("Context overflow error handling", () => {
 	// =============================================================================
 
 	describe.skipIf(!process.env.GEMINI_API_KEY)("Google", () => {
-		it("gemini-2.0-flash - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("google", "gemini-2.0-flash");
+		it("gemini-2.5-flash - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("google", "gemini-2.5-flash");
 			const result = await testContextOverflow(model, process.env.GEMINI_API_KEY!);
 			logResult(result);
 
@@ -550,8 +550,8 @@ describe("Context overflow error handling", () => {
 		}, 120000);
 
 		// Mistral backend
-		it("mistralai/mistral-large-2512 via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "mistralai/mistral-large-2512");
+		it("mistralai/mistral-large via OpenRouter - should detect overflow via isContextOverflow", async () => {
+			const model = getModel("openrouter", "mistralai/mistral-large");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 
