@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.85.2] - 2026-09-23
+
 ### Added
 
 - Added GPT-6 Sol and GPT-6 Luna for OpenAI API keys and OpenAI Codex subscriptions, plus Claude Opus 5.5 for Anthropic providers.
