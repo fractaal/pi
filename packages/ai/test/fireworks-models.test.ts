@@ -37,13 +37,13 @@ describe("Fireworks models", () => {
 		});
 	});
 
-	it("registers the Fire Pass turbo router model", () => {
+	it("registers Fireworks router models via the Anthropic-compatible Messages API", () => {
 		const model = getModels("fireworks").find(
-			(candidate) => candidate.id.startsWith("accounts/fireworks/routers/") && candidate.id.endsWith("-turbo"),
+			(candidate) =>
+				candidate.id.startsWith("accounts/fireworks/routers/") && candidate.api === "anthropic-messages",
 		);
 
 		expect(model).toBeDefined();
-		expect(model?.api).toBe("anthropic-messages");
 		expect(model?.baseUrl).toBe("https://api.fireworks.ai/inference");
 		expect(model?.input).toEqual(["text", "image"]);
 	});

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added GPT-6 Sol and GPT-6 Luna for OpenAI API keys and OpenAI Codex subscriptions, plus Claude Opus 5.5 for Anthropic providers.
+
+### Fixed
+
+- Preserved the Kimi Coding catalog after models.dev renamed its provider entry.
+- Kept Workers AI routes discoverable through Cloudflare AI Gateway when its mirrored catalog is incomplete.
+
 ## [0.85.1] - 2026-09-14
 
 ## [0.85.0] - 2026-09-14
