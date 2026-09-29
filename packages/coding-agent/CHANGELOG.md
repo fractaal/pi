@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.85.3] - 2026-09-29
+
+### Fixed
+
+- Fixed loading extensions such as Claude Bridge that import Pi's message-transform API without their own Pi dependencies, in both Node and standalone Bun installations.
+
 ## [0.85.2] - 2026-09-23
 
 ## [0.85.1] - 2026-09-14

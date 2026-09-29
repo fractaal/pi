@@ -87,6 +87,31 @@ describe("extensions discovery", () => {
 		expect(result.extensions).toHaveLength(1);
 	});
 
+	it.each(["@earendil-works/pi-ai", "@mariozechner/pi-ai"])(
+		"loads %s message transforms outside a dependency tree",
+		async (packageName) => {
+			fs.writeFileSync(
+				path.join(extensionsDir, "message-transform.js"),
+				`
+					import { transformMessages } from "${packageName}/api/transform-messages";
+					export default function(pi) {
+						const messages = transformMessages([{
+							role: "assistant", provider: "test", api: "anthropic-messages", model: "test",
+							content: [], stopReason: "error",
+						}], { provider: "test", api: "anthropic-messages", id: "test", input: ["text"] });
+						pi.registerFlag("history-normalized", { type: "boolean", default: messages.length === 0 });
+					}
+				`,
+			);
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+
+			expect(result.errors).toEqual([]);
+			expect(result.extensions).toHaveLength(1);
+			expect(result.runtime.flagValues.get("history-normalized")).toBe(true);
+		},
+	);
+
 	it("discovers direct .js files in extensions/", async () => {
 		fs.writeFileSync(path.join(extensionsDir, "foo.js"), extensionCode);
 
