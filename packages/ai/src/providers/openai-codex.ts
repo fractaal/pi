@@ -4,6 +4,7 @@ import { lazyOAuth } from "../auth/helpers.ts";
 import { loadOpenAICodexOAuth } from "../auth/oauth/load.ts";
 import { createProvider } from "../models.ts";
 import { OPENAI_CODEX_MODELS } from "./openai-codex.models.ts";
+import { createOpenAICodexCatalog, type OpenAICodexCatalogOptions } from "./openai-codex-catalog.ts";
 
 export type { OpenAICodexProvider } from "../api/openai-codex-responses.ts";
 export {
@@ -11,8 +12,10 @@ export {
 	OpenAICodexOAuthRefreshError,
 	type OpenAICodexOAuthRefreshErrorCode,
 } from "../auth/oauth/openai-codex-errors.ts";
+export type { OpenAICodexCatalogOptions } from "./openai-codex-catalog.ts";
 
-export function openaiCodexProvider(): OpenAICodexProvider {
+export function openaiCodexProvider(options: OpenAICodexCatalogOptions = {}): OpenAICodexProvider {
+	const models = Object.values(OPENAI_CODEX_MODELS);
 	return {
 		...createProvider({
 			id: "openai-codex",
@@ -21,9 +24,10 @@ export function openaiCodexProvider(): OpenAICodexProvider {
 			auth: {
 				oauth: lazyOAuth({ name: "OpenAI (ChatGPT Plus/Pro)", load: loadOpenAICodexOAuth }),
 			},
-			models: Object.values(OPENAI_CODEX_MODELS),
+			models,
 			api: openAICodexResponsesApi(),
 		}),
+		...createOpenAICodexCatalog(models, options),
 		compactOpenAICodexResponses: compactOpenAICodexResponsesLazy,
 	};
 }
