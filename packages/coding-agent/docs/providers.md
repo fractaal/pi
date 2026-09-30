@@ -30,6 +30,12 @@ Use `/logout` to clear credentials. Tokens are stored in `~/.pi/agent/auth.json`
 - Requires ChatGPT Plus or Pro subscription
 - Officially endorsed by OpenAI: [Codex for OSS](https://developers.openai.com/community/codex-for-oss)
 
+Codex catalog refresh uses the authenticated native models endpoint. It reads the current published `@openai/codex` version from npm as catalog-query metadata only; it never downloads or runs a Codex executable. `pi.dev` supplies pricing and output-limit metadata missing from the native catalog. Provider credentials go only to the native endpoint (or the embedding host's authenticated catalog transport), never to npm or `pi.dev`.
+
+Discovery is additive: omission from a later catalog does not remove known models. Newly discovered hidden models are not offered. The existing provider-scoped `models-store.json` cache makes startup/offline use independent of network discovery. Ordinary checks reuse a four-hour native cache; `ModelRuntime.refresh({ force: true })` bypasses freshness, while `{ allowNetwork: false }` only reloads cached data. Failed or incomplete discovery retains usable models and returns provider errors rather than inventing missing pricing/output limits.
+
+Model metadata distinguishes `contextWindow` (the ordinary budget) from optional `maxContextWindow` (the provider's supported opt-in maximum). Discovery does not select a model, change a user's budget, or enable unsupported API/reasoning features. Embedding hosts can use `openaiCodexProvider({ catalogAuthMode: "transport", catalogFetch })` for native discovery through their existing credential relay. Wrappers must preserve the provider's live `getModels` and `refreshModels`, not replace them with a captured array.
+
 ### Claude Pro/Max
 
 Anthropic subscription auth is active for Claude Pro/Max accounts. Third-party harness usage draws from [extra usage](https://claude.ai/settings/usage) and is billed per token, not against Claude plan limits.

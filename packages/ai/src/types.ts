@@ -770,7 +770,10 @@ export interface Model<TApi extends Api> {
 	thinkingLevelMap?: ThinkingLevelMap;
 	input: ("text" | "image")[];
 	cost: ModelCost;
+	/** Default context budget. A larger provider-supported opt-in limit may be advertised separately. */
 	contextWindow: number;
+	/** Provider-supported context ceiling; does not automatically change the default budget. */
+	maxContextWindow?: number;
 	maxTokens: number;
 	headers?: Record<string, string>;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
@@ -786,7 +789,10 @@ export interface Model<TApi extends Api> {
 }
 
 export interface ImagesModel<TApi extends ImagesApi>
-	extends Omit<Model<Api>, "api" | "provider" | "reasoning" | "contextWindow" | "maxTokens" | "compat"> {
+	extends Omit<
+		Model<Api>,
+		"api" | "provider" | "reasoning" | "contextWindow" | "maxContextWindow" | "maxTokens" | "compat"
+	> {
 	api: TApi;
 	provider: ImagesProviderId;
 	output: ("text" | "image")[];

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.85.4] - 2026-09-30
+
+### Added
+
+- Discover new Codex models through native catalog metadata, retain offline model caches, expose separate opt-in context maxima, and support host-authenticated catalog transports without local provider credentials.
+
 ## [0.85.3] - 2026-09-29
 
 ## [0.85.2] - 2026-09-23

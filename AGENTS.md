@@ -9,6 +9,12 @@
 - When the user asks a question, answer it first before making edits or running implementation commands.
 - When responding to user feedback or an analysis, explicitly say whether you agree or disagree before saying what you changed.
 
+## Local Work and Release Authority
+
+Work autonomously within the agreed task. Local builds, tests, checks, unpublished package smoke builds, and task-scoped commits are routine engineering work; do not ask Ben for a separate go-ahead.
+
+**Production deployments and package publication require Ben's explicit authorization.** Judge the action by its effects: pushing a tag, merging, or running a workflow that deploys to production or publishes a package crosses that boundary. Preparing and testing unpublished artifacts locally does not. Keep the existing release pipeline and branch protections intact.
+
 ## Code Quality
 
 - Read files in full before wide-ranging changes, before editing files you have not fully inspected, and when asked to investigate or audit. Do not rely on search snippets for broad changes.
@@ -25,22 +31,22 @@
 
 ## Commands
 
-- After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before committing. Does not run tests.
-- Never run `npm run build` or `npm test` unless requested by the user.
+- After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before marking work ready. WIP commits may record unfinished or failing work, but must say so; a checkpoint is not a claim of verification. This command does not run tests.
+- Run local builds and tests as needed to verify the task. Prefer focused checks and use the offline/non-e2e test paths below; authorization for local work is not a reason to run unrelated or live-provider suites.
 - Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
-- Never commit unless the user asks.
+- Make frequent task-scoped local commits, including honest WIP checkpoints. Do not wait for a separate commit request.
 
 ## Dependency and Install Security
 
 - Treat npm dep and lockfile changes as reviewed code. Direct external deps stay pinned to exact versions.
-- Hydrate/update locally with `npm install --ignore-scripts`; clean/CI-style with `npm ci --ignore-scripts`. Don't run lifecycle scripts unless the user asks.
+- Hydrate/update locally with `npm install --ignore-scripts`; clean/CI-style with `npm ci --ignore-scripts`. Keep dependency lifecycle scripts disabled by default. Run reviewed setup/build scripts needed for the task without a separate approval; do not enable unreviewed dependency scripts.
 - If dep metadata changes, refresh `package-lock.json` with `npm install --package-lock-only --ignore-scripts`.
 - If `packages/coding-agent/npm-shrinkwrap.json` needs regen, run `node scripts/generate-coding-agent-shrinkwrap.mjs` (verify with `--check` or `npm run check`). New deps with lifecycle scripts require review and an explicit allowlist entry in that script; never add one silently.
-- Pre-commit blocks lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1`. Don't bypass unless the user wants the lockfile change committed.
+- Pre-commit blocks lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1`. Set it only for task-required, reviewed lockfile or shrinkwrap changes; do not use it to hide unrelated dependency churn.
 
 ## Git
 
@@ -160,7 +166,7 @@ Attribution:
 
 4. **Merge the release branch as a normal pull request**, with `build-check-test` green. **Merge it with a merge commit.** Squash and rebase merges create a new commit, which leaves the tag pointing at a commit that is not on `main`; the tag step then refuses to publish, by design. Both the release commit and the next-cycle commit stay reachable on `main`.
 
-5. **Push the tag**:
+5. **Publish — only after Ben explicitly authorizes package publication.** Pushing the release tag starts publication:
    ```bash
    git checkout main && git pull
    npm run release:tag -- fractaal-v<version>
@@ -171,6 +177,6 @@ Attribution:
 
 7. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
 
-## User Override
+## Policy Changes
 
-If the user's instructions conflict with any rule in this document, ask for explicit confirmation before overriding. Only then execute their instructions.
+When Ben explicitly changes this fork's workflow policy, that instruction is the authorization; do not ask him to repeat it. Reconcile the owning guidance instead of leaving conflicting rules behind. Ask when the intended scope or release consequences are genuinely unclear.

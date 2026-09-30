@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.85.4] - 2026-09-30
+
+### Fixed
+
+- Preserve provider-owned model discovery instead of replacing native catalogs with the generic remote catalog overlay.
+
 ## [0.85.3] - 2026-09-29
 
 ### Fixed
