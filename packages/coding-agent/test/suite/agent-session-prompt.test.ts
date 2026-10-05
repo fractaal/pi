@@ -494,7 +494,7 @@ describe("AgentSession prompt characterization", () => {
 		await promptPromise;
 	});
 
-	it("throws when prompted during manual compaction", async () => {
+	it("parks a prompt submitted during manual compaction instead of running it", async () => {
 		let markCompactionStarted = () => {};
 		const compactionStarted = new Promise<void>((resolve) => {
 			markCompactionStarted = resolve;
@@ -531,9 +531,10 @@ describe("AgentSession prompt characterization", () => {
 		await compactionStarted;
 
 		try {
-			await expect(harness.session.prompt("third")).rejects.toThrow(
-				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
-			);
+			// Compaction is stop-the-world: the prompt waits behind the barrier instead of throwing.
+			await expect(harness.session.prompt("third")).resolves.toBeUndefined();
+			expect(harness.session.getSteeringMessages()).toEqual(["third"]);
+			expect(harness.eventsOfType("agent_start")).toHaveLength(2);
 		} finally {
 			releaseCompaction();
 			await compactPromise;

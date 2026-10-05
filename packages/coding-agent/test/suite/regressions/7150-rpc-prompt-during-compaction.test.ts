@@ -12,7 +12,7 @@ describe("issue #7150: RPC prompt during manual compaction", () => {
 		}
 	});
 
-	it("rejects an RPC prompt while manual compaction is in progress", async () => {
+	it("parks an RPC prompt while manual compaction is in progress", async () => {
 		let markCompactionStarted = () => {};
 		const compactionStarted = new Promise<void>((resolve) => {
 			markCompactionStarted = resolve;
@@ -59,7 +59,9 @@ describe("issue #7150: RPC prompt during manual compaction", () => {
 		await compactionStarted;
 
 		let preflightResult: PromptDisposition | undefined;
-		let promptError: unknown;
+		let userTextsDuringCompaction: string[] = [];
+		let persistedDuringCompaction: string[] = [];
+		let agentStartsDuringCompaction = -1;
 		try {
 			await harness.session.prompt("PROBE-7150", {
 				source: "rpc",
@@ -67,26 +69,23 @@ describe("issue #7150: RPC prompt during manual compaction", () => {
 					preflightResult = result;
 				},
 			});
-		} catch (error) {
-			promptError = error;
+			userTextsDuringCompaction = getUserTexts(harness);
+			persistedDuringCompaction = harness.sessionManager
+				.getEntries()
+				.flatMap((entry) =>
+					entry.type === "message" && entry.message.role === "user" ? [getMessageText(entry.message)] : [],
+				);
+			agentStartsDuringCompaction = harness.eventsOfType("agent_start").length;
 		} finally {
 			releaseCompaction();
 			await compactPromise;
 		}
 
-		const persistedUserTexts = harness.sessionManager
-			.getEntries()
-			.flatMap((entry) =>
-				entry.type === "message" && entry.message.role === "user" ? [getMessageText(entry.message)] : [],
-			);
-
-		expect(preflightResult).toBeUndefined();
-		expect(promptError).toEqual(
-			expect.objectContaining({ message: expect.stringContaining("compaction is in progress") }),
-		);
-		expect(getUserTexts(harness)).not.toContain("PROBE-7150");
-		expect(persistedUserTexts).not.toContain("PROBE-7150");
-		expect(harness.eventsOfType("agent_start")).toHaveLength(0);
-		expect(harness.eventsOfType("agent_settled")).toHaveLength(0);
+		// Compaction is stop-the-world: the RPC prompt is accepted as queued and nothing runs or persists
+		// until the barrier lifts.
+		expect(preflightResult).toBe("queued");
+		expect(userTextsDuringCompaction).not.toContain("PROBE-7150");
+		expect(persistedDuringCompaction).not.toContain("PROBE-7150");
+		expect(agentStartsDuringCompaction).toBe(0);
 	});
 });

@@ -5,22 +5,13 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { installCodingAgentConsumer, packReleasePackages, smokeTestCodingAgentConsumer } from "./coding-agent-consumer.mjs";
+import { PUBLISHABLE_PACKAGES } from "./fractal-identity.mjs";
 
-const packages = [
-	{ directory: "packages/chord", name: "@earendil-works/chord" },
-	{ directory: "packages/telemetry", name: "@earendil-works/pi-telemetry" },
-	{ directory: "packages/codemode", name: "@earendil-works/pi-codemode" },
-	{ directory: "packages/mcp", name: "@earendil-works/pi-mcp" },
-	{ directory: "packages/ai", name: "@earendil-works/pi-ai" },
-	{ directory: "packages/durable", name: "@earendil-works/pi-durable" },
-	{ directory: "packages/env", name: "@earendil-works/pi-env" },
-	{ directory: "packages/tui", name: "@earendil-works/pi-tui" },
-	{ directory: "packages/agent", name: "@earendil-works/pi-agent-core" },
-	{ directory: "packages/protocol", name: "@earendil-works/pi-protocol" },
-	{ directory: "packages/client", name: "@earendil-works/pi-client" },
-	{ directory: "packages/server", name: "@earendil-works/pi-server" },
-	{ directory: "packages/coding-agent", name: "@earendil-works/pi-coding-agent" },
-];
+// Same list scripts/publish.mjs publishes, so the local smoke exercises exactly the package family a
+// release ships. Names are read from the manifests at pack time rather than hardcoded, so this works both
+// on the plain source tree and after scripts/fractal-identity.mjs has applied the published fork identity.
+const packages = PUBLISHABLE_PACKAGES;
+
 
 function printUsage() {
 	console.log(`Usage: node scripts/local-release.mjs [options]
@@ -188,6 +179,19 @@ function createPiShim(installDirectory) {
 	symlinkSync(join("node_modules", ".bin", "pi"), join(installDirectory, "pi"));
 }
 
+/**
+ * The published version is the exact package version. A build signature is internal
+ * routing state and must never reach a product-visible version string, so assert it
+ * against the real artifacts rather than trusting the constant it is derived from.
+ */
+function assertReportedVersion(label, executable, expectedVersion) {
+	const reported = run(executable, ["--version"], { capture: true }).trim();
+	if (reported !== expectedVersion) {
+		throw new Error(`${label} reports version ${JSON.stringify(reported)}, expected exactly ${expectedVersion}`);
+	}
+	console.log(`  ${label} --version -> ${reported}`);
+}
+
 const options = parseArgs();
 const repoRoot = process.cwd();
 const rootPackageJson = readPackageJson(repoRoot);
@@ -217,12 +221,15 @@ if (!options.skipTest) {
 }
 
 const tarballs = packReleasePackages(packages, tarballDirectory);
+// Internal dependency edges keep the upstream key and alias it to the fork package once the identity is applied.
+const upstreamNames = new Map(packages.map((pkg) => [pkg.name, pkg.upstreamName]));
+for (const pkg of packages) upstreamNames.set(readPackageJson(pkg.directory).name, pkg.upstreamName);
 
 let binaryPlatform;
 if (!options.skipInstall) {
 	binaryPlatform = buildBunBinaryRelease(binaryDirectory, outDir);
 
-	installCodingAgentConsumer(nodeInstallDirectory, tarballs);
+	installCodingAgentConsumer(nodeInstallDirectory, tarballs, "npm", upstreamNames);
 	smokeTestCodingAgentConsumer(nodeInstallDirectory);
 	createPiShim(nodeInstallDirectory);
 
@@ -230,7 +237,7 @@ if (!options.skipInstall) {
 		if (!commandExists("bun")) {
 			throw new Error("Bun is required for the isolated Bun install. Use --skip-bun-install to skip it.");
 		}
-		installCodingAgentConsumer(bunInstallDirectory, tarballs, "bun");
+		installCodingAgentConsumer(bunInstallDirectory, tarballs, "bun", upstreamNames);
 		smokeTestCodingAgentConsumer(bunInstallDirectory, "bun");
 		createPiShim(bunInstallDirectory);
 	}

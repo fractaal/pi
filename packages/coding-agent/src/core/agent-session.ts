@@ -440,6 +440,8 @@ export class AgentSession {
 	private _overflowRecoveryAttempted = false;
 	private _lengthCompactionRecoveryAttempted = false;
 	private _retryFromNativeCheckpoint = false;
+	/** A turn_end boundary asked to continue, but the compaction barrier ended the run first. */
+	private _continueAfterBarrier = false;
 	private _continueAfterLengthCompaction = false;
 	private _toolResultsRequireContinuation = false;
 	/** Stop-the-world barrier: extension-triggered turns are deferred while core compacts/retries. */
@@ -943,7 +945,11 @@ export class AgentSession {
 				turn.toolBatchDidNotTerminate,
 			);
 			const previousDecision = await previousFinishTurn?.(turn, signal);
-			if (previousDecision?.action === "end") return previousDecision;
+			if (previousDecision?.action === "end") {
+				// Compaction is stop-the-world and wins, but the extension's continuation is resumed after it.
+				if (extensionContinue) this._continueAfterBarrier = true;
+				return previousDecision;
+			}
 			if (extensionContinue || previousDecision?.action === "continue") return { action: "continue" };
 			return undefined;
 		};
@@ -2108,6 +2114,7 @@ export class AgentSession {
 			resolveRunCompletion = resolve;
 		});
 		this._agentRunAbortRequested = false;
+		this._continueAfterBarrier = false;
 		this._recordSelection();
 		// The run records the loadout in the transcript; restored tools that did not register by now
 		// are dropped, so a tool that never registers does not stay pending.
@@ -2269,7 +2276,9 @@ export class AgentSession {
 
 		// The low-level loop drains both queues before agent_end. Messages queued by
 		// agent_end handlers require a fresh run before pre-settlement handlers fire.
-		return !this._agentRunAbortRequested && this.agent.hasQueuedMessages();
+		const resumeBoundaryContinuation = this._continueAfterBarrier;
+		this._continueAfterBarrier = false;
+		return !this._agentRunAbortRequested && (this.agent.hasQueuedMessages() || resumeBoundaryContinuation);
 	}
 
 	private async _runBeforeSettleBoundary(): Promise<boolean> {

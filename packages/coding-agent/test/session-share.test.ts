@@ -51,6 +51,7 @@ describe("shareSession", () => {
 					getSessionId: () => name,
 					getCwd: () => "/tmp",
 					getBranch: () => [],
+					getHeader: () => undefined,
 				},
 				state: { systemPrompt: name, tools: [] },
 				modelRuntime: { getProvider: () => undefined },

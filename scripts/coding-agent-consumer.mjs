@@ -7,8 +7,11 @@ import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPublicWorkspacePackages } from "./release-packages.mjs";
 
-const codingAgentName = "@earendil-works/pi-coding-agent";
-const developmentPackages = new Set(["pi-client", "pi-protocol", "pi-server"].map((name) => `@earendil-works/${name}`));
+const codingAgentSuffix = "/pi-coding-agent";
+// The fork publishes the same packages under its own scope, so both scopes are development-only here.
+const developmentPackages = new Set(
+	["@earendil-works/", "@fractaal/"].flatMap((scope) => ["pi-client", "pi-protocol", "pi-server"].map((name) => `${scope}${name}`)),
+);
 
 function run(command, args, options = {}) {
 	console.log(`$ ${[command, ...args].join(" ")}`);
@@ -29,22 +32,33 @@ export function packReleasePackages(packages, tarballDirectory) {
 	const tarballs = new Map();
 	for (const pkg of packages) {
 		const manifest = JSON.parse(readFileSync(join(pkg.directory, "package.json"), "utf8"));
-		if (manifest.name !== pkg.name) throw new Error(`Unexpected package name in ${pkg.directory}`);
+		// After the fork identity is applied the manifest carries the published name; `upstreamName` is the source name.
+		if (manifest.name !== pkg.name && manifest.name !== pkg.upstreamName) {
+			throw new Error(`Unexpected package name in ${pkg.directory}`);
+		}
 		const output = run("npm", ["pack", "--ignore-scripts", "--json", "--pack-destination", tarballDirectory], { cwd: pkg.directory });
 		// npm <11.6 returns an array; newer npm can return an object keyed by package name.
 		const parsed = JSON.parse(output);
 		const packed = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
-		tarballs.set(pkg.name, join(tarballDirectory, packed.filename));
+		tarballs.set(manifest.name, join(tarballDirectory, packed.filename));
 	}
 	return tarballs;
 }
 
-export function installCodingAgentConsumer(directory, tarballs, packageManager = "npm") {
+/**
+ * `aliases` maps a published package name to the upstream name its dependents still import. The fork's
+ * internal edges keep the upstream key and alias it to the fork package, so the upstream key needs its own
+ * override or npm would resolve it from the registry, where an unpublished version does not exist.
+ */
+export function installCodingAgentConsumer(directory, tarballs, packageManager = "npm", aliases = new Map()) {
 	mkdirSync(directory, { recursive: true });
-	const overrides = Object.fromEntries([...tarballs].map(([name, path]) => [
-		name, `file:./${relative(directory, path).replaceAll("\\", "/")}`,
-	]));
-	if (!overrides[codingAgentName]) throw new Error("Missing coding-agent tarball");
+	const fileSpecifier = (path) => `file:./${relative(directory, path).replaceAll("\\", "/")}`;
+	const overrides = Object.fromEntries([...tarballs].flatMap(([name, path]) => {
+		const aliasName = aliases.get(name);
+		return [[name, fileSpecifier(path)], ...(aliasName && aliasName !== name ? [[aliasName, fileSpecifier(path)]] : [])];
+	}));
+	const codingAgentName = [...tarballs.keys()].find((name) => name.endsWith(codingAgentSuffix));
+	if (!codingAgentName || !overrides[codingAgentName]) throw new Error("Missing coding-agent tarball");
 	// Only coding-agent is a direct dependency. Overrides select local artifacts
 	// for declared transitive dependencies without installing undeclared packages.
 	const manifest = {
@@ -77,6 +91,7 @@ function checkInstalledPackages(nodeModules, seen = new Set()) {
 
 export function smokeTestCodingAgentConsumer(directory, runtime = process.execPath) {
 	checkInstalledPackages(join(directory, "node_modules"));
+	const [codingAgentName] = Object.keys(JSON.parse(readFileSync(join(directory, "package.json"), "utf8")).dependencies);
 	const packageDir = join(directory, "node_modules", codingAgentName);
 	const manifest = JSON.parse(readFileSync(join(packageDir, "package.json"), "utf8"));
 	for (const path of ["dist/client", "dist/experimental", "dist/cli/experimental", "dist/bundle/client.js", "dist/bundle/coordinator.js"]) {
@@ -106,7 +121,7 @@ assert.equal(typeof createAgentSession, "function");
 assert.equal(typeof SessionManager.inMemory, "function");
 assert.equal(typeof ModelRuntime.create, "function");
 for (const name of ["pi-client", "pi-protocol", "pi-server"]) {
-  assert.throws(() => import.meta.resolve("@earendil-works/" + name), /Cannot find|cannot find/, name + " must not be installed");
+  assert.throws(() => import.meta.resolve("${codingAgentName.split("/")[0]}/" + name), /Cannot find|cannot find/, name + " must not be installed");
 }
 for (const subpath of ["/client", "/experimental/plugin"]) {
   assert.throws(() => import.meta.resolve("${codingAgentName}" + subpath), /not exported|not defined|Cannot find|cannot find/);

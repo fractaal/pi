@@ -453,6 +453,7 @@ describe("RPC prompt response semantics", () => {
 					data: {
 						steering: ["Change direction"],
 						followUp: ["Summarize when finished"],
+						nextTurn: [],
 					},
 				});
 			});
