@@ -102,6 +102,8 @@ Events cover resource discovery, sessions, agent and message lifecycle, provider
 
 `before_agent_start` exposes both the current prompt and its structured `systemPromptOptions`. Prefer changing prompt sections, selected tools, or guidelines so Pi can append a transcript delta. Returning `systemPrompt`, or setting `forceSystemPrompt`, replaces the whole prompt for that run while the transcript continues recording the structured sections. Providers receive the forced text as their leading system prompt.
 
+`before_agent_start` also fires for an idle `sendMessage(..., { triggerTurn: true })` custom message that starts a run. `event.initiator` is `"prompt"` or `"custom_message"`, and `event.prompt` carries the initiating message text. It does not fire for custom messages that steer, follow up, wait for `nextTurn`, or append without starting a run.
+
 `message_end` can replace a finalized message while preserving its role. `tool_call` can mutate input or block execution. `tool_result` handlers compose, with each handler seeing prior changes.
 
 <a id="provider_stream_event"></a>
@@ -115,6 +117,12 @@ Handlers are awaited in stream order, so slow handlers delay stream consumption.
 `context` transforms conversation messages without prompt and tool system messages; Pi restores that state afterward. Use `context_with_system` only when a request-local transformation must own the complete transcript, and keep a system message at index zero.
 
 `turn_end` and `agent_before_settle` are actionable boundaries. Their handlers can chain proposed `custom`, `custom_message`, `context_edit`, or `compaction` entries and return `continue: true` for one next model request. Guard continuation conditions because an unconditional continuation can loop. Use the exported event declarations for the complete validation and ordering contract.
+
+`turn_end` events carry `toolResultsRequireContinuation`, which is true only when the completed tool batch already requires another provider call before queued input is considered.
+
+`ctx.isIdle()` is false while Pi is processing an agent run, an automatic retry, a compaction (including the window between a manual compaction being requested and the compaction barrier going up), or a queued continuation. Event handlers that must act once the loop has fully stopped use `ctx.onIdle(callback)`: it runs `callback` once at the next idle point, returns a function that cancels it, never runs synchronously, and ignores a callback reference that is already pending (hold one stable function reference to collapse several events onto one callback). There is deliberately nothing to await in event handlers, because a run cannot finish until its handlers return. Command handlers additionally get `ctx.waitForIdle()`, which resolves when the loop has stopped and the current run has fully unwound.
+
+`ctx.ui.confirmWithInput({ title, message, messageFormat, inputLabel, inputPlaceholder })` shows a confirmation form with an optional Markdown body (`messageFormat: "markdown"`) and an optional text input; it resolves to `{ confirmed, input? }`.
 
 <a id="cache_warming_decision"></a>
 

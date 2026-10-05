@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Merged upstream Pi v1.0.4 into the fork. Upstream's changes are listed under the upstream release history below; fork releases keep the 0.85.x numbering.
+
 ## [0.85.4] - 2026-09-30
 
 ### Added

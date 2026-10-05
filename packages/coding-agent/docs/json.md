@@ -160,10 +160,10 @@ See [Compaction and Branch Summaries](compaction.md) for result semantics.
 
 ## Retry events
 
-Assistant-turn retry emits:
+Assistant-turn retry emits (`maxAttempts` is a number when `retry.maxRetries` is configured and `null` for the default unbounded retry mode):
 
 ```json
-{"type":"auto_retry_start","attempt":1,"maxAttempts":3,"delayMs":2000,"errorMessage":"529 overloaded"}
+{"type":"auto_retry_start","attempt":1,"maxAttempts":null,"delayMs":2000,"errorMessage":"529 overloaded"}
 {"type":"auto_retry_end","success":true,"attempt":2}
 ```
 

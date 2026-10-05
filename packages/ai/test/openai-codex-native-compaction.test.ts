@@ -327,7 +327,7 @@ describe("OpenAI Codex native compaction", () => {
 			"incomplete",
 		);
 		await expect(compactOpenAICodexResponses(model, context, { apiKey: token(), transport: "sse" })).rejects.toThrow(
-			/did not complete \(length\)/,
+			/Response incomplete without a provider reason/,
 		);
 	});
 

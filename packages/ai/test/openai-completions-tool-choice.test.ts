@@ -320,6 +320,34 @@ describe("openai-completions tool_choice", () => {
 		).result();
 
 		const params = (payload ?? mockState.lastParams) as { reasoning_effort?: string };
+		expect(params.reasoning_effort).toBe("default");
+	});
+
+	it("passes through groq qwen3.8 reasoning levels", async () => {
+		const model = getModel("groq", "qwen/qwen3.8-27b")!;
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [
+					{
+						role: "user",
+						content: "Hi",
+						timestamp: Date.now(),
+					},
+				],
+			},
+			{
+				apiKey: "test",
+				reasoning: "medium",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { reasoning_effort?: string };
 		expect(params.reasoning_effort).toBe("medium");
 	});
 

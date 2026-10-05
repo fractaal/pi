@@ -377,7 +377,7 @@ pi.on("session_compact_failed", async (event, ctx) => {
   // reason - "manual" (/compact), "threshold", or "overflow"
   // errorMessage - present for non-abort failures
   // aborted - true for canceled/aborted compactions
-  // willRetry - whether the aborted turn would have retried after compaction
+  // willRetry - whether Pi core resumes the interrupted turn after compaction
   // fromExtension - whether extension-provided compaction content was being used
 });
 ```

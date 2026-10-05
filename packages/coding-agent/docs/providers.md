@@ -113,6 +113,14 @@ Radius is currently in early alpha and evolving quickly. See [radius.earendil.co
 
 Radius authentication uses its gateway catalog and caches refreshed model metadata for later offline startup. A custom Radius gateway configured in `models.json` uses its own catalog rather than inheriting the public `radius.pi.dev` catalog.
 
+### OpenAI Codex
+
+Codex catalog refresh uses the authenticated native models endpoint. It reads the current published `@openai/codex` version from npm as catalog-query metadata only; it never downloads or runs a Codex executable. `pi.dev` supplies pricing and output-limit metadata missing from the native catalog. Provider credentials go only to the native endpoint (or the embedding host's authenticated catalog transport), never to npm or `pi.dev`.
+
+Discovery is additive: omission from a later catalog does not remove known models. Newly discovered hidden models are not offered. The existing provider-scoped `models-store.json` cache makes startup/offline use independent of network discovery. Ordinary checks reuse a four-hour native cache; `ModelRuntime.refresh({ force: true })` bypasses freshness, while `{ allowNetwork: false }` only reloads cached data. Failed or incomplete discovery retains usable models and returns provider errors rather than inventing missing pricing/output limits.
+
+Model metadata distinguishes `contextWindow` (the ordinary budget) from optional `maxContextWindow` (the provider's supported opt-in maximum). Discovery does not select a model, change a user's budget, or enable unsupported API/reasoning features. Embedding hosts can use `openaiCodexProvider({ catalogAuthMode: "transport", catalogFetch })` for native discovery through their existing credential relay. Wrappers must preserve the provider's live `getModels` and `refreshModels`, not replace them with a captured array.
+
 ### Azure OpenAI
 
 Set an API key plus either a base URL or resource name:

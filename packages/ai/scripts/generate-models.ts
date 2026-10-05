@@ -1083,22 +1083,6 @@ function applyThinkingLevelMetadata(model: Model<any>): void {
 	if (supportsOpenAiMax(model)) {
 		mergeThinkingLevelMap(model, { max: "max" });
 	}
-	if (
-		model.id.startsWith("gpt-6-") &&
-		(model.api === "openai-responses" ||
-			model.api === "azure-openai-responses" ||
-			model.api === "openai-codex-responses")
-	) {
-		mergeThinkingLevelMap(model, {
-			off: model.id === "gpt-6-astra" ? null : "none",
-			minimal: model.id === "gpt-6-astra" ? null : "low",
-			low: "low",
-			medium: "medium",
-			high: "high",
-			xhigh: "xhigh",
-			max: "max",
-		});
-	}
 	if (model.provider === "openai" && model.id === "gpt-5.5") {
 		mergeThinkingLevelMap(model, { minimal: null });
 	}
