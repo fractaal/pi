@@ -23,11 +23,12 @@
  * prefix only.
  */
 
-import { execSync } from "node:child_process";
+import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RELEASE_TAG_PREFIX } from "./fractal-identity.mjs";
 import { findPackageDirectories } from "./package-workspaces.mjs";
+import { getPublicWorkspacePackages } from "./release-packages.mjs";
 
 const RELEASE_TARGET = process.argv[2];
 const BUMP_TYPES = new Set(["major", "minor", "patch"]);
@@ -56,6 +57,38 @@ function getVersion() {
 	return pkg.version;
 }
 
+function assertPackagesAreRegisteredWithNpm() {
+	const packageNames = getPublicWorkspacePackages().map((pkg) => pkg.name);
+	const unregisteredPackages = [];
+
+	console.log("Checking npm package registration...");
+	for (const packageName of packageNames) {
+		const result = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm", ["view", packageName, "version", "--json"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+
+		if (result.status === 0 && result.stdout.trim()) {
+			console.log(`  ${packageName}`);
+			continue;
+		}
+
+		const output = [result.stdout, result.stderr, result.error?.message].filter(Boolean).join("\n");
+		if (output.includes("E404") || output.includes("404 Not Found")) {
+			unregisteredPackages.push(packageName);
+			continue;
+		}
+
+		throw new Error(output ? `Failed to query npm registration for ${packageName}\n${output}` : `Failed to query npm registration for ${packageName}`);
+	}
+
+	if (unregisteredPackages.length > 0) {
+		throw new Error(`The following public workspace packages are not registered on npm:\n${unregisteredPackages.map((packageName) => `  ${packageName}`).join("\n")}\nRegister them before running a release.`);
+	}
+
+	console.log("  All public workspace packages are registered on npm\n");
+}
+
 function compareVersions(a, b) {
 	const aParts = a.split(".").map(Number);
 	const bParts = b.split(".").map(Number);
@@ -76,10 +109,7 @@ function shellQuote(value) {
 
 function removeStaleWorkspaceLockEntries() {
 	const workspaceVersions = new Map(
-		findPackageDirectories()
-			.map((directory) => JSON.parse(readFileSync(join(directory, "package.json"), "utf8")))
-			.filter((pkg) => pkg.private !== true)
-			.map((pkg) => [pkg.name, pkg.version]),
+		getPublicWorkspacePackages().map((pkg) => [pkg.name, pkg.version]),
 	);
 	const lockPath = "package-lock.json";
 	const lock = JSON.parse(readFileSync(lockPath, "utf8"));
@@ -127,7 +157,7 @@ function bumpOrSetVersion(target) {
 		}
 
 		console.log(`Setting explicit version (${target})...`);
-		run(`npm version ${target} -ws --no-git-tag-version && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts`);
+		run(`npm version ${target} --workspaces --no-git-tag-version --no-workspaces-update && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts`);
 	}
 
 	// npm version can temporarily install the previous workspace versions before
@@ -209,22 +239,21 @@ if (currentBranch === "main") {
 const version = bumpOrSetVersion(RELEASE_TARGET);
 console.log(`  New version: ${version}\n`);
 
-// 3. Update changelogs
+// 4. Update changelogs
 console.log("Updating CHANGELOG.md files...");
 updateChangelogsForRelease(version);
 console.log();
 
-// 4. Regenerate release artifacts
+// 5. Regenerate release artifacts
 console.log("Regenerating release artifacts...");
 // The model catalog is committed source. Refreshing it is a deliberate,
 // reviewable change (`npm run generate:models`), not a side effect of cutting a
 // release, so a release never silently ships a catalog nobody reviewed.
 run("npm run check:model-data");
-run("npm run shrinkwrap:coding-agent");
 run("npm run install-lock:coding-agent");
 console.log();
 
-// 5. Run checks and tests
+// 6. Run checks and tests
 console.log("Running checks...");
 run("npm run check");
 console.log();
@@ -237,7 +266,11 @@ console.log("Running tests...");
 run("./test.sh");
 console.log();
 
-// 6. Commit and tag
+console.log("Checking the packed coding-agent consumer install...");
+run("npm run check:package-install");
+console.log();
+
+// 7. Commit and tag
 console.log("Committing and tagging...");
 const releaseTag = `${RELEASE_TAG_PREFIX}${version}`;
 stageChangedFiles();
@@ -245,12 +278,12 @@ run(`git commit -m "Release ${releaseTag}"`);
 run(`git tag ${releaseTag}`);
 console.log();
 
-// 7. Add new [Unreleased] sections
+// 8. Add new [Unreleased] sections
 console.log("Adding [Unreleased] sections for next cycle...");
 addUnreleasedSection();
 console.log();
 
-// 8. Commit
+// 9. Commit
 console.log("Committing changelog updates...");
 stageChangedFiles();
 run(`git commit -m "Add [Unreleased] section for next cycle"`);

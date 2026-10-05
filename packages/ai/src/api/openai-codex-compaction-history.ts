@@ -1,5 +1,5 @@
 import type { ResponseInput, ResponseInputContent } from "openai/resources/responses/responses.js";
-import type { Context, Message } from "../types.ts";
+import type { Message, TranscriptContext } from "../types.ts";
 
 // OpenAI's native format keeps recent input before the encrypted checkpoint.
 // This is intentionally separate from coding-agent's plaintext tail retention.
@@ -110,13 +110,12 @@ function messageTokens(message: Message): number {
 
 /** Rewrite only the request copy, preserving call IDs and durable text/image results. */
 export function trimCodexCompactionToolOutputs(
-	context: Context,
+	context: TranscriptContext,
 	checkpointInput: ResponseInput,
 	contextWindow: number,
-): Context {
+): TranscriptContext {
 	const messages = context.messages.slice();
 	let tokens =
-		textTokens(context.systemPrompt ?? "") +
 		checkpointInput.reduce((sum, item) => sum + itemTokens(item), 0) +
 		messages.reduce((sum, message) => sum + messageTokens(message), 0);
 	for (let i = messages.length - 1; i >= 0 && tokens > contextWindow; i--) {

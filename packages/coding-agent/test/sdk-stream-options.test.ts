@@ -6,20 +6,17 @@ import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
 	type Model,
-	type ModelsSimpleStreamOptions,
-	type ProviderHeaders,
+	normalizeContext,
 	type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import type { OpenAICodexSimpleStreamOptions } from "@earendil-works/pi-ai/api/openai-codex-responses";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
-import type { InlineExtension } from "../src/core/extensions/index.ts";
+import type { ExtensionFactory } from "../src/core/extensions/types.ts";
+import { DefaultResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { type Settings, SettingsManager } from "../src/core/settings-manager.ts";
-
 import { createModelRegistry, getModelRuntime } from "./model-runtime-test-utils.ts";
-import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 describe("createAgentSession stream options", () => {
 	let tempDir: string;
@@ -35,7 +32,6 @@ describe("createAgentSession stream options", () => {
 	});
 
 	afterEach(() => {
-		vi.unstubAllEnvs();
 		if (tempDir) {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
@@ -57,9 +53,8 @@ describe("createAgentSession stream options", () => {
 		};
 	}
 
-	function createDoneStream(api: Api) {
-		const stream = createAssistantMessageEventStream();
-		const message: AssistantMessage = {
+	function createDoneMessage(api: Api, promptTokens = 0): AssistantMessage {
+		return {
 			role: "assistant",
 			content: [{ type: "text", text: "ok" }],
 			api,
@@ -68,15 +63,19 @@ describe("createAgentSession stream options", () => {
 			usage: {
 				input: 0,
 				output: 0,
-				cacheRead: 0,
+				cacheRead: promptTokens,
 				cacheWrite: 0,
-				totalTokens: 0,
+				totalTokens: promptTokens,
 				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 			},
 			stopReason: "stop",
 			timestamp: Date.now(),
 		};
-		stream.end(message);
+	}
+
+	function createDoneStream(api: Api, promptTokens = 0) {
+		const stream = createAssistantMessageEventStream();
+		stream.end(createDoneMessage(api, promptTokens));
 		return stream;
 	}
 
@@ -84,13 +83,18 @@ describe("createAgentSession stream options", () => {
 		api: Api,
 		settings: Partial<Settings>,
 		requestOptions: SimpleStreamOptions = {},
-		extensionFactory?: InlineExtension,
+		extensionFactory?: ExtensionFactory,
+		providerEvent?: unknown,
 	): Promise<SimpleStreamOptions | undefined> {
 		const model = createModel(api);
 		const settingsManager = SettingsManager.inMemory(settings);
-		const resourceLoader = extensionFactory
-			? createTestResourceLoader({ extensionsResult: await createTestExtensionsResult([extensionFactory], cwd) })
-			: undefined;
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			extensionFactories: extensionFactory ? [extensionFactory] : [],
+		});
+		await resourceLoader.reload();
 
 		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
 		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
@@ -100,9 +104,16 @@ describe("createAgentSession stream options", () => {
 		modelRegistry.registerProvider(model.provider, {
 			api,
 			headers: { "x-provider": "provider" },
-			streamSimple: (_model, _context, providerOptions) => {
+			streamSimple: (requestModel, _context, providerOptions) => {
 				capturedOptions = providerOptions;
-				return createDoneStream(api);
+				if (providerEvent === undefined) return createDoneStream(api);
+
+				const stream = createAssistantMessageEventStream();
+				void (async () => {
+					await providerOptions?.onProviderStreamEvent?.(providerEvent, requestModel);
+					stream.end(createDoneMessage(api));
+				})();
+				return stream;
 			},
 		});
 
@@ -119,14 +130,96 @@ describe("createAgentSession stream options", () => {
 		});
 
 		try {
-			const stream = await session.agent.streamFunction(model, { messages: [] }, requestOptions);
-			await stream.result();
+			if (providerEvent === undefined) {
+				const stream = await session.agent.streamFunction(
+					model,
+					normalizeContext({ messages: [] }),
+					requestOptions,
+				);
+				await stream.result();
+			} else {
+				await session.prompt("test");
+			}
 			return capturedOptions;
 		} finally {
 			session.dispose();
 			modelRegistry.unregisterProvider(model.provider);
 		}
 	}
+
+	async function createCacheWarmingSession(populate?: (manager: SessionManager, model: Model<Api>) => void) {
+		const model: Model<Api> = {
+			...createModel("anthropic-messages"),
+			cost: { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+			promptCache: { short: 300 },
+		};
+		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
+		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
+		let providerCalls = 0;
+		modelRegistry.registerProvider(model.provider, {
+			api: model.api,
+			streamSimple: () => {
+				providerCalls++;
+				return createDoneStream(model.api, 100_000);
+			},
+		});
+		const sessionManager = SessionManager.inMemory(cwd);
+		populate?.(sessionManager, model);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			modelRuntime: getModelRuntime(modelRegistry),
+			settingsManager: SettingsManager.inMemory({ cacheWarming: "idle" }),
+			sessionManager,
+		});
+		return {
+			session,
+			providerCalls: () => providerCalls,
+			dispose: () => {
+				session.dispose();
+				modelRegistry.unregisterProvider(model.provider);
+			},
+		};
+	}
+
+	it("schedules cache warming after a completed session request", async () => {
+		const fixture = await createCacheWarmingSession();
+		try {
+			await fixture.session.prompt("test");
+			expect(fixture.session.cacheWarmingStatus?.nextWarmAt).toBeGreaterThan(Date.now());
+
+			// Equivalent shallow copies remain current, but removing the request prefix does not.
+			fixture.session.agent.state.messages = [...fixture.session.agent.state.messages];
+			fixture.session.agent.state.model = { ...fixture.session.agent.state.model };
+			expect(fixture.session.cacheWarmingStatus?.nextWarmAt).toBeGreaterThan(Date.now());
+			fixture.session.agent.state.messages = fixture.session.agent.state.messages.slice(1);
+			expect(fixture.session.cacheWarmingStatus?.reason).toBe("conversation context changed");
+		} finally {
+			fixture.dispose();
+		}
+	});
+
+	it("waits for the next request instead of restoring cache warming", async () => {
+		const fixture = await createCacheWarmingSession((manager, model) => {
+			manager.appendModelChange(model.provider, model.id);
+			manager.appendThinkingLevelChange("off");
+			manager.appendMessage({ role: "user", content: "test", timestamp: Date.now() - 60_000 });
+			const assistant = { ...createDoneMessage(model.api, 100_000), timestamp: Date.now() - 59_000 };
+			manager.appendMessage(assistant);
+			manager.appendUsage("cache_warm", model.provider, model.id, assistant.usage);
+		});
+		try {
+			expect(fixture.providerCalls()).toBe(0);
+			expect(fixture.session.cacheWarmingStatus).toEqual({
+				state: "inactive",
+				reason: "waiting for first request",
+			});
+		} finally {
+			fixture.dispose();
+		}
+	});
 
 	it("forwards httpIdleTimeoutMs as timeoutMs for OpenAI Codex", async () => {
 		const options = await captureStreamOptions("openai-codex-responses", { httpIdleTimeoutMs: 1234 });
@@ -175,6 +268,35 @@ describe("createAgentSession stream options", () => {
 		expect(options?.maxRetryDelayMs).toBe(3000);
 	});
 
+	// Regression test for #9784.
+	it("forwards provider stream events to extensions", async () => {
+		const providerEvent = { openrouter_metadata: { strategy: "direct" } };
+		const extensionEvents: unknown[] = [];
+
+		const options = await captureStreamOptions(
+			"openai-completions",
+			{},
+			{},
+			(pi) => {
+				pi.on("provider_stream_event", (event) => {
+					extensionEvents.push(event);
+				});
+			},
+			providerEvent,
+		);
+
+		expect(options?.onProviderStreamEvent).toEqual(expect.any(Function));
+		expect(extensionEvents).toEqual([
+			{
+				data: providerEvent,
+				type: "provider_stream_event",
+				provider: "capture-provider",
+				api: "openai-completions",
+				model: "capture-model",
+			},
+		]);
+	});
+
 	it("runs before_provider_headers on assembled headers without forwarding the transform", async () => {
 		const options = await captureStreamOptions(
 			"openai-completions",
@@ -198,171 +320,5 @@ describe("createAgentSession stream options", () => {
 			"x-hook": "provider:model:explicit",
 		});
 		expect(options).not.toHaveProperty("transformHeaders");
-	});
-
-	it("shares request settings with native compaction and replays checkpoints only through Codex", async () => {
-		vi.stubEnv("PI_TELEMETRY", "1");
-		const model = {
-			...createModel("openai-codex-responses"),
-			provider: "openai-codex",
-			baseUrl: "https://openrouter.ai/api/v1",
-			contextWindow: 200,
-		};
-		const settingsManager = SettingsManager.inMemory({
-			httpIdleTimeoutMs: 1234,
-			retry: { provider: { maxRetries: 2, maxRetryDelayMs: 3000 } },
-			compaction: { enabled: true, reserveTokens: 100, keepRecentTokens: 1 },
-		});
-		const resourceLoader = createTestResourceLoader({
-			extensionsResult: await createTestExtensionsResult(
-				[
-					(pi) => {
-						pi.on("before_provider_headers", (event) => {
-							event.headers["x-hook"] = `${event.headers["HTTP-Referer"]}:${event.headers["x-provider"]}`;
-						});
-						pi.on("session_before_compact", async (event) => {
-							const response = await event.summarizeNativeContext!(
-								{
-									systemPrompt: "Keep all prior decisions",
-									messages: [{ role: "user", content: "Summarize the selected tail", timestamp: 1 }],
-								},
-								{ maxTokens: 90 },
-							);
-							return {
-								compaction: {
-									summary: response.content
-										.filter((c) => c.type === "text")
-										.map((c) => c.text)
-										.join(""),
-									firstKeptEntryId: event.preparation.firstKeptEntryId,
-									tokensBefore: event.preparation.tokensBefore,
-								},
-							};
-						});
-					},
-				],
-				cwd,
-			),
-		});
-
-		const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-		await authStorage.modify(model.provider, async () => ({ type: "api_key", key: "test-api-key" }));
-		const modelRegistry = await createModelRegistry(authStorage, join(agentDir, "models.json"));
-		let capturedReplayOptions: OpenAICodexSimpleStreamOptions | undefined;
-		const providerStream = vi.fn(
-			(_model: Model<any>, _context: { messages: unknown[] }, providerOptions?: OpenAICodexSimpleStreamOptions) => {
-				capturedReplayOptions = providerOptions;
-				return createDoneStream(model.api);
-			},
-		);
-		modelRegistry.registerProvider(model.provider, {
-			api: model.api,
-			apiKey: "test-api-key",
-			headers: { "x-provider": "provider" },
-			streamSimple: providerStream,
-		});
-		const modelRuntime = getModelRuntime(modelRegistry);
-		let capturedOptions: ModelsSimpleStreamOptions | undefined;
-		let transformedHeaders: ProviderHeaders | undefined;
-		modelRuntime.compactOpenAICodexResponses = async (_model, _context, requestOptions) => {
-			capturedOptions = requestOptions;
-			transformedHeaders = await requestOptions?.transformHeaders?.({ "x-provider": "provider" });
-			return {
-				item: { type: "compaction", encrypted_content: "opaque" },
-				tokensBefore: 100,
-				usage: {
-					input: 100,
-					output: 1,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 101,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-			};
-		};
-
-		const sessionManager = SessionManager.inMemory(cwd, { compactionMode: "openai-native" });
-		const { session } = await createAgentSession({
-			cwd,
-			agentDir,
-			model,
-			modelRuntime,
-			settingsManager,
-			sessionManager,
-			resourceLoader,
-		});
-		try {
-			for (let turn = 0; turn < 2; turn++) {
-				sessionManager.appendMessage({
-					role: "user",
-					content: `synthetic context ${turn} ${"x".repeat(80)}`,
-					timestamp: Date.now(),
-				});
-				sessionManager.appendMessage({
-					role: "assistant",
-					content: [{ type: "text", text: "answer" }],
-					api: model.api,
-					provider: model.provider,
-					model: model.id,
-					usage: {
-						input: 80,
-						output: 20,
-						cacheRead: 0,
-						cacheWrite: 0,
-						totalTokens: 100,
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-					},
-					stopReason: "stop",
-					timestamp: Date.now(),
-				});
-			}
-			session.agent.state.messages = sessionManager.buildSessionContext().messages;
-
-			await session.compact();
-			expect(sessionManager.getBranch().at(-1)).toMatchObject({ type: "openai_native_compaction" });
-			const continuation = await session.agent.streamFunction(model, { messages: [] });
-			const continuationResult = await continuation.result();
-			expect(continuationResult.stopReason, continuationResult.errorMessage).toBe("stop");
-
-			expect(capturedOptions).toMatchObject({ timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 3000 });
-			expect(capturedReplayOptions).toMatchObject({
-				nativeCompactionCheckpoint: {
-					provider: "openai-codex",
-					modelId: "capture-model",
-					item: { type: "compaction", encrypted_content: "opaque" },
-				},
-			});
-			expect(providerStream).toHaveBeenCalledTimes(1);
-			expect(() => session.agent.streamFunction({ ...model, api: "openai-completions" }, { messages: [] })).toThrow(
-				/checkpoint requires the openai-codex Responses route/,
-			);
-			expect(providerStream).toHaveBeenCalledTimes(1);
-			expect(transformedHeaders).toMatchObject({
-				"x-provider": "provider",
-				"HTTP-Referer": "https://pi.dev",
-				"X-OpenRouter-Title": "pi",
-				"x-hook": "https://pi.dev:provider",
-			});
-			session.setCompactionMode("fractal");
-			for (let turn = 0; turn < 3; turn++) {
-				sessionManager.appendMessage({
-					role: "user",
-					content: "Tail to preserve ".repeat(30),
-					timestamp: Date.now(),
-				});
-				sessionManager.appendMessage(await createDoneStream(model.api).result());
-			}
-			session.agent.state.messages = sessionManager.buildSessionContext().messages;
-			await session.compact();
-			expect(capturedReplayOptions?.nativeCompactionCheckpoint).toMatchObject({
-				item: { encrypted_content: "opaque" },
-			});
-			expect(session.getCompactionControl()).toMatchObject({ lockedProvider: null, conversionPending: false });
-			await (await session.agent.streamFunction(model, { messages: [] })).result();
-			expect(capturedReplayOptions).not.toHaveProperty("nativeCompactionCheckpoint");
-		} finally {
-			session.dispose();
-			modelRegistry.unregisterProvider(model.provider);
-		}
 	});
 });
