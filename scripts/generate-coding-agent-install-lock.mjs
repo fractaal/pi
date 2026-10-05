@@ -434,7 +434,7 @@ function validateForkIdentity(installerPackageJson, installLock, identityVersion
 			errors.push(`${lockPath} resolves to an upstream internal package`);
 		}
 		for (const [dependencyName, dependencySpec] of Object.entries(packageDependencies(entry))) {
-			if (dependencyName.startsWith(internalPackagePrefix)) {
+			if (dependencyName.startsWith(internalPackagePrefix) || internalPackageNames.has(dependencyName)) {
 				const target = PUBLISHABLE_PACKAGES.find((pkg) => pkg.upstreamName === dependencyName);
 				const expected = target ? `npm:${target.name}@${identityVersion}` : undefined;
 				if (!expected || dependencySpec !== expected) {
