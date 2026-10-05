@@ -259,7 +259,8 @@ describe("AgentSession compaction characterization", () => {
 		let queuedPrompt: Promise<void> | undefined;
 		harness.session.subscribe((event) => {
 			if (event.type === "compaction_end" && event.reason === "manual" && event.result) {
-				expect(harness.session.isCompacting).toBe(false);
+				// The stop-the-world barrier is still up while compaction_end listeners run, so the prompt
+				// is parked and released right after the listeners return.
 				queuedPrompt = harness.session.prompt("queued after compaction");
 			}
 		});
@@ -539,7 +540,8 @@ describe("AgentSession compaction characterization", () => {
 
 			expect(order.slice(0, 2)).toEqual(["compaction", "provider"]);
 			expect(observedSettings[0]).toEqual({ enabled: true, reserveTokens: 400, keepRecentTokens: 1750 });
-			expect(harness.eventsOfType("agent_start")).toHaveLength(agentStartsBefore + 1);
+			// Compaction is stop-the-world: the run ends at the tool-batch boundary and a recovery run resumes it.
+			expect(harness.eventsOfType("agent_start")).toHaveLength(agentStartsBefore + 2);
 			expect(harness.eventsOfType("compaction_start").at(-1)).toEqual({
 				type: "compaction_start",
 				reason: "threshold",
@@ -716,7 +718,7 @@ describe("AgentSession compaction characterization", () => {
 			totalTokens: 100,
 			timestamp: Date.now(),
 		});
-		const runAutoCompactionSpy = vi.spyOn(sessionInternals, "_runAutoCompaction").mockResolvedValue(false);
+		const runAutoCompactionSpy = vi.spyOn(sessionInternals, "_runAutoCompaction").mockResolvedValue(true);
 		const compactionErrors: string[] = [];
 		harness.session.subscribe((event) => {
 			if (event.type === "compaction_end" && event.errorMessage) {
@@ -812,7 +814,7 @@ describe("AgentSession compaction characterization", () => {
 			errorMessage: "prompt is too long",
 			timestamp: Date.now(),
 		});
-		const runAutoCompactionSpy = vi.spyOn(sessionInternals, "_runAutoCompaction").mockResolvedValue(false);
+		const runAutoCompactionSpy = vi.spyOn(sessionInternals, "_runAutoCompaction").mockResolvedValue(true);
 		const compactionErrors: string[] = [];
 		harness.session.subscribe((event) => {
 			if (event.type === "compaction_end" && event.errorMessage) {

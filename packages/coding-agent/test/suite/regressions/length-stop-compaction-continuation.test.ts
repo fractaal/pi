@@ -358,7 +358,7 @@ describe("length-stop compaction continuation", () => {
 
 		expect(compactedContexts).toHaveLength(1);
 		expect(requests).toHaveLength(2);
-		expect(requests[1]).toEqual([]);
+		expect(requests[1]!.filter((message) => message.role !== "system")).toEqual([]);
 		expect(continuationEntries(harness)).toHaveLength(0);
 		expect(harness.eventsOfType("compaction_end")).toEqual([
 			expect.objectContaining({ reason: "threshold", aborted: false, willRetry: true }),
@@ -392,7 +392,9 @@ describe("length-stop compaction continuation", () => {
 			compactedContexts[0]!.filter((message) => getMessageText(message) === "partial native answer"),
 		).toHaveLength(1);
 		expect(requests).toHaveLength(2);
-		expect(requests[1]!.map((message) => getMessageText(message))).toEqual([CONTINUATION_INSTRUCTION]);
+		expect(
+			requests[1]!.filter((message) => message.role !== "system").map((message) => getMessageText(message)),
+		).toEqual([CONTINUATION_INSTRUCTION]);
 		expect(continuationEntries(harness)).toEqual([
 			expect.objectContaining({ type: "custom_message", display: false }),
 		]);

@@ -149,6 +149,7 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 
 	return {
 		getModels: (): readonly CodexModel[] => models,
+		getAllModels: (): readonly CodexModel[] => models,
 		refreshModels(context: RefreshModelsContext): Promise<void> {
 			if (pending) return pending;
 			const current = (async () => {

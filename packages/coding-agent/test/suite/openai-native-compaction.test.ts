@@ -388,7 +388,7 @@ describe("AgentSession OpenAI native compaction", () => {
 		expect(
 			harness.sessionManager.getEntries().filter((entry) => entry.type === "openai_native_compaction"),
 		).toHaveLength(1);
-		expect(harness.session.messages).toEqual([]);
+		expect(harness.session.messages.filter((message) => message.role !== "system")).toEqual([]);
 	});
 
 	it("retries an overflow error from the opaque checkpoint without a generic checkpoint message", async () => {
@@ -417,7 +417,7 @@ describe("AgentSession OpenAI native compaction", () => {
 		expect(
 			harness.sessionManager.getEntries().filter((entry) => entry.type === "openai_native_compaction"),
 		).toHaveLength(1);
-		expect(harness.session.messages).toEqual([
+		expect(harness.session.messages.filter((message) => message.role !== "system")).toEqual([
 			expect.objectContaining({
 				role: "assistant",
 				content: [{ type: "text", text: "continued after native overflow" }],
@@ -586,7 +586,9 @@ describe("AgentSession OpenAI native compaction", () => {
 		await harness.session.prompt("continue from restored checkpoint branch");
 
 		expect(harness.session.model).toMatchObject({ provider: "openai-codex", id: "model-a" });
-		expect(harness.session.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+		expect(
+			harness.session.messages.filter((message) => message.role !== "system").map((message) => message.role),
+		).toEqual(["user", "assistant"]);
 		expect(harness.session.messages.at(-1)).toMatchObject({ role: "assistant", model: "model-a" });
 	});
 

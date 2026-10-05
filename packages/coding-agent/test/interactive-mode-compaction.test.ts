@@ -338,6 +338,9 @@ describe("InteractiveMode compaction events", () => {
 
 		const fakeThis = {
 			session: harness.session,
+			sessionManager: harness.sessionManager,
+			renderSessionEntries: vi.fn(),
+			addCompactionCostNotice: vi.fn(),
 			compactionQueuedMessages: [],
 			editor: { addToHistory: vi.fn(), setText: vi.fn() },
 			updatePendingMessagesDisplay: vi.fn(),

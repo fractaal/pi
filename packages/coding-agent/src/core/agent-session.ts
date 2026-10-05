@@ -992,8 +992,10 @@ export class AgentSession {
 			if (previousDecision?.action === "end") return previousDecision;
 			if (this._isCompactionBarrierActive()) return { action: "end" };
 			if (!turn.toolBatchDidNotTerminate && !this.agent.hasQueuedMessages()) return previousDecision || undefined;
-			const settings = this.settingsManager.getCompactionSettings(this.model);
-			const contextWindow = this.model?.contextWindow ?? 0;
+			// Under a virtual selection the physical model that produced the turn supplies the limits.
+			const turnModel = this._modelForMessage(turn.message) ?? this.model;
+			const settings = this.settingsManager.getCompactionSettings(turnModel);
+			const contextWindow = turnModel?.contextWindow ?? 0;
 			if (!shouldCompact(estimateContextTokens(this.agent.state.messages).tokens, contextWindow, settings)) {
 				return previousDecision || undefined;
 			}
@@ -1407,7 +1409,8 @@ export class AgentSession {
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 
 			if (event.message.role === "assistant") {
-				const assistantMsg = preExtensionAssistantMessage ?? (event.message as AssistantMessage);
+				// Overflow responses were restored in place above, so this is always the persisted message identity.
+				const assistantMsg = event.message as AssistantMessage;
 				this._lastAssistantMessage = assistantMsg;
 
 				if (
@@ -2186,7 +2189,20 @@ export class AgentSession {
 		result: Awaited<ReturnType<AgentSession["_emitAgentStart"]>>,
 		messages: AgentMessage[],
 	): AgentMessage[] {
-		this._applyAgentStartResult(result, messages);
+		for (const msg of result.messages) {
+			messages.push({
+				role: "custom",
+				customType: msg.customType,
+				// Untyped extensions can pass null/missing content; normalize at ingestion.
+				content: msg.content ?? [],
+				display: msg.display,
+				details: msg.details,
+				timestamp: Date.now(),
+			});
+		}
+		const updateMessage = this._preparePromptAndToolLoadout(result.systemPromptOptions);
+		this._runSystemPromptOptions = result.systemPromptOptions;
+		if (updateMessage) messages.unshift(updateMessage);
 		return messages;
 	}
 
@@ -2349,12 +2365,6 @@ export class AgentSession {
 			}
 		}
 
-		if (this._compactionAbortController !== undefined) {
-			throw new Error(
-				"Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.",
-			);
-		}
-
 		// Emit input event for extension interception (before skill/template expansion)
 		const processedInput = await this._runInputHandlers(
 			text,
@@ -2373,6 +2383,18 @@ export class AgentSession {
 		if (expandPromptTemplates) {
 			expandedText = this._expandSkillCommand(expandedText);
 			expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
+		}
+
+		// Context mutation is a stop-the-world operation. Queue normal prompts
+		// behind the same barrier used by extension and interactive ingress.
+		if (this._isCompactionIngressBlocked()) {
+			if (options?.streamingBehavior === "followUp") {
+				await this._queueFollowUp(expandedText, currentImages);
+			} else {
+				await this._queueSteer(expandedText, currentImages);
+			}
+			preflightResult?.("queued");
+			return;
 		}
 
 		// If streaming, queue via steer() or followUp() based on option
@@ -3461,7 +3483,7 @@ export class AgentSession {
 			return compactionResult;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			const aborted = this._compactionAbortController.signal.aborted || cancelledByExtension;
+			const aborted = this._compactionAbortController?.signal.aborted === true || cancelledByExtension;
 			const errorMessage = aborted ? undefined : `Compaction failed: ${message}`;
 			this._clearManualCompactionState();
 			this._emit({
@@ -3590,8 +3612,26 @@ export class AgentSession {
 			sameModel &&
 			((explicitOverflow && assistantRetainedForExplicitRecovery) ||
 				(assistantUsageMatchesProjection && isContextOverflow(assistantMessage, contextWindow)));
+		// A length stop above the compaction threshold is recovered by threshold compaction below, which
+		// keeps the visible partial output and continues from it. Only a length stop below the threshold
+		// that was clamped by the remaining context replays the turn, and not after that recovery was spent.
+		const lengthAboveThreshold =
+			skipAbortedCheck &&
+			assistantMessage.stopReason === "length" &&
+			shouldCompact(
+				Math.max(
+					calculateContextTokens(assistantMessage.usage),
+					estimateContextTokens(this.agent.state.messages).tokens,
+				),
+				contextWindow,
+				settings,
+			);
 		const recoverableLength =
-			sameModel && assistantIsProjected && isRecoverableLength(assistantMessage, messageModel.maxTokens);
+			sameModel &&
+			assistantIsProjected &&
+			!lengthAboveThreshold &&
+			!this._lengthCompactionRecoveryAttempted &&
+			isRecoverableLength(assistantMessage, messageModel.maxTokens);
 		if (contextOverflow || recoverableLength) {
 			const willRetry =
 				skipAbortedCheck &&
@@ -3627,11 +3667,16 @@ export class AgentSession {
 				return false;
 			}
 
-			// Persistently omit the selected final attempt before post-run recovery compaction.
 			this._overflowRecoveryAttempted = true;
-			this._omitRecoveryAttempt(assistantMessage, toolResults);
 			const retry = await this._runAutoCompaction("overflow", willRetry);
-			if (retry) this._failedResponse = assistantMessage;
+			if (retry) {
+				// Keep the failed attempt visible until compaction succeeds, so a cancelled or failed
+				// compaction leaves the overflow recoverable instead of silently dropping the response.
+				this._omitRecoveryAttempt(assistantMessage, toolResults);
+				this._failedResponse = assistantMessage;
+			} else {
+				this._overflowRecoveryAttempted = false;
+			}
 			return retry;
 		}
 
@@ -3665,7 +3710,13 @@ export class AgentSession {
 			}
 			contextTokens = estimate.tokens;
 		} else {
-			contextTokens = Math.max(directContextTokens, estimateContextTokens(this.agent.state.messages).tokens);
+			// A terminating tool batch ends the run; its results are not sent to the model again here,
+			// so only the provider-reported usage decides whether a settled run compacts.
+			const terminatedToolBatch =
+				skipAbortedCheck && assistantMessage.stopReason === "toolUse" && !this._toolResultsRequireContinuation;
+			contextTokens = terminatedToolBatch
+				? directContextTokens
+				: Math.max(directContextTokens, estimateContextTokens(this.agent.state.messages).tokens);
 		}
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			if (skipAbortedCheck && assistantMessage.stopReason === "toolUse" && this._toolResultsRequireContinuation) {
@@ -3688,6 +3739,10 @@ export class AgentSession {
 			const compacted = await this._runAutoCompaction("threshold", true, retryMode);
 			if (!compacted) {
 				this._lengthCompactionRecoveryAttempted = false;
+			} else if (retryMode === "replay") {
+				// The empty truncated attempt is replayed, so it leaves the model context only after compaction succeeds.
+				this._omitRecoveryAttempt(assistantMessage, toolResults);
+				this._failedResponse = assistantMessage;
 			}
 			return compacted;
 		}
