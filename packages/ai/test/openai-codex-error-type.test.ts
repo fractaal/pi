@@ -5,6 +5,7 @@ import {
 	stream,
 } from "../src/api/openai-codex-responses.ts";
 import type { Model } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 const model: Model<"openai-codex-responses"> = {
 	id: "gpt-5.6-sol",
@@ -19,7 +20,7 @@ const model: Model<"openai-codex-responses"> = {
 	maxTokens: 32000,
 };
 const apiKey = `test.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "test" } })).toString("base64")}.test`;
-const context = { messages: [] };
+const context = normalizeContext({ messages: [] });
 const message = "The usage limit has been reached";
 
 function eventFetch(event: Record<string, unknown>) {

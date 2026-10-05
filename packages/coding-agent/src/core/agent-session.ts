@@ -133,10 +133,8 @@ import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.t
 import { exportSessionToJsonl } from "./session-export.ts";
 import {
 	type BranchSummaryEntry,
-	type CompactionEntry,
 	type ContextEditEntry,
 	getLatestCompactionCheckpoint,
-	getLatestCompactionEntry,
 	type OpenAINativeCompactionEntry,
 	type SessionEntry,
 	SessionManager,
@@ -3408,7 +3406,13 @@ export class AgentSession {
 
 			conversion?.assertComplete(summary);
 			const savedEntryId = nativeItem
-				? this.sessionManager.appendOpenAINativeCompaction(model.id, nativeItem, tokensBefore, usage!, retainedInput)
+				? this.sessionManager.appendOpenAINativeCompaction(
+						model.id,
+						nativeItem,
+						tokensBefore,
+						usage!,
+						retainedInput,
+					)
 				: this.sessionManager.appendCompaction(
 						summary,
 						firstKeptEntryId,
@@ -3801,7 +3805,13 @@ export class AgentSession {
 
 			conversion?.assertComplete(summary);
 			const savedEntryId = nativeItem
-				? this.sessionManager.appendOpenAINativeCompaction(model.id, nativeItem, tokensBefore, usage!, retainedInput)
+				? this.sessionManager.appendOpenAINativeCompaction(
+						model.id,
+						nativeItem,
+						tokensBefore,
+						usage!,
+						retainedInput,
+					)
 				: this.sessionManager.appendCompaction(
 						summary,
 						firstKeptEntryId,
@@ -4952,7 +4962,8 @@ export class AgentSession {
 				.some((entry) => projectedAssistants.has(entry.id));
 			if (!hasPostCompactionUsage) {
 				if (latestCompaction.type === "openai_native_compaction") {
-					const tokens = estimateOpenAINativeCompactionTokens(latestCompaction) + estimateMessagesTokens(this.messages);
+					const tokens =
+						estimateOpenAINativeCompactionTokens(latestCompaction) + estimateMessagesTokens(this.messages);
 					return { tokens, contextWindow, percent: (tokens / contextWindow) * 100 };
 				}
 				return { tokens: null, contextWindow, percent: null };

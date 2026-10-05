@@ -312,7 +312,7 @@ describe("extension provider model lifecycle", () => {
 		};
 
 		runtime.registerNativeProvider(provider);
-		await runtime.setRuntimeApiKey("openai-codex", "synthetic-key", { allowNetwork: false });
+		await runtime.setRuntimeApiKey("openai-codex", "synthetic-key");
 
 		await expect(
 			runtime.compactOpenAICodexResponses(nativeModel, { systemPrompt: "", messages: [] }),
@@ -388,7 +388,7 @@ describe("extension provider model lifecycle", () => {
 		);
 
 		runtime.registerNativeProvider(provider);
-		await runtime.setRuntimeApiKey("openai-codex", `aaa.${tokenPayload}.bbb`, { allowNetwork: false });
+		await runtime.setRuntimeApiKey("openai-codex", `aaa.${tokenPayload}.bbb`);
 
 		await expect(
 			runtime.compactOpenAICodexResponses(nativeModel, { systemPrompt: "", messages: [] }),

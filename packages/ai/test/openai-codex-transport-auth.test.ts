@@ -7,6 +7,7 @@ import {
 	streamSimple,
 } from "../src/api/openai-codex-responses.ts";
 import type { Context, Model } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 const model: Model<"openai-codex-responses"> = {
 	id: "gpt-5.6-sol",
@@ -20,9 +21,10 @@ const model: Model<"openai-codex-responses"> = {
 	contextWindow: 272000,
 	maxTokens: 128000,
 };
-const context: Context = {
+const rawContext: Context = {
 	messages: [{ role: "user", content: "Synthetic context", timestamp: 1 }],
 };
+const context = normalizeContext(rawContext);
 
 function sse(items: unknown[] = []): Response {
 	const events = [
@@ -100,7 +102,7 @@ describe("Codex caller-authenticated HTTP transport", () => {
 			expect(new Headers(init?.headers).has("authorization")).toBe(false);
 			return sse([{ type: "compaction", encrypted_content: "next-checkpoint" }]);
 		});
-		const result = await compactOpenAICodexResponses(model, context, {
+		const result = await compactOpenAICodexResponses(model, rawContext, {
 			authMode: "transport",
 			fetch,
 			nativeCompactionCheckpoint: {

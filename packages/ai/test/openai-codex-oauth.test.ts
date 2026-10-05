@@ -511,12 +511,15 @@ describe("OpenAI Codex OAuth", () => {
 		);
 
 		const error = await openaiCodexOAuth
-			.refresh({
-				type: "oauth",
-				access: "invalid-access-token",
-				refresh: "invalid-refresh-token",
-				expires: 0,
-			})
+			.refresh(
+				{
+					type: "oauth",
+					access: "invalid-access-token",
+					refresh: "invalid-refresh-token",
+					expires: 0,
+				},
+				neverAbortedSignal,
+			)
 			.catch((reason: unknown) => reason);
 
 		expect(error).toBeInstanceOf(OpenAICodexOAuthRefreshError);
@@ -532,7 +535,7 @@ describe("OpenAI Codex OAuth", () => {
 		);
 
 		const error = await openaiCodexOAuth
-			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 })
+			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 }, neverAbortedSignal)
 			.catch((reason: unknown) => reason);
 
 		expect(error).toMatchObject({ code: "transient", status });
@@ -546,7 +549,7 @@ describe("OpenAI Codex OAuth", () => {
 		);
 
 		const error = await openaiCodexOAuth
-			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 })
+			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 }, neverAbortedSignal)
 			.catch((reason: unknown) => reason);
 
 		expect(error).toMatchObject({ code: "transient" });
@@ -560,7 +563,7 @@ describe("OpenAI Codex OAuth", () => {
 		);
 
 		const error = await openaiCodexOAuth
-			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 })
+			.refresh({ type: "oauth", access: "access", refresh: "refresh", expires: 0 }, neverAbortedSignal)
 			.catch((reason: unknown) => reason);
 
 		expect(error).toMatchObject({ code: "invalid_response" });

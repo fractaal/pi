@@ -124,7 +124,7 @@ async function nativeHarness(compact: OpenAINativeCompactionFunction): Promise<H
 		api: model.api,
 		models: [model],
 	});
-	await harness.session.modelRuntime.setRuntimeApiKey("openai-codex", "synthetic-key", { allowNetwork: false });
+	await harness.session.modelRuntime.setRuntimeApiKey("openai-codex", "synthetic-key");
 	seedConversation(harness);
 	return harness;
 }

@@ -150,7 +150,8 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 	return {
 		getModels: (): readonly CodexModel[] => models,
 		refreshModels(context: RefreshModelsContext): Promise<void> {
-			pending ??= (async () => {
+			if (pending) return pending;
+			const current = (async () => {
 				try {
 					const stored = context.stored;
 					const generatedAt = Date.parse(modelDataManifest.generatedAt);
@@ -249,10 +250,14 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 						);
 					if (metadataError) throw metadataError;
 				} finally {
-					pending = undefined;
+					// Settled only after assignment below, even when the body finishes synchronously.
+					queueMicrotask(() => {
+						if (pending === current) pending = undefined;
+					});
 				}
 			})();
-			return pending;
+			pending = current;
+			return current;
 		},
 	};
 }

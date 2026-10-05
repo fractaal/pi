@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RefreshModelsContext } from "../src/models.ts";
-import { InMemoryModelsStore } from "../src/models-store.ts";
+import { InMemoryModelsStore, type ModelsStoreEntry } from "../src/models-store.ts";
 import { openaiCodexProvider } from "../src/providers/openai-codex.ts";
 import type { Model } from "../src/types.ts";
 
@@ -28,6 +28,12 @@ const nativeModel = (slug = newModel.id) => ({
 
 function fixture({ authMode = "oauth", models = [nativeModel()], metadata = [newModel] } = {}) {
 	const store = new InMemoryModelsStore();
+	let snapshot: ModelsStoreEntry | undefined;
+	const writeToStore = store.write.bind(store);
+	store.write = async (providerId, entry) => {
+		snapshot = entry;
+		await writeToStore(providerId, entry);
+	};
 	const metadataFetch = vi.fn<typeof fetch>(async (url) =>
 		String(url).endsWith("/latest")
 			? Response.json({ version: "0.999.1" })
@@ -48,10 +54,14 @@ function fixture({ authMode = "oauth", models = [nativeModel()], metadata = [new
 			expires: Date.now() + 60_000,
 		},
 		allowNetwork: true,
-		store: {
-			read: () => store.read(provider.id),
-			write: (entry) => store.write(provider.id, entry),
-			delete: () => store.delete(provider.id),
+		signal: new AbortController().signal,
+		get stored() {
+			return snapshot;
+		},
+		publish: async (publication) => {
+			if (publication.persist) await store.write(provider.id, publication.persist);
+			publication.update?.();
+			return true;
 		},
 	};
 	return { provider, context, store, metadataFetch, catalogFetch };

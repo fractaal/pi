@@ -7,6 +7,7 @@ import {
 	streamSimple,
 } from "../src/api/openai-codex-responses.ts";
 import type { Context, Model } from "../src/types.ts";
+import { normalizeContext } from "../src/utils/transcript.ts";
 
 const model: Model<"openai-codex-responses"> = {
 	id: "gpt-5.6-sol",
@@ -112,11 +113,10 @@ describe("OpenAI Codex native compaction", () => {
 		vi.stubGlobal("fetch", fetch);
 		const options = { apiKey: token(), transport: "websocket-cached" as const, sessionId: "native-socket-test" };
 		const checkpoint = await compactOpenAICodexResponses(model, context, options);
-		const result = await streamSimple(
-			model,
-			{ messages: [] },
-			{ ...options, nativeCompactionCheckpoint: { ...checkpoint, provider: "openai-codex", modelId: model.id } },
-		).result();
+		const result = await streamSimple(model, normalizeContext({ messages: [] }), {
+			...options,
+			nativeCompactionCheckpoint: { ...checkpoint, provider: "openai-codex", modelId: model.id },
+		}).result();
 		expect(result.stopReason).toBe("stop");
 		expect(connections).toBe(1);
 		expect(fetch).not.toHaveBeenCalled();
@@ -149,7 +149,7 @@ describe("OpenAI Codex native compaction", () => {
 		);
 		await streamSimple(
 			model,
-			{ messages: [{ role: "user", content: "Continue.", timestamp: 2 }] },
+			normalizeContext({ messages: [{ role: "user", content: "Continue.", timestamp: 2 }] }),
 			{
 				apiKey: token(),
 				transport: "sse",

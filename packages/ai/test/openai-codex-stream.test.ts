@@ -1789,13 +1789,9 @@ describe("openai-codex streaming", () => {
 			maxTokens: 128000,
 		};
 
-		const result = await streamOpenAICodexResponses(
-			model,
-			{ systemPrompt: "", messages: [] },
-			{
-				apiKey: mockToken(),
-			},
-		).result();
+		const result = await streamOpenAICodexResponses(model, normalizeContext({ systemPrompt: "", messages: [] }), {
+			apiKey: mockToken(),
+		}).result();
 
 		expect(result.stopReason).toBe("error");
 		expect(getOpenAICodexResponseErrorCode(result)).toBe("usage_limit_reached");
@@ -1828,14 +1824,10 @@ describe("openai-codex streaming", () => {
 			maxTokens: 128000,
 		};
 
-		const result = await streamOpenAICodexResponses(
-			model,
-			{ systemPrompt: "", messages: [] },
-			{
-				apiKey: mockToken(),
-				transport: "sse",
-			},
-		).result();
+		const result = await streamOpenAICodexResponses(model, normalizeContext({ systemPrompt: "", messages: [] }), {
+			apiKey: mockToken(),
+			transport: "sse",
+		}).result();
 
 		expect(result.stopReason).toBe("error");
 		expect(getOpenAICodexResponseErrorCode(result)).toBe("usage_not_included");

@@ -409,7 +409,8 @@ export class Agent {
 		}
 
 		const lastMessage = this._state.messages[this._state.messages.length - 1];
-		const hasConversation = lastMessage !== undefined && !this._state.messages.every((message) => message.role === "system");
+		const hasConversation =
+			lastMessage !== undefined && !this._state.messages.every((message) => message.role === "system");
 		if (!hasConversation || lastMessage.role === "assistant") {
 			const queuedSteering = this.steeringQueue.drain();
 			if (queuedSteering.length > 0) {

@@ -1010,7 +1010,11 @@ export class ExtensionRunner {
 	 * Create the context for executing the tool call `toolCallId`: the extension context plus
 	 * `tools` and `executeTool()`. `signal` is the default signal of nested calls.
 	 */
-	createToolContext(toolCallId: string, signal: AbortSignal | undefined, extensionPath?: string): ExtensionToolContext {
+	createToolContext(
+		toolCallId: string,
+		signal: AbortSignal | undefined,
+		extensionPath?: string,
+	): ExtensionToolContext {
 		const runner = this;
 		// createContext() returns a fresh object, so adding properties does not affect other contexts.
 		return Object.defineProperties(this.createContext(extensionPath) as ExtensionToolContext, {

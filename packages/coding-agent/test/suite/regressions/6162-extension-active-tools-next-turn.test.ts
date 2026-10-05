@@ -100,58 +100,58 @@ describe("extension active tools next-turn refresh", () => {
 	});
 
 	it.each(["prompt", "triggerTurn custom message"] as const)(
-	"preserves before_agent_start system prompt overrides from a %s when tools change mid-run",
-	async (initiator) => {
-		const extensionFactories: ExtensionFactory[] = [
-			(pi) => {
-				pi.on("before_agent_start", async (event) => ({
-					systemPrompt: `${event.systemPrompt}\n\nkeep this run override`,
-				}));
+		"preserves before_agent_start system prompt overrides from a %s when tools change mid-run",
+		async (initiator) => {
+			const extensionFactories: ExtensionFactory[] = [
+				(pi) => {
+					pi.on("before_agent_start", async (event) => ({
+						systemPrompt: `${event.systemPrompt}\n\nkeep this run override`,
+					}));
 
-				registerSwitchTools(pi);
-			},
-		];
-		const harness = await createHarness({
-			extensionFactories,
-		});
-
-		try {
-			harness.session.setActiveToolsByName(["switch_tools"]);
-
-			const providerSystemPrompts: string[] = [];
-			const providerToolNames: string[][] = [];
-			const captureSystemPrompt = (context: TranscriptContext): void => {
-				providerSystemPrompts.push(getCurrentSystemPrompt(context.messages));
-			};
-			harness.setResponses([
-				(context) => {
-					captureSystemPrompt(context);
-					providerToolNames.push(getProviderToolNames(context));
-					return fauxAssistantMessage(fauxToolCall("switch_tools", {}), { stopReason: "toolUse" });
+					registerSwitchTools(pi);
 				},
-				(context) => {
-					captureSystemPrompt(context);
-					providerToolNames.push(getProviderToolNames(context));
-					return fauxAssistantMessage("done");
-				},
-			]);
+			];
+			const harness = await createHarness({
+				extensionFactories,
+			});
 
-			if (initiator === "prompt") {
-				await harness.session.prompt("start");
-			} else {
-				await harness.session.sendCustomMessage(
-					{ customType: "test", content: "start", display: false },
-					{ triggerTurn: true },
-				);
+			try {
+				harness.session.setActiveToolsByName(["switch_tools"]);
+
+				const providerSystemPrompts: string[] = [];
+				const providerToolNames: string[][] = [];
+				const captureSystemPrompt = (context: TranscriptContext): void => {
+					providerSystemPrompts.push(getCurrentSystemPrompt(context.messages));
+				};
+				harness.setResponses([
+					(context) => {
+						captureSystemPrompt(context);
+						providerToolNames.push(getProviderToolNames(context));
+						return fauxAssistantMessage(fauxToolCall("switch_tools", {}), { stopReason: "toolUse" });
+					},
+					(context) => {
+						captureSystemPrompt(context);
+						providerToolNames.push(getProviderToolNames(context));
+						return fauxAssistantMessage("done");
+					},
+				]);
+
+				if (initiator === "prompt") {
+					await harness.session.prompt("start");
+				} else {
+					await harness.session.sendCustomMessage(
+						{ customType: "test", content: "start", display: false },
+						{ triggerTurn: true },
+					);
+				}
+
+				expect(providerToolNames).toEqual([["switch_tools"], ["after_switch"]]);
+				expect(providerSystemPrompts).toHaveLength(2);
+				expect(providerSystemPrompts[0]).toContain("keep this run override");
+				expect(providerSystemPrompts[1]).toContain("keep this run override");
+			} finally {
+				harness.cleanup();
 			}
-
-			expect(providerToolNames).toEqual([["switch_tools"], ["after_switch"]]);
-			expect(providerSystemPrompts).toHaveLength(2);
-			expect(providerSystemPrompts[0]).toContain("keep this run override");
-			expect(providerSystemPrompts[1]).toContain("keep this run override");
-		} finally {
-			harness.cleanup();
-		}
-	},
+		},
 	);
 });

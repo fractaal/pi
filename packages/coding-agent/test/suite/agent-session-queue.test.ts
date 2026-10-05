@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
@@ -388,7 +388,6 @@ describe("AgentSession queue characterization", () => {
 		const initiatorsSeen: string[] = [];
 		const imagesSeen: number[] = [];
 		const harness = await createHarness({
-			systemPrompt: "Base system prompt.",
 			extensionFactories: [
 				(pi) => {
 					pi.on("before_agent_start", ({ prompt, initiator, images, systemPrompt }) => {
@@ -412,7 +411,7 @@ describe("AgentSession queue characterization", () => {
 		let providerMessages: string[] = [];
 		harness.setResponses([
 			(context) => {
-				providerSystemPrompt = context.systemPrompt ?? "";
+				providerSystemPrompt = getCurrentSystemPrompt(context.messages);
 				providerMessages = context.messages.map((message) => getMessageText(message));
 				return fauxAssistantMessage("done");
 			},

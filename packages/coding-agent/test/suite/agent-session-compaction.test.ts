@@ -1102,7 +1102,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.faux.state.callCount).toBe(1);
 	});
 
-
 	it("resolves idle waiters after successful manual compaction without queued work", async () => {
 		let finishCompaction: (() => void) | undefined;
 		const harness = await createHarness({
@@ -1139,7 +1138,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.session.isIdle).toBe(true);
 		expect(harness.eventsOfType("agent_settled")).toHaveLength(0);
 	});
-
 
 	it("waits for active-run settlement before compacting and releasing queued steering", async () => {
 		let markSettlementStarted: () => void = () => undefined;
@@ -1225,7 +1223,6 @@ describe("AgentSession compaction characterization", () => {
 		// session is not idle: ingress is blocked and a send would be deferred.
 		expect(publicLifecycle).toEqual(["agent_settled:false:false", "compaction_start", "agent_settled:true:false"]);
 	});
-
 
 	it("keeps the manual barrier active while aborting an in-flight agent run", async () => {
 		const settledIdleStates: boolean[] = [];
@@ -1322,7 +1319,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(settledIdleStates).toEqual([true]);
 	});
 
-
 	it("cancels in-progress manual compaction without replaying parked messages", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
@@ -1362,7 +1358,6 @@ describe("AgentSession compaction characterization", () => {
 		).toHaveLength(0);
 	});
 
-
 	it("preserves explicit custom-message steering through auto-compaction", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
@@ -1394,7 +1389,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(queued.steering).toEqual([expect.objectContaining({ role: "custom", customType: "compaction-steer" })]);
 		expect(queued.followUp).toEqual([]);
 	});
-
 
 	it("delivers extension-injected triggerTurn steering into the turn after compaction completes", async () => {
 		const harness = await createHarness({
@@ -1435,7 +1429,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(providerTexts.filter((text) => text === "steer after compaction")).toHaveLength(1);
 		expect(harness.faux.state.callCount).toBe(1);
 	});
-
 
 	it("delivers steering queued by a compaction-end handler into the retry turn", async () => {
 		const harness = await createHarness({
@@ -1482,7 +1475,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(retryTexts.filter((text) => text === "steer after compaction")).toHaveLength(1);
 		expect(harness.faux.state.callCount).toBe(2);
 	});
-
 
 	it("recovers from overflow even when an extension rewrites the failed assistant message", async () => {
 		const harness = await createHarness({
@@ -1536,7 +1528,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(overflowEntry).toMatchObject({ stopReason: "error", errorMessage: "prompt is too long" });
 	});
 
-
 	it("preserves default custom-message steering through auto-compaction", async () => {
 		const harness = await createHarness({
 			extensionFactories: [
@@ -1576,7 +1567,6 @@ describe("AgentSession compaction characterization", () => {
 		]);
 		expect(queued.followUp).toEqual([]);
 	});
-
 
 	it("recovers model-visible messages after failed auto-compaction through manual compaction", async () => {
 		const harness = await createHarness({
@@ -1651,7 +1641,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(harness.eventsOfType("agent_settled")).toHaveLength(1);
 	});
 
-
 	it("reports deferred default custom messages as steering when clearing the barrier queue", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);
@@ -1674,7 +1663,6 @@ describe("AgentSession compaction characterization", () => {
 			nextTurn: [],
 		});
 	});
-
 
 	it("allows pre-prompt overflow recovery after an extension cancels compaction", async () => {
 		let compactionAttempts = 0;
@@ -1722,7 +1710,6 @@ describe("AgentSession compaction characterization", () => {
 		).toBe(false);
 	});
 
-
 	it("stops after a completed compact-and-retry overflows again", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
@@ -1765,7 +1752,6 @@ describe("AgentSession compaction characterization", () => {
 				.filter((event) => event.errorMessage?.includes("after one compact-and-retry attempt")),
 		).toHaveLength(1);
 	});
-
 
 	it("bounds repeated recovery when one steering message is parked during compaction", async () => {
 		let compactionAttempts = 0;
@@ -1824,7 +1810,6 @@ describe("AgentSession compaction characterization", () => {
 		).toHaveLength(1);
 	});
 
-
 	it("stops after a completed length-stop compact-and-retry overflows again", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
@@ -1881,7 +1866,6 @@ describe("AgentSession compaction characterization", () => {
 		).toHaveLength(1);
 	});
 
-
 	it("reports busy while a requested manual compaction is still deferring messages", async () => {
 		const harness = await createHarness({
 			settings: { compaction: { keepRecentTokens: 1 } },
@@ -1909,7 +1893,6 @@ describe("AgentSession compaction characterization", () => {
 		await expect(compactPromise).resolves.toMatchObject({ summary: "pending window compaction" });
 		expect(harness.session.isIdle).toBe(true);
 	});
-
 
 	it("runs ctx.onIdle() callbacks from an event handler only after the agent run settles", async () => {
 		const order: string[] = [];
@@ -1943,7 +1926,6 @@ describe("AgentSession compaction characterization", () => {
 		expect(settledCallbackRan).toBe(true);
 	});
 
-
 	it("runs one ctx.onIdle() callback when several events collapse onto one idle point", async () => {
 		let continuations = 0;
 		const harness = await createHarness({
@@ -1973,7 +1955,6 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(continuations).toBe(1);
 	});
-
 
 	it("keeps ctx.onIdle() pending for an event handler until compaction finishes", async () => {
 		let idleCallbackRan = false;
@@ -2015,5 +1996,4 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(idleCallbackRan).toBe(true);
 	});
-
 });

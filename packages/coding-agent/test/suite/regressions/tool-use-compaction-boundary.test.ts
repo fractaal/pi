@@ -94,7 +94,7 @@ async function scenario(
 			api: model.api,
 			models: [model],
 		});
-		await harness.session.modelRuntime.setRuntimeApiKey(model.provider, "synthetic", { allowNetwork: false });
+		await harness.session.modelRuntime.setRuntimeApiKey(model.provider, "synthetic");
 	}
 	for (let i = 0; i < 2; i++) {
 		harness.sessionManager.appendMessage({
