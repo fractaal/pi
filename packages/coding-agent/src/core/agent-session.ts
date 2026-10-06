@@ -701,6 +701,24 @@ export class AgentSession {
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = (context) => this._beforeToolCall(context);
 		this.agent.afterToolCall = (context) => this._afterToolCall(context);
+		this.agent.resolveTool = (name) => this._resolveLateTool(name);
+	}
+
+	/**
+	 * Resolve a call to a tool that is not in the turn's snapshot. A tool that is active now, such as
+	 * one an extension activated this turn, resolves. A registered `deferred` or `codemode` tool also
+	 * resolves and is activated like a `tool_search` load, so the next request declares it. `hidden`,
+	 * inactive `direct` and unknown tools stay "not found".
+	 */
+	private _resolveLateTool(name: string): AgentTool | undefined {
+		const active = this.agent.state.tools.find((tool) => tool.name === name);
+		if (active) return active;
+		const exposure = this._getToolExposure(name);
+		if ((exposure !== "deferred" && exposure !== "codemode") || !this._isActivatable(name)) return undefined;
+		const tool = this._getCallableTools().find((candidate) => candidate.name === name);
+		if (!tool) return undefined;
+		this.setActiveToolsByName([...this.getActiveToolNames(), name]);
+		return this.agent.state.tools.find((candidate) => candidate.name === name) ?? tool;
 	}
 
 	/** `tool_call` handlers. `parentToolCallId` is set for calls another tool made. */

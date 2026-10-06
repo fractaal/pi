@@ -379,3 +379,123 @@ describe("transcript system messages", () => {
 		expect(payload.messages[0]?.content).toBe("base prompt\n\nupdated guidance\n\n<rules>\nnew rules\n</rules>");
 	});
 });
+
+describe("a call that precedes its tool's declaration", () => {
+	// The agent resolves a call to an unloaded or just-activated tool before the next request declares it,
+	// so the transcript holds the call and its result before the system message that adds the tool.
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const callBeforeDeclaration = (api: Api, provider: string, modelId: string): Context => ({
+		messages: [
+			{ role: "system", content: "base prompt", toolsAdded: [baseTool], timestamp: 0 },
+			{ role: "user", content: "go", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "call_1", name: "late_tool", arguments: {} }],
+				api,
+				provider,
+				model: modelId,
+				usage,
+				stopReason: "toolUse",
+				timestamp: 2,
+			},
+			{
+				role: "toolResult",
+				toolCallId: "call_1",
+				toolName: "late_tool",
+				content: [{ type: "text", text: "late ran" }],
+				isError: false,
+				timestamp: 3,
+			},
+			{ role: "system", content: "", toolsAdded: [lateTool], timestamp: 4 },
+		],
+	});
+
+	test("builds an Anthropic request with the call, its result and the later declaration", async () => {
+		const payload = await capturePayload<AnthropicPayload>(
+			anthropicNativeModel,
+			callBeforeDeclaration("anthropic-messages", "anthropic", anthropicNativeModel.id),
+		);
+
+		expect(payload.messages.map((message) => message.role)).toEqual(["user", "assistant", "user", "system"]);
+		const use = payload.messages[1]?.content.find((block) => block.type === "tool_use") as
+			| { id: string; name: string }
+			| undefined;
+		const result = payload.messages[2]?.content.find((block) => block.type === "tool_result") as
+			| { tool_use_id: string }
+			| undefined;
+		expect(use?.name).toBe("late_tool");
+		expect(result?.tool_use_id).toBe(use?.id);
+		expect(payload.messages[3]?.content.map((block) => block.type)).toContain("tool_addition");
+		// Tools are defined, which Anthropic requires when the history holds tool_use blocks.
+		expect(payload.tools?.map((value) => value.name)).toContain("base_tool");
+	});
+
+	test("builds a Codex request with tool search after the call", async () => {
+		const model: Model<"openai-codex-responses"> = {
+			...modelBase,
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			api: "openai-codex-responses",
+			provider: "openai-codex",
+			compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true },
+		};
+		const accountToken = `aaa.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acc_test" } })).toString("base64")}.bbb`;
+		let payload:
+			| {
+					input: Array<{ type?: string; call_id?: string; name?: string; tools?: Array<{ name: string }> }>;
+			  }
+			| undefined;
+		await streamSimple(model, callBeforeDeclaration("openai-codex-responses", "openai-codex", model.id), {
+			apiKey: accountToken,
+			transport: "sse",
+			onPayload: (value) => {
+				payload = value as typeof payload;
+				throw new PayloadCaptured();
+			},
+		}).result();
+		if (!payload) throw new Error("Expected payload capture");
+
+		const types = payload.input.map((item) => item.type);
+		const call = payload.input.find((item) => item.type === "function_call");
+		expect(call?.name).toBe("late_tool");
+		expect(payload.input.find((item) => item.type === "function_call_output")?.call_id).toBe(call?.call_id);
+		expect(types.indexOf("tool_search_output")).toBeGreaterThan(types.indexOf("function_call_output"));
+		expect(
+			payload.input.find((item) => item.type === "tool_search_output")?.tools?.map((value) => value.name),
+		).toEqual(["late_tool"]);
+	});
+
+	test.each([
+		{ name: "additional tools", compat: { supportsMidConvoSystemMessages: true, supportsAdditionalTools: true } },
+		{ name: "tool search", compat: { supportsMidConvoSystemMessages: true, supportsToolSearch: true } },
+	])("builds an OpenAI Responses request with $name after the call", async ({ compat }) => {
+		const model: Model<"openai-responses"> = {
+			...modelBase,
+			id: "gpt-5.4",
+			name: "GPT-5.4",
+			api: "openai-responses",
+			provider: "openai",
+			compat,
+		};
+		const payload = await capturePayload<{
+			input: Array<{ type?: string; call_id?: string; name?: string; tools?: Array<{ name: string }> }>;
+		}>(model, callBeforeDeclaration("openai-responses", "openai", model.id));
+
+		const types = payload.input.map((item) => item.type);
+		const call = payload.input.find((item) => item.type === "function_call");
+		const output = payload.input.find((item) => item.type === "function_call_output");
+		expect(call?.name).toBe("late_tool");
+		expect(output?.call_id).toBe(call?.call_id);
+		const declaration = types.findIndex((type) => type === "additional_tools" || type === "tool_search_output");
+		expect(declaration).toBeGreaterThan(types.indexOf("function_call_output"));
+		const declared = payload.input[declaration];
+		expect(declared?.tools?.map((value) => value.name)).toEqual(["late_tool"]);
+	});
+});

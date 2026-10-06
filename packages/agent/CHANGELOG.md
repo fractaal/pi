@@ -13,6 +13,10 @@
 - Merged upstream Pi v1.0.4 into the fork. The upstream releases 0.86.0 through 1.0.4 are in the history below and in [upstream's changelog](https://github.com/earendil-works/pi/blob/v1.0.4/packages/agent/CHANGELOG.md); read their Breaking Changes before upgrading.
 - `Agent.continue()` keeps running queued steering, then follow-ups, then passed messages on an empty or system-only transcript, and throws only when nothing is queued.
 
+### Added
+
+- Added the optional `resolveTool(name)` loop hook (`AgentLoopConfig`, `Agent`). It is consulted only when a tool call's name is not in the turn's tools, so a tool that becomes available during the turn can still be called. The resolved call goes through the same validation and `beforeToolCall` pipeline.
+
 ## [0.85.4] - 2026-09-30
 
 ## [0.85.3] - 2026-09-29
