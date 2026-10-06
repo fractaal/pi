@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-10-06
+
 ### Breaking Changes
 
 - Provider-facing `ProviderStreams` and `StreamFunction` inputs are normalized `TranscriptContext` values: system prompts and tool declarations live in transcript system messages, so custom providers read them with the transcript helpers. `ToolResultMessage.addedToolNames` is gone; tools added mid-conversation are announced by a system message with `toolsAdded`/`toolsRemoved`, and Anthropic and OpenAI Responses providers anchor deferred loading from that message (upstream 0.86.0, #9548).

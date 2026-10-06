@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-10-06
+
 ### Breaking Changes
 
 - `TUI.queryTerminalColorScheme()` and `TUI.queryTerminalBackgroundColor()` are replaced by `TUI.queryTerminalColors()` (upstream 0.99.0).

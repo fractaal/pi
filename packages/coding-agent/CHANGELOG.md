@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-10-06
+
 ### Breaking Changes
 
 - The Azure provider is renamed to `azure`: rename the provider key in `auth.json` (or `/login` again), `models.json` and `settings.json` (upstream 1.0.3).

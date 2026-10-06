@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.86.0] - 2026-10-06
+
 ### Breaking Changes
 
 - `Agent` and the loop pass a `TranscriptContext`: `AgentState.systemPrompt` is read-only and changes by appending a system message, `AgentContext.systemPrompt` is removed, and tool changes are announced to the model with a system message before the next request. `AgentToolResult.addedToolNames` is removed in favor of that mechanism (upstream #9548).
