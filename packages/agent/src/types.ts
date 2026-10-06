@@ -328,6 +328,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	beforeToolCall?: (context: BeforeToolCallContext, signal?: AbortSignal) => Promise<BeforeToolCallResult | undefined>;
 
 	/**
+	 * Resolve a tool call whose name is not among the turn's tools. Tools that become available during
+	 * the turn, such as ones an extension activates, are found here. The resolved tool then goes through
+	 * the same argument validation and `beforeToolCall` pipeline as any other. Return undefined for an
+	 * unknown tool, which produces a "not found" result.
+	 */
+	resolveTool?: (name: string) => AgentTool<any> | undefined;
+
+	/**
 	 * Called after a tool finishes executing, before `tool_execution_end` and tool-result message events are emitted.
 	 *
 	 * Return an `AfterToolCallResult` to override parts of the executed tool result:

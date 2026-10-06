@@ -15,6 +15,7 @@
 
 ### Fixed
 
+- Fixed a call to a tool that an extension activated during the turn, or to a registered `deferred` or `codemode` tool that was not loaded yet, failing as "Tool X not found". These calls now resolve, and an unloaded tool is activated like a `tool_search` load so the next request declares it. `hidden`, inactive `direct` and unknown tools still return not found. This lets pi-claude-bridge load and call a deferred MCP tool through Claude Code's ToolSearch in one round.
 - Fixed a reply that stops for length with visible partial text being hidden and replayed when recovery compacts below the compaction threshold; it is now continued from the cutoff, matching threshold compaction, so append-only hosts never show the fragment twice.
 
 ## [0.85.4] - 2026-09-30
