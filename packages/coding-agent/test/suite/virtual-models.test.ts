@@ -123,7 +123,12 @@ describe("AgentSession virtual models", () => {
 
 	it.each([
 		{ name: "an empty response replays as a retry", visible: false, reason: "retry", failedModel: "large" },
-		{ name: "a partial reply continues as a continuation", visible: true, reason: "continuation", failedModel: undefined },
+		{
+			name: "a partial reply continues as a continuation",
+			visible: true,
+			reason: "continuation",
+			failedModel: undefined,
+		},
 	])("routes the compact-and-resume after a truncated response: $name", async ({ visible, reason, failedModel }) => {
 		const { harness, requests, reasons } = await createRoutedHarness(defaultRoute, {
 			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
