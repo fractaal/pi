@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHarness, getMessageText, type Harness } from "./harness.ts";
@@ -776,7 +776,7 @@ describe("durable length recovery", () => {
 		expect(harness.sessionManager.getEntries().some((entry) => entry.type === "context_edit")).toBe(false);
 	});
 
-	it("resets length recovery after a successful intermediate assistant turn", async () => {
+	it("resets length recovery after a successful intermediate assistant turn, continuing each partial reply", async () => {
 		const tool: AgentTool = {
 			name: "noop",
 			label: "Noop",
@@ -810,19 +810,11 @@ describe("durable length recovery", () => {
 
 		await harness.session.prompt("x".repeat(5000));
 
-		const omittedIds = harness.sessionManager
-			.getEntries()
-			.filter((entry) => entry.type === "context_edit")
-			.map((entry) => entry.targetId);
-		const lengthResponses = harness.sessionManager
-			.getEntries()
-			.filter(
-				(entry) =>
-					entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "length",
-			);
-		expect(lengthResponses).toHaveLength(2);
-		expect(omittedIds).toEqual(expect.arrayContaining(lengthResponses.map((entry) => entry.id)));
-		expect(harness.faux.state.callCount).toBe(3);
+		const entries = harness.sessionManager.getEntries();
+		expect(entries.filter((entry) => entry.type === "compaction").length).toBeGreaterThanOrEqual(2);
+		expect(entries.some((entry) => entry.type === "context_edit")).toBe(false);
+		expect(harness.faux.state.callCount).toBe(4);
+		expect(harness.session.getLastAssistantText()).toBe("completed second recovery");
 	});
 
 	it("gives a distinct queued follow-up its own length-recovery budget", async () => {
@@ -858,19 +850,10 @@ describe("durable length recovery", () => {
 
 		await harness.session.prompt("x".repeat(5000));
 
-		const lengthIds = harness.sessionManager
-			.getEntries()
-			.flatMap((entry) =>
-				entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "length"
-					? [entry.id]
-					: [],
-			);
-		const omitted = harness.sessionManager
-			.getEntries()
-			.flatMap((entry) => (entry.type === "context_edit" ? [entry.targetId] : []));
-		expect(lengthIds).toHaveLength(2);
-		expect(omitted).toEqual(expect.arrayContaining(lengthIds));
+		const entries = harness.sessionManager.getEntries();
+		expect(entries.some((entry) => entry.type === "context_edit")).toBe(false);
 		expect(harness.faux.state.callCount).toBe(4);
+		expect(harness.session.getLastAssistantText()).toBe("follow-up recovered");
 	});
 
 	it("finishes retry bookkeeping when a retry receives a nonretryable error", async () => {
@@ -891,38 +874,50 @@ describe("durable length recovery", () => {
 		);
 	});
 
-	it("omits a recoverable projected replacement by its source entry ID", async () => {
+	it("omits an empty truncated replay attempt's projected replacement by its source entry ID", async () => {
+		let replaced = false;
+		let partialId: string | undefined;
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 1_000, maxTokens: 100 }],
 			settings: { compaction: { enabled: true, keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
 				(pi) => {
-					pi.on("session_before_compact", () => ({ cancel: true }));
+					pi.on("turn_end", (event) => {
+						if (replaced || event.message.role !== "assistant" || event.message.stopReason !== "length") return;
+						replaced = true;
+						partialId = event.messageEntryId;
+						return {
+							entries: [
+								{
+									type: "context_edit",
+									targetId: event.messageEntryId,
+									replacement: { content: [{ type: "thinking", thinking: "edited reasoning" }] },
+								},
+							],
+						};
+					});
+					pi.on("session_before_compact", (event) => ({
+						compaction: {
+							summary: "recovered input",
+							firstKeptEntryId: event.preparation.firstKeptEntryId,
+							tokensBefore: event.preparation.tokensBefore,
+						},
+					}));
 				},
 			],
 		});
 		harnesses.push(harness);
-		harness.sessionManager.appendMessage({ role: "user", content: "x".repeat(5_000), timestamp: Date.now() - 2 });
-		const partial = fauxAssistantMessage("original partial", {
-			stopReason: "length",
-			timestamp: Date.now() - 1,
-		});
-		const partialId = harness.sessionManager.appendMessage(partial);
-		harness.sessionManager.appendContextEdit(partialId, {
-			content: [{ type: "text", text: "edited partial" }],
-		});
-		harness.session.refreshContext();
-		harness.setResponses([fauxAssistantMessage("new answer")]);
+		harness.setResponses([
+			fauxAssistantMessage(fauxThinking("reasoning without visible output"), { stopReason: "length" }),
+			fauxAssistantMessage("new answer"),
+		]);
 
-		await harness.session.prompt("next prompt");
+		await harness.session.prompt("x".repeat(5_000));
 
+		expect(partialId).toBeDefined();
 		const edits = harness.sessionManager.getEntries().filter((entry) => entry.type === "context_edit");
 		expect(edits.filter((entry) => entry.targetId === partialId).at(-1)?.replacement).toBeNull();
-		expect(
-			harness.sessionManager
-				.buildSessionProjection()
-				.messages.some((message) => getMessageText(message) === "edited partial"),
-		).toBe(false);
+		expect(harness.session.getLastAssistantText()).toBe("new answer");
 	});
 
 	it("recovers an explicit overflow error after a retained boundary replacement", async () => {
@@ -1029,7 +1024,7 @@ describe("durable length recovery", () => {
 		);
 	});
 
-	it("keeps omissions and does not retry when recovery compaction fails", async () => {
+	it("keeps the partial reply and does not retry when recovery compaction fails", async () => {
 		const harness = await createHarness({
 			models: [{ id: "faux-1", contextWindow: 1000, maxTokens: 100 }],
 			settings: {
@@ -1047,7 +1042,7 @@ describe("durable length recovery", () => {
 		await harness.session.prompt("x".repeat(5000));
 
 		const entries = harness.sessionManager.getEntries();
-		expect(entries.some((entry) => entry.type === "context_edit")).toBe(true);
+		expect(entries.some((entry) => entry.type === "context_edit")).toBe(false);
 		expect(entries.some((entry) => entry.type === "compaction")).toBe(false);
 		expect(
 			entries.some((entry) => entry.type === "message" && getMessageText(entry.message) === "partial response"),
@@ -1056,7 +1051,7 @@ describe("durable length recovery", () => {
 			harness.sessionManager
 				.buildSessionProjection()
 				.messages.some((message) => getMessageText(message) === "partial response"),
-		).toBe(false);
+		).toBe(true);
 		expect(harness.faux.state.callCount).toBe(2);
 	});
 });

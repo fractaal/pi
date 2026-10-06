@@ -468,7 +468,7 @@ describe("AgentSession compaction characterization", () => {
 
 		expect(harness.faux.state.callCount).toBe(2);
 		expect(harness.eventsOfType("compaction_end").at(-1)).toMatchObject({
-			reason: "overflow",
+			reason: "threshold",
 			aborted: false,
 			willRetry: true,
 		});
