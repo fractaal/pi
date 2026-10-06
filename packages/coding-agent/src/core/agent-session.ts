@@ -3676,8 +3676,21 @@ export class AgentSession {
 				return false;
 			}
 
+			// A truncated reply with visible text is continued, not omitted and replayed, so hosts that
+			// already delivered the text never see it twice.
+			const continueVisibleText =
+				!contextOverflow &&
+				assistantMessage.stopReason === "length" &&
+				contentText(assistantMessage.content, "").trim().length > 0;
 			this._overflowRecoveryAttempted = true;
-			const retry = await this._runAutoCompaction("overflow", willRetry);
+			const retry = await this._runAutoCompaction(
+				"overflow",
+				willRetry,
+				continueVisibleText ? "continue" : "replay",
+			);
+			if (retry && continueVisibleText) {
+				return retry;
+			}
 			if (retry) {
 				// Keep the failed attempt visible until compaction succeeds, so a cancelled or failed
 				// compaction leaves the overflow recoverable instead of silently dropping the response.
