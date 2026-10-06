@@ -377,7 +377,7 @@ describe("SettingsManager", () => {
 				enabled: true,
 				maxRetries: Number.POSITIVE_INFINITY,
 				baseDelayMs: 2000,
-				maxAgentDelayMs: 60000,
+				maxAgentDelayMs: 10000,
 			});
 			expect(
 				SettingsManager.inMemory({

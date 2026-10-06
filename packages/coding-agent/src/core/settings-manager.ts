@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { DEFAULT_MAX_AGENT_RETRY_DELAY_MS, type Model, type Transport } from "@earendil-works/pi-ai";
+import type { Model, Transport } from "@earendil-works/pi-ai";
 import type {
 	TuiMode as RendererTuiMode,
 	ScrollViewScrollbar,
@@ -43,11 +43,14 @@ export interface ProviderRetrySettings {
 	maxRetryDelayMs?: number; // default: 60000 (max server-requested delay before failing)
 }
 
+/** Fork default: retries are unbounded, so a short cap keeps resume prompt once connectivity returns. */
+const DEFAULT_AGENT_RETRY_DELAY_CAP_MS = 10_000;
+
 export interface RetrySettings {
 	enabled?: boolean; // default: true
 	maxRetries?: number; // default: unbounded when unset
 	baseDelayMs?: number; // default: 2000 (exponential backoff capped at 10s)
-	maxAgentDelayMs?: number; // default: 60000
+	maxAgentDelayMs?: number; // default: 10000
 	provider?: ProviderRetrySettings;
 }
 
@@ -1002,7 +1005,7 @@ export class SettingsManager {
 			enabled: this.getRetryEnabled(),
 			maxRetries: this.settings.retry?.maxRetries ?? Number.POSITIVE_INFINITY,
 			baseDelayMs: this.settings.retry?.baseDelayMs ?? 2000,
-			maxAgentDelayMs: this.settings.retry?.maxAgentDelayMs ?? DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
+			maxAgentDelayMs: this.settings.retry?.maxAgentDelayMs ?? DEFAULT_AGENT_RETRY_DELAY_CAP_MS,
 		};
 	}
 
