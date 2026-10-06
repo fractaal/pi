@@ -200,10 +200,11 @@ describe("regression #2860: replaced session callbacks", () => {
 		expect(replacementSessionFile).not.toBe(oldSessionFile);
 		expect(staleCtxThrows).toBe(true);
 		expect(stalePiThrows).toBe(true);
-		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
-			"user:Hello from the new session!",
-			"assistant:hello reply",
-		]);
+		expect(
+			runtime.session.messages
+				.filter((message) => message.role !== "system")
+				.map((message) => `${message.role}:${getText(message)}`),
+		).toEqual(["user:Hello from the new session!", "assistant:hello reply"]);
 	});
 
 	it("supports withSession for fork", async () => {
@@ -231,12 +232,11 @@ describe("regression #2860: replaced session callbacks", () => {
 		await runtime.session.prompt("seed");
 		await runtime.session.prompt("/fork-it");
 
-		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
-			"user:seed",
-			"assistant:seed reply",
-			"user:fork callback message",
-			"assistant:fork reply",
-		]);
+		expect(
+			runtime.session.messages
+				.filter((message) => message.role !== "system")
+				.map((message) => `${message.role}:${getText(message)}`),
+		).toEqual(["user:seed", "assistant:seed reply", "user:fork callback message", "assistant:fork reply"]);
 	});
 
 	it("supports withSession for switchSession", async () => {
@@ -268,11 +268,10 @@ describe("regression #2860: replaced session callbacks", () => {
 		await runtime.session.prompt("/switch-it");
 
 		expect(runtime.session.sessionFile).toBe(targetSessionPath);
-		expect(runtime.session.messages.map((message) => `${message.role}:${getText(message)}`)).toEqual([
-			"user:target",
-			"assistant:target reply",
-			"user:switch callback message",
-			"assistant:switch reply",
-		]);
+		expect(
+			runtime.session.messages
+				.filter((message) => message.role !== "system")
+				.map((message) => `${message.role}:${getText(message)}`),
+		).toEqual(["user:target", "assistant:target reply", "user:switch callback message", "assistant:switch reply"]);
 	});
 });

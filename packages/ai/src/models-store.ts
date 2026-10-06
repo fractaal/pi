@@ -1,7 +1,8 @@
-import type { Api, Model } from "./types.ts";
+import type { AnyModel } from "./types.ts";
 
 export interface ModelsStoreEntry {
-	models: readonly Model<Api>[];
+	/** Persisted models of every type. */
+	models: readonly AnyModel[];
 	/** Provider-owned catalog source/format identity. Never used as a request destination. */
 	source?: string;
 	/** Unix timestamp from the remote catalog's Last-Modified header. */
@@ -15,33 +16,33 @@ export interface ModelsStoreEntry {
 	etag?: string;
 }
 
-/** Persistent model catalogs keyed by provider ID. */
-export interface ModelsStore {
-	read(providerId: string): Promise<ModelsStoreEntry | undefined>;
-	write(providerId: string, entry: ModelsStoreEntry): Promise<void>;
-	delete(providerId: string): Promise<void>;
+export interface ModelsStoreOperationOptions {
+	signal?: AbortSignal;
 }
 
-/** ModelsStore scoped to one provider. Providers cannot access other providers' catalogs. */
-export interface ProviderModelsStore {
-	read(): Promise<ModelsStoreEntry | undefined>;
-	write(entry: ModelsStoreEntry): Promise<void>;
-	delete(): Promise<void>;
+/** Persistent model catalogs keyed by provider ID. */
+export interface ModelsStore {
+	read(providerId: string, options?: ModelsStoreOperationOptions): Promise<ModelsStoreEntry | undefined>;
+	write(providerId: string, entry: ModelsStoreEntry, options?: ModelsStoreOperationOptions): Promise<void>;
+	delete(providerId: string, options?: ModelsStoreOperationOptions): Promise<void>;
 }
 
 export class InMemoryModelsStore implements ModelsStore {
 	private readonly entries = new Map<string, ModelsStoreEntry>();
 
-	async read(providerId: string): Promise<ModelsStoreEntry | undefined> {
+	async read(providerId: string, options?: ModelsStoreOperationOptions): Promise<ModelsStoreEntry | undefined> {
+		options?.signal?.throwIfAborted();
 		const entry = this.entries.get(providerId);
 		return entry ? structuredClone(entry) : undefined;
 	}
 
-	async write(providerId: string, entry: ModelsStoreEntry): Promise<void> {
+	async write(providerId: string, entry: ModelsStoreEntry, options?: ModelsStoreOperationOptions): Promise<void> {
+		options?.signal?.throwIfAborted();
 		this.entries.set(providerId, structuredClone(entry));
 	}
 
-	async delete(providerId: string): Promise<void> {
+	async delete(providerId: string, options?: ModelsStoreOperationOptions): Promise<void> {
+		options?.signal?.throwIfAborted();
 		this.entries.delete(providerId);
 	}
 }

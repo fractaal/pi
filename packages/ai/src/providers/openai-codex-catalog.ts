@@ -149,10 +149,12 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 
 	return {
 		getModels: (): readonly CodexModel[] => models,
+		getAllModels: (): readonly CodexModel[] => models,
 		refreshModels(context: RefreshModelsContext): Promise<void> {
-			pending ??= (async () => {
+			if (pending) return pending;
+			const current = (async () => {
 				try {
-					const stored = await context.store.read();
+					const stored = context.stored;
 					const generatedAt = Date.parse(modelDataManifest.generatedAt);
 					const staleLegacyOverlay =
 						stored?.source !== CATALOG_SOURCE &&
@@ -173,10 +175,7 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 						Date.now() - stored.checkedAt < REFRESH_INTERVAL_MS
 					)
 						return;
-					const signal = AbortSignal.any([
-						AbortSignal.timeout(20_000),
-						...(context.signal ? [context.signal] : []),
-					]);
+					const signal = AbortSignal.any([AbortSignal.timeout(20_000), context.signal]);
 					// This is a catalog-query version, not an executable download or a
 					// claim that Pi implements every feature of that Codex CLI release.
 					const versionResponse = await metadataFetch("https://registry.npmjs.org/@openai/codex/latest", {
@@ -240,18 +239,26 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 						merged.set(model.slug, applyNativeMetadata(model, details));
 					}
 					const refreshed = [...merged.values()];
-					await context.store.write({ models: refreshed, source: CATALOG_SOURCE, checkedAt: Date.now() });
-					models = refreshed;
+					await context.publish({
+						persist: { models: refreshed, source: CATALOG_SOURCE, checkedAt: Date.now() },
+						update: () => {
+							models = refreshed;
+						},
+					});
 					if (missing.length)
 						throw new Error(
 							`Codex catalog refreshed; these models await output/pricing metadata: ${missing.join(", ")}.`,
 						);
 					if (metadataError) throw metadataError;
 				} finally {
-					pending = undefined;
+					// Settled only after assignment below, even when the body finishes synchronously.
+					queueMicrotask(() => {
+						if (pending === current) pending = undefined;
+					});
 				}
 			})();
-			return pending;
+			pending = current;
+			return current;
 		},
 	};
 }

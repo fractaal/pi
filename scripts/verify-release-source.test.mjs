@@ -312,7 +312,22 @@ test("the source archive contains only the requested commit's bytes", async (t) 
 		await write("package-lock.json", "{}\n");
 		await write("scripts/build-binaries.sh", "#!/usr/bin/env bash\n");
 		await write("packages/ai/src/models.generated.ts", "export const MODELS = {};\n");
-		await write("packages/ai/src/image-models.generated.ts", "export const IMAGE_MODELS = {};\n");
+		for (const nativePath of [
+			"napi.h",
+			"clipboard.h",
+			"darwin/src/darwin-platform.m",
+			"darwin/prebuilds/darwin-arm64/darwin-platform.node",
+			"darwin/prebuilds/darwin-x64/darwin-platform.node",
+			"linux/build.sh",
+			"linux/src/linux-platform-x11.c",
+			"linux/prebuilds/linux-arm64/linux-platform-x11.node",
+			"linux/prebuilds/linux-x64/linux-platform-x11.node",
+			"win32/src/win32-platform.c",
+			"win32/prebuilds/win32-arm64/win32-platform.node",
+			"win32/prebuilds/win32-x64/win32-platform.node",
+		]) {
+			await write(`packages/tui/native/${nativePath}`, "\n");
+		}
 		await write("packages/ai/scripts/check-model-data.ts", 'console.log("Generated model data is valid.");\n');
 		await write("packages/coding-agent/package.json", `${JSON.stringify({ version }, null, "\t")}\n`);
 		await write("packages/coding-agent/src/utils/image-resize-worker.ts", "export {};\n");

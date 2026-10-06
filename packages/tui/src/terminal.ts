@@ -1,17 +1,14 @@
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { setKittyProtocolActive } from "./keys.ts";
 import { isNativeModifierPressed } from "./native-modifiers.ts";
+import { getNativePlatformHelper } from "./native-platform.ts";
 import { StdinBuffer } from "./stdin-buffer.ts";
-
-const cjsRequire = createRequire(import.meta.url);
 
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
-const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
-const APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
+const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0\x07";
+const NATIVE_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
 const DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS = 7;
 const KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS = 150;
 const KITTY_KEYBOARD_PROTOCOL_QUERY = `\x1b[>${DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS}u\x1b[?u\x1b[c`;
@@ -41,9 +38,31 @@ export function isAppleTerminalSession(): boolean {
 	return process.platform === "darwin" && process.env.TERM_PROGRAM === "Apple_Terminal";
 }
 
-export function normalizeAppleTerminalInput(data: string, isAppleTerminal: boolean, isShiftPressed: boolean): string {
-	if (isAppleTerminal && data === "\r" && isShiftPressed) return APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE;
+/**
+ * Refresh terminal dimensions on POSIX platforms by sending SIGWINCH to this process.
+ * Best-effort: some environments (restricted seccomp or LSM policies) return EACCES
+ * for `kill(2)`; in that case the dimensions refresh is skipped rather than crashing.
+ */
+export function refreshTerminalDimensions(): void {
+	if (process.platform === "win32" || process.pid <= 0) return;
+	try {
+		process.kill(process.pid, "SIGWINCH");
+	} catch {
+		// Signal delivery not permitted in this environment; ignore.
+	}
+}
+
+export function normalizeNativeShiftEnterInput(
+	data: string,
+	shouldDetectNativeShiftEnter: boolean,
+	isShiftPressed: boolean,
+): string {
+	if (shouldDetectNativeShiftEnter && data === "\r" && isShiftPressed) return NATIVE_SHIFT_ENTER_SEQUENCE;
 	return data;
+}
+
+export function normalizeAppleTerminalInput(data: string, isAppleTerminal: boolean, isShiftPressed: boolean): string {
+	return normalizeNativeShiftEnterInput(data, isAppleTerminal, isShiftPressed);
 }
 
 /**
@@ -93,6 +112,25 @@ export interface Terminal {
 	setProgress(active: boolean): void;
 }
 
+const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
+const DEFAULT_SSH_ESCAPE_TIMEOUT_MS = 100;
+
+/**
+ * Resolve how long to wait for the rest of an escape sequence before
+ * dispatching a lone ESC as the Escape key. Legacy Alt+key input is ESC plus
+ * another byte, so high-latency transports need a longer reassembly window.
+ */
+export function resolveEscapeTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+	const configured = Number(env.PI_TUI_ESC_TIMEOUT);
+	if (Number.isFinite(configured) && configured > 0) {
+		return configured;
+	}
+	if (env.SSH_CONNECTION || env.SSH_TTY) {
+		return DEFAULT_SSH_ESCAPE_TIMEOUT_MS;
+	}
+	return DEFAULT_ESCAPE_TIMEOUT_MS;
+}
+
 /**
  * Real terminal using process.stdin/stdout
  */
@@ -103,6 +141,8 @@ export class ProcessTerminal implements Terminal {
 	private _kittyProtocolActive = false;
 	private _modifyOtherKeysActive = false;
 	private keyboardProtocolPushed = false;
+	/** DA1 replies owed to keyboard protocol queries. Later DA1 replies answer other queries and are forwarded. */
+	private pendingKeyboardProtocolDeviceAttributes = 0;
 	private keyboardProtocolNegotiationBuffer = "";
 	private keyboardProtocolBufferFlushTimer?: ReturnType<typeof setTimeout>;
 	private stdinBuffer?: StdinBuffer;
@@ -150,10 +190,8 @@ export class ProcessTerminal implements Terminal {
 		process.stdout.on("resize", this.resizeHandler);
 
 		// Refresh terminal dimensions - they may be stale after suspend/resume
-		// (SIGWINCH is lost while process is stopped). Unix only.
-		if (process.platform !== "win32") {
-			process.kill(process.pid, "SIGWINCH");
-		}
+		// (SIGWINCH is lost while process is stopped). Unix only, best-effort.
+		refreshTerminalDimensions();
 
 		// On Windows, enable ENABLE_VIRTUAL_TERMINAL_INPUT so the console sends
 		// VT escape sequences (e.g. \x1b[Z for Shift+Tab) instead of raw console
@@ -175,20 +213,20 @@ export class ProcessTerminal implements Terminal {
 	 * to handle the case where the response arrives split across multiple events.
 	 */
 	private setupStdinBuffer(): void {
-		this.stdinBuffer = new StdinBuffer({ timeout: 10 });
+		this.stdinBuffer = new StdinBuffer({ escapeTimeout: resolveEscapeTimeoutMs() });
 
 		// Forward individual sequences to the input handler
 		this.stdinBuffer.on("data", (sequence) => {
-			const negotiationSequence = this.readKeyboardProtocolNegotiationSequence(sequence);
-			if (negotiationSequence === "pending") {
+			const negotiation = this.readKeyboardProtocolNegotiationSequence(sequence);
+			if (negotiation === "pending") {
 				this.scheduleKeyboardProtocolNegotiationBufferFlush();
 				return; // Wait briefly for the rest of a split Kitty response.
 			}
-			if (this.handleKeyboardProtocolNegotiationSequence(negotiationSequence)) {
+			if (negotiation && this.handleKeyboardProtocolNegotiationSequence(negotiation.parsed)) {
 				return;
 			}
 
-			this.forwardInputSequence(sequence);
+			this.forwardInputSequence(negotiation?.sequence ?? sequence);
 		});
 
 		// Re-wrap paste content with bracketed paste markers for existing editor handling
@@ -221,15 +259,19 @@ export class ProcessTerminal implements Terminal {
 		this.setupStdinBuffer();
 		process.stdin.on("data", this.stdinDataHandler!);
 		this.keyboardProtocolPushed = true;
+		this.pendingKeyboardProtocolDeviceAttributes += 1;
 		this.clearKeyboardProtocolNegotiationBuffer();
 		process.stdout.write(KITTY_KEYBOARD_PROTOCOL_QUERY);
 	}
 
 	private handleKeyboardProtocolNegotiationSequence(
-		negotiationSequence: KeyboardProtocolNegotiationSequence | undefined,
+		negotiationSequence: KeyboardProtocolNegotiationSequence,
 	): boolean {
-		if (!negotiationSequence) return false;
 		this.clearKeyboardProtocolNegotiationBuffer();
+		if (negotiationSequence.type === "device-attributes") {
+			if (this.pendingKeyboardProtocolDeviceAttributes === 0) return false;
+			this.pendingKeyboardProtocolDeviceAttributes -= 1;
+		}
 		if (negotiationSequence.type === "kitty-flags") {
 			if (negotiationSequence.flags !== 0) {
 				this.disableModifyOtherKeys();
@@ -249,15 +291,16 @@ export class ProcessTerminal implements Terminal {
 		return true;
 	}
 
+	/** Returns the parsed negotiation reply with its full (possibly reassembled) sequence. */
 	private readKeyboardProtocolNegotiationSequence(
 		sequence: string,
-	): KeyboardProtocolNegotiationSequence | "pending" | undefined {
+	): { parsed: KeyboardProtocolNegotiationSequence; sequence: string } | "pending" | undefined {
 		if (this.keyboardProtocolNegotiationBuffer) {
 			const bufferedSequence = this.keyboardProtocolNegotiationBuffer + sequence;
 			const negotiationSequence = parseKeyboardProtocolNegotiationSequence(bufferedSequence);
 			if (negotiationSequence) {
 				this.clearKeyboardProtocolNegotiationBuffer();
-				return negotiationSequence;
+				return { parsed: negotiationSequence, sequence: bufferedSequence };
 			}
 			if (isKeyboardProtocolNegotiationSequencePrefix(bufferedSequence)) {
 				this.setKeyboardProtocolNegotiationBuffer(bufferedSequence);
@@ -267,7 +310,7 @@ export class ProcessTerminal implements Terminal {
 		}
 
 		const negotiationSequence = parseKeyboardProtocolNegotiationSequence(sequence);
-		if (negotiationSequence) return negotiationSequence;
+		if (negotiationSequence) return { parsed: negotiationSequence, sequence };
 		if (isKeyboardProtocolNegotiationSequencePrefix(sequence)) {
 			this.setKeyboardProtocolNegotiationBuffer(sequence);
 			return "pending";
@@ -308,11 +351,12 @@ export class ProcessTerminal implements Terminal {
 
 	private forwardInputSequence(sequence: string): void {
 		if (!this.inputHandler) return;
-		const isAppleTerminal = sequence === "\r" && isAppleTerminalSession();
-		const input = normalizeAppleTerminalInput(
+		const shouldDetectNativeShiftEnter =
+			sequence === "\r" && (isAppleTerminalSession() || process.platform === "win32");
+		const input = normalizeNativeShiftEnterInput(
 			sequence,
-			isAppleTerminal,
-			isAppleTerminal && isNativeModifierPressed("shift"),
+			shouldDetectNativeShiftEnter,
+			shouldDetectNativeShiftEnter && isNativeModifierPressed("shift"),
 		);
 		this.inputHandler(input);
 	}
@@ -338,28 +382,7 @@ export class ProcessTerminal implements Terminal {
 	private enableWindowsVTInput(): void {
 		if (process.platform !== "win32") return;
 		try {
-			const arch = process.arch;
-			if (arch !== "x64" && arch !== "arm64") return;
-
-			// Dynamic require so non-Windows and bundled/browser paths never load the
-			// native helper. In the npm package native/ is next to dist/; in compiled
-			// binary archives native/ is copied next to the executable.
-			const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-			const nativePath = path.join("native", "win32", "prebuilds", `win32-${arch}`, "win32-console-mode.node");
-			const candidates = [
-				path.join(moduleDir, "..", nativePath),
-				path.join(moduleDir, nativePath),
-				path.join(path.dirname(process.execPath), nativePath),
-			];
-			for (const modulePath of candidates) {
-				try {
-					const helper = cjsRequire(modulePath) as { enableVirtualTerminalInput?: () => boolean };
-					helper.enableVirtualTerminalInput?.();
-					return;
-				} catch {
-					// Try the next possible packaging location.
-				}
-			}
+			getNativePlatformHelper()?.enableVirtualTerminalInput?.();
 		} catch {
 			// Native helper not available — Shift+Tab won't be distinguishable from Tab.
 		}

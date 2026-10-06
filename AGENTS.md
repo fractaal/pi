@@ -6,6 +6,9 @@
 - No emojis in commits, issues, PR comments, or code
 - No fluff or cheerful filler text (e.g., "Thanks @user" not "Thanks so much @user!")
 - Technical prose only, be direct
+- Use concise, clear, simple language. Define unavoidable jargon before using it.
+- Explain non-trivial designs and problems as: problem, concrete example or short trace, then solution. State why the solution is necessary and distinguish it from optional complexity.
+- Prefer concrete behavior and small illustrations over abstract summaries, dense terminology, or unexplained lists of changes.
 - When the user asks a question, answer it first before making edits or running implementation commands.
 - When responding to user feedback or an analysis, explicitly say whether you agree or disagree before saying what you changed.
 
@@ -22,6 +25,7 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 - Inline single-line helpers that have only one call site.
 - Check node_modules for external API types; don't guess.
 - **No inline imports** (`await import()`, `import("pkg").Type`, dynamic type imports). Top-level imports only.
+- In `packages/coding-agent`, resolve package assets through helpers in `src/config.ts`. Do not use `__dirname` directly; the helpers account for source checkouts, npm installations, and standalone binaries.
 - Never remove or downgrade code to fix type errors from outdated deps; upgrade the dep instead.
 - Use only erasable TypeScript syntax (Node strip-only mode) in code checked by the root config (`packages/*/src`, `packages/*/test`, `packages/coding-agent/examples`): no parameter properties, `enum`, `namespace`/`module`, `import =`, `export =`, or other constructs needing JS emit. Use explicit fields with constructor assignments.
 - Always ask before removing functionality or code that appears intentional.
@@ -36,17 +40,18 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 - Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
-- Put issue-specific regressions under `packages/coding-agent/test/suite/regressions/` named `<issue-number>-<short-slug>.test.ts`.
+- When regressions tests for fixing a github issue, add a comment with the github issue number next to the test.
 - For ad-hoc scripts, `write` them to a temp file (e.g. `/tmp`), run, edit if needed, remove when done. Don't embed multi-line scripts in `bash` commands.
 - Make frequent task-scoped local commits, including honest WIP checkpoints. Do not wait for a separate commit request.
 
 ## Dependency and Install Security
 
 - Treat npm dep and lockfile changes as reviewed code. Direct external deps stay pinned to exact versions.
+- When updating `undici`, you MUST read its changelog/release notes for the target version and evaluate whether any changes may affect functionality before applying the update.
 - Hydrate/update locally with `npm install --ignore-scripts`; clean/CI-style with `npm ci --ignore-scripts`. Keep dependency lifecycle scripts disabled by default. Run reviewed setup/build scripts needed for the task without a separate approval; do not enable unreviewed dependency scripts.
 - If dep metadata changes, refresh `package-lock.json` with `npm install --package-lock-only --ignore-scripts`.
-- If `packages/coding-agent/npm-shrinkwrap.json` needs regen, run `node scripts/generate-coding-agent-shrinkwrap.mjs` (verify with `--check` or `npm run check`). New deps with lifecycle scripts require review and an explicit allowlist entry in that script; never add one silently.
-- Pre-commit blocks lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1`. Set it only for task-required, reviewed lockfile or shrinkwrap changes; do not use it to hide unrelated dependency churn.
+- If `packages/coding-agent/install-lock/` needs regen, run `node scripts/generate-coding-agent-install-lock.mjs` (verify with `--check` or `npm run check`). New deps with lifecycle scripts require review and an explicit allowlist entry in that script; never add one silently.
+- Pre-commit blocks lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1`. Set it only for task-required, reviewed lockfile or install-lock changes; do not use it to hide unrelated dependency churn.
 
 ## Git
 
@@ -96,16 +101,7 @@ When closing issues via commit:
 
 ## Testing pi Interactive Mode with tmux
 
-Run the TUI in a controlled terminal (from the repo root):
-
-```bash
-tmux new-session -d -s pi-test -x 80 -y 24
-tmux send-keys -t pi-test "./pi-test.sh" Enter
-sleep 3 && tmux capture-pane -t pi-test -p     # capture after startup
-tmux send-keys -t pi-test "your prompt here" Enter
-tmux send-keys -t pi-test Escape               # special keys (also C-o for ctrl+o, etc.)
-tmux kill-session -t pi-test
-```
+For testing pi's interactive mode, load and follow [.pi/skills/interactive-testing.md](.pi/skills/interactive-testing.md).
 
 ## Changelog
 
@@ -117,11 +113,12 @@ Rules:
 
 - All new entries go under `## [Unreleased]`. Read the full section first and append to existing subsections; never duplicate them.
 - Released version sections (e.g. `## [0.12.2]`) are immutable; never modify them.
+- Do not create changelog entries when working on a branch other than `main` or pull request
 
 Attribution:
 
-- Internal (from issues): `Fixed foo bar ([#123](https://github.com/earendil-works/pi-mono/issues/123))`
-- External contributions: `Added feature X ([#456](https://github.com/earendil-works/pi-mono/pull/456) by [@username](https://github.com/username))`
+- Internal (from issues): `Fixed foo bar ([#123](https://github.com/earendil-works/pi/issues/123))`
+- External contributions: `Added feature X ([#456](https://github.com/earendil-works/pi/pull/456) by [@username](https://github.com/username))`
 
 ## Releasing
 
@@ -160,7 +157,7 @@ Attribution:
    PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:patch    # fixes + additions
    PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:minor    # breaking changes
    ```
-   Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or shrinkwrap diffs the release creates before pushing the branch.
+   Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or install-lock diffs the release creates before pushing the branch.
 
    The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check` and the tests, commits `Release fractaal-vX.Y.Z`, creates the tag locally, adds fresh `## [Unreleased]` changelog sections, and commits `Add [Unreleased] section for next cycle`. It pushes nothing, and it refuses to run on `main`.
 
