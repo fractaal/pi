@@ -2,9 +2,20 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- The Azure provider is renamed to `azure`: rename the provider key in `auth.json` (or `/login` again), `models.json` and `settings.json` (upstream 1.0.3).
+- `shouldStopAfterTurn` is replaced by `finishTurn`; `SessionManager` is canonical for provider context, so assigning `session.agent.state.messages` no longer replaces request history; `ContextEditEntry` joins `SessionEntry`; `TurnEndEvent` gains boundary fields and `AgentBeforeSettleEvent` joins `ExtensionEvent` (upstream 0.87.0).
+- Extension tools can no longer return `addedToolNames`; tools made active during a run are declared to the model through transcript system messages before the next request.
+
 ### Changed
 
-- Merged upstream Pi v1.0.4 into the fork. Upstream's changes are listed under the upstream release history below; fork releases keep the 0.85.x numbering.
+- Merged upstream Pi v1.0.4 into the fork. The upstream releases 0.86.0 through 1.0.4 are in the history below and in [upstream's changelog](https://github.com/earendil-works/pi/blob/v1.0.4/packages/coding-agent/CHANGELOG.md); read their Breaking Changes before upgrading.
+- Changed the default `retry.maxAgentDelayMs` to 10 seconds, keeping the fork's capped backoff with unbounded retries; upstream's default is 60 seconds.
+
+### Fixed
+
+- Fixed a reply that stops for length with visible partial text being hidden and replayed when recovery compacts below the compaction threshold; it is now continued from the cutoff, matching threshold compaction, so append-only hosts never show the fragment twice.
 
 ## [0.85.4] - 2026-09-30
 

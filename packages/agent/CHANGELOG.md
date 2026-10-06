@@ -2,9 +2,16 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `Agent` and the loop pass a `TranscriptContext`: `AgentState.systemPrompt` is read-only and changes by appending a system message, `AgentContext.systemPrompt` is removed, and tool changes are announced to the model with a system message before the next request. `AgentToolResult.addedToolNames` is removed in favor of that mechanism (upstream #9548).
+- `shouldStopAfterTurn` is removed; use `finishTurn` and return `{ action: "end" }` (upstream 0.87.0).
+- The experimental harness, sessions, durable runtime and related exports are removed from `@earendil-works/pi-agent-core` (upstream 1.0.0).
+
 ### Changed
 
-- Merged upstream Pi v1.0.4 into the fork. Upstream's changes are listed under the upstream release history below; fork releases keep the 0.85.x numbering.
+- Merged upstream Pi v1.0.4 into the fork. The upstream releases 0.86.0 through 1.0.4 are in the history below and in [upstream's changelog](https://github.com/earendil-works/pi/blob/v1.0.4/packages/agent/CHANGELOG.md); read their Breaking Changes before upgrading.
+- `Agent.continue()` keeps running queued steering, then follow-ups, then passed messages on an empty or system-only transcript, and throws only when nothing is queued.
 
 ## [0.85.4] - 2026-09-30
 

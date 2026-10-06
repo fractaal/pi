@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Provider-facing `ProviderStreams` and `StreamFunction` inputs are normalized `TranscriptContext` values: system prompts and tool declarations live in transcript system messages, so custom providers read them with the transcript helpers. `ToolResultMessage.addedToolNames` is gone; tools added mid-conversation are announced by a system message with `toolsAdded`/`toolsRemoved`, and Anthropic and OpenAI Responses providers anchor deferred loading from that message (upstream 0.86.0, #9548).
+- `ToolCall.arguments` and `ToolResultMessage.details` are restricted to JSON-compatible values.
+- The Azure provider is renamed from `azure-openai-responses` to `azure`; rename provider keys in `auth.json` and `models.json` (upstream 1.0.3). Image models are unified into the regular `Provider`/`Models` surface (upstream 0.99.0).
+
 ### Changed
 
-- Merged upstream Pi v1.0.4 into the fork. Upstream's changes are listed under the upstream release history below; fork releases keep the 0.85.x numbering.
+- Merged upstream Pi v1.0.4 into the fork. The upstream releases 0.86.0 through 1.0.4 are in the history below and in [upstream's changelog](https://github.com/earendil-works/pi/blob/v1.0.4/packages/ai/CHANGELOG.md); read their Breaking Changes before upgrading.
 
 ## [0.85.4] - 2026-09-30
 

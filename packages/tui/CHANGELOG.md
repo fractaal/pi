@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `TUI.queryTerminalColorScheme()` and `TUI.queryTerminalBackgroundColor()` are replaced by `TUI.queryTerminalColors()` (upstream 0.99.0).
+
 ### Changed
 
-- Merged upstream Pi v1.0.4 into the fork. Upstream's changes are listed under the upstream release history below; fork releases keep the 0.85.x numbering.
+- Merged upstream Pi v1.0.4 into the fork. The upstream releases 0.86.0 through 1.0.4 are in the history below and in [upstream's changelog](https://github.com/earendil-works/pi/blob/v1.0.4/packages/tui/CHANGELOG.md); read their Breaking Changes before upgrading.
 
 ## [0.85.4] - 2026-09-30
 
