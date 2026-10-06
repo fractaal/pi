@@ -1075,17 +1075,36 @@ describe("Agent", () => {
 	it.each([
 		{ name: "empty", messages: [] },
 		{ name: "system-only", messages: [{ role: "system" as const, content: "system only", timestamp: 1 }] },
-	])("rejects a queued continuation from $name context without draining queues", async ({ messages }) => {
+	])("runs queued steering then follow-ups from $name context", async ({ messages }) => {
+		const agent = new Agent({
+			initialState: { messages },
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() =>
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") }),
+				);
+				return stream;
+			},
+		});
+		agent.steer(createUserMessage("steering"));
+		agent.followUp(createUserMessage("follow-up"));
+
+		await expect(agent.continue()).resolves.toBeUndefined();
+
+		const userTexts = agent.state.messages.flatMap((message) =>
+			message.role === "user" && typeof message.content === "string" ? [message.content] : [],
+		);
+		expect(userTexts).toEqual(["steering", "follow-up"]);
+		expect(agent.hasQueuedMessages()).toBe(false);
+	});
+
+	it.each([
+		{ name: "empty", messages: [] },
+		{ name: "system-only", messages: [{ role: "system" as const, content: "system only", timestamp: 1 }] },
+	])("rejects continuation from $name context when nothing is queued", async ({ messages }) => {
 		const agent = new Agent({ initialState: { messages }, streamFn: unusedStreamFunction });
-		const steering = createUserMessage("steering");
-		const followUp = createUserMessage("follow-up");
-		agent.steer(steering);
-		agent.followUp(followUp);
 
 		await expect(agent.continue()).rejects.toThrow("No messages to continue from");
-		expect(agent.peekQueuedMessages()).toEqual([steering]);
-		agent.clearSteeringQueue();
-		expect(agent.peekQueuedMessages()).toEqual([followUp]);
 	});
 
 	it.each([
