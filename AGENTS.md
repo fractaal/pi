@@ -174,6 +174,13 @@ Attribution:
 
 7. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
 
+## Intentional Divergences from Upstream
+
+Upstream merges must preserve these behaviors. When an upstream test asserts the opposite, adapt that test to the fork contract instead of dropping the behavior. Revisit a divergence only when its reason no longer holds.
+
+- **`Agent.continue()` runs queued work on an empty or system-only transcript** (`packages/agent`). The fork's OpenAI-native compaction keeps context in a provider-owned checkpoint, so afterwards the generic transcript can be empty while real context exists. Upstream throws `No messages to continue from` there. The fork runs queued steering, then queued follow-ups, and throws only when nothing is queued. Without this, a message queued during native compaction never runs and its session stalls (Symphony Desktop incident, 2026-08-06; `459d08460`).
+- **A length-stopped response is continued, not replayed** (`packages/coding-agent`). When threshold compaction follows `stopReason: "length"`, the fork replays only if no visible text was emitted. With partial visible text it keeps that text and has the model continue from the cutoff. Upstream omits the truncated response from context and regenerates the answer. Hosts with append-only transcripts, such as Symphony chats mirrored to Discord or Slack, cannot retract text already delivered, so a replay shows the fragment followed by a full repeated answer. Contract accepted by Ben on 2026-08-10 (Symphony session `1536221732854308915`; `3006d0dff`).
+
 ## Policy Changes
 
 When Ben explicitly changes this fork's workflow policy, that instruction is the authorization; do not ask him to repeat it. Reconcile the owning guidance instead of leaving conflicting rules behind. Ask when the intended scope or release consequences are genuinely unclear.
