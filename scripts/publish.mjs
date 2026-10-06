@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { PUBLISHABLE_PACKAGES } from "./fractal-identity.mjs";
 
@@ -36,6 +36,10 @@ function run(command, args, options = {}) {
 	}
 
 	return result;
+}
+
+function readPackageJson(directory) {
+	return JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
 }
 
 function assertBuildOutputExists(directory) {

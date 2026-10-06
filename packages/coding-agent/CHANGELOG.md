@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Restored the npm publish script after the upstream merge removed a helper it still called. Release 0.86.0 was tagged but never published to npm; 0.86.1 is the first published release of that code.
+
 ## [0.86.0] - 2026-10-06
 
 ### Breaking Changes
