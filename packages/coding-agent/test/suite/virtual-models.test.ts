@@ -1,5 +1,5 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import { type FauxResponseStep, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { type FauxResponseStep, fauxAssistantMessage, fauxThinking, fauxToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "../../src/core/extensions/index.ts";
@@ -121,7 +121,10 @@ describe("AgentSession virtual models", () => {
 		expect(dispatched()).toEqual(["faux/small:off", "faux/large:high"]);
 	});
 
-	it("routes the compact-and-retry after a truncated response as a retry", async () => {
+	it.each([
+		{ name: "an empty response replays as a retry", visible: false, reason: "retry", failedModel: "large" },
+		{ name: "a partial reply continues as a continuation", visible: true, reason: "continuation", failedModel: undefined },
+	])("routes the compact-and-resume after a truncated response: $name", async ({ visible, reason, failedModel }) => {
 		const { harness, requests, reasons } = await createRoutedHarness(defaultRoute, {
 			settings: { compaction: { keepRecentTokens: 1, reserveTokens: 0 } },
 			extensionFactories: [
@@ -133,17 +136,22 @@ describe("AgentSession virtual models", () => {
 			],
 		});
 		harness.setResponses([
-			() => fauxAssistantMessage("x".repeat(64), { stopReason: "length", timestamp: Date.now() + 10_000 }),
+			() =>
+				fauxAssistantMessage(visible ? "x".repeat(64) : fauxThinking("reasoning only"), {
+					stopReason: "length",
+					timestamp: Date.now() + 10_000,
+				}),
 			fauxAssistantMessage("done"),
 		]);
 
 		await harness.session.prompt("x".repeat(5000));
 
 		expect(harness.eventsOfType("compaction_start").map((event) => event.reason)).toEqual(["overflow"]);
-		// Compaction may fold the prompt into the summary, so the retry is not a new user turn.
-		expect(reasons()).toEqual(["user", "retry"]);
-		expect(requests[1].failed?.model.id).toBe("large");
-		expect(requests[1].failed?.message.stopReason).toBe("length");
+		// Compaction may fold the prompt into the summary, so the resumed request is not a new user turn.
+		expect(reasons()).toEqual(["user", reason]);
+		// A continued partial reply is kept in context, so nothing is reported as a failed request.
+		expect(requests[1].failed?.model.id).toBe(failedModel);
+		expect(requests[1].failed?.message.stopReason).toBe(failedModel ? "length" : undefined);
 	});
 
 	it("routes requests after extension messages as continuations", async () => {
