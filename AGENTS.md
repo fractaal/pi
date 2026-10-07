@@ -77,17 +77,13 @@ If rebase conflicts occur:
 
 ## Issues and PRs
 
-See `CONTRIBUTING.md` for the contributor gate (auto-close workflows, `lgtm`/`lgtmi`, quality bar).
+This fork does not operate upstream's contributor approval, issue auto-close, triage, or issue-analysis program. Do not reintroduce those workflows without a new scope decision. See `CONTRIBUTING.md` for the fork's maintainer and protected-main policy.
 
 When reviewing PRs:
 
 - Do not run `gh pr checkout`, `git switch`, or otherwise move the worktree to the PR branch unless the user explicitly asks.
 - Use `gh pr view`, `gh pr diff`, `gh api`, and local `git show`/`git diff` against fetched refs to inspect PR metadata, commits, and patches without changing branches.
 - If you need PR file contents, fetch/read them into temporary files or use `git show <ref>:<path>` without switching branches.
-
-When creating issues:
-
-- Add `pkg:*` labels for affected packages (`pkg:agent`, `pkg:ai`, `pkg:coding-agent`, `pkg:tui`); use all that apply.
 
 When posting issue/PR comments:
 

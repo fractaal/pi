@@ -256,7 +256,7 @@ test("CI and release build from the committed model catalog", async () => {
 		"the model catalog must be committed source, not ignored",
 	);
 
-	for (const path of [".github/workflows/ci.yml", ".github/workflows/publish-npm.yml"]) {
+	for (const path of [".github/workflows/ci.yml", ".github/workflows/build-binaries.yml"]) {
 		const workflow = parseYaml(await read(path));
 		for (const [jobName, job] of Object.entries(workflow.jobs)) {
 			for (const step of job.steps ?? []) {
@@ -293,7 +293,7 @@ test("CI and release build from the committed model catalog", async () => {
 
 test("the release workflow publishes only the verified npm package family", async () => {
 	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const workflow = parseYaml(await readFile(join(repoRoot, ".github/workflows/publish-npm.yml"), "utf8"));
+	const workflow = parseYaml(await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8"));
 	const publish = workflow.jobs["publish-npm"];
 
 	assert.deepEqual(Object.keys(workflow.jobs), ["publish-npm"], "the fork release workflow must not run binary or GitHub-release jobs");
@@ -319,6 +319,6 @@ test("the release workflow publishes only the verified npm package family", asyn
 	assert.ok(stepIndex !== -1, "publication must verify the live remote tag");
 	assert.equal(stepIndex, publishIndex - 1, "the remote tag check must run immediately before publication");
 
-	const workflowText = await readFile(join(repoRoot, ".github/workflows/publish-npm.yml"), "utf8");
+	const workflowText = await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8");
 	assert.doesNotMatch(workflowText, /build-binaries\.sh|setup-bun|gh release|upload-artifact/);
 });

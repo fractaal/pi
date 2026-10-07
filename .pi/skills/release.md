@@ -29,7 +29,7 @@ When Ben explicitly asks to fix and publish:
 3. Push the task branch and open the pull request into protected `main`.
 4. Wait for `build-check-test`, merge the pull request using the allowed merge method, and fetch `main`.
 5. Run `npm run release:tag -- fractaal-v<version>`.
-6. Let `.github/workflows/publish-npm.yml` verify and publish through npm Trusted Publishing/OIDC.
+6. Let `.github/workflows/build-binaries.yml` verify and publish through npm Trusted Publishing/OIDC. The filename is retained because npm Trusted Publishing is configured against it; the workflow no longer builds binaries.
 7. Verify the npm package version and update/restart local Pi when the task requires it.
 
 Do not stop for a manual Ben handoff between these steps. Do not publish unrelated work.
