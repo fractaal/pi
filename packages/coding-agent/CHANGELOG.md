@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Removed upstream's pi.dev release announcement job from the fork's tag workflow, which rejected fork tags and caused the draft GitHub release to be deleted, and guarded the model catalog upload to upstream's repository. Release 0.86.1 reached npm but had no GitHub release until this fix.
+
 ## [0.86.1] - 2026-10-06
 
 ### Fixed

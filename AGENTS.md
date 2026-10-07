@@ -126,6 +126,8 @@ Attribution:
 
 **This fork publishes `@fractaal/pi-ai`, `@fractaal/pi-agent-core`, `@fractaal/pi-tui`, and `@fractaal/pi-coding-agent`** at ordinary stable SemVer on npm's ordinary `latest` tag. There is no `-fractal.N` version suffix and no `fractal` dist-tag. The source tree keeps upstream's `@earendil-works/*` names so upstream merges stay mechanical; `scripts/fractal-identity.mjs` applies the fork identity to the manifests in CI, immediately before publishing, and is the only place that transformation exists. Release tags are `fractaal-vX.Y.Z`, because upstream `v*` tags arrive through merges and share the same Git tag namespace.
 
+**Upstream-only workflow jobs stay out.** Upstream's release workflow announces releases on pi.dev and uploads the model catalog to its R2 bucket with credentials the fork does not have. The fork removes `announce-pi-dev-release` from `build-binaries.yml` (with its `needs` and cleanup conditions, so `publish-github-release` still runs) and guards the `publish-model-catalog.yml` upload job and the `nix.yml` `pin` job (which gates `build`, `update-stable` and `commit-pin`) with `github.repository == 'earendil-works/pi'`. After merging upstream, check that `build-binaries.yml` has no job that needs `PI_ARTIFACTS_R2_*` secrets or parses the tag as a plain `vX.Y.Z`, and that `scripts/publish.mjs` still reads manifests with the fork's own helpers.
+
 1. **Update CHANGELOGs**: review the changes since the previous release and update each affected package's `[Unreleased]` section as part of release preparation. No separate prompt or user-run changelog audit is required.
 
 2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
