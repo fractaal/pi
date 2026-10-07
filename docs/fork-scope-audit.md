@@ -6,7 +6,7 @@ Target: `/home/benjude/CodeProjects/pi`, branch `fix/fork-release-simplification
 
 ## Scope established with Ben
 
-Ben's interview answers establish:
+The completed answer record is in [fork-scope-interview-answers.md](fork-scope-interview-answers.md). Ben's interview answers establish:
 
 - Preserve Pi runtime behavior and continue useful upstream syncs.
 - Required consumers are the personal Pi CLI and Aria Local Runtime, including Desktop and Cloud Aria Neo.
@@ -75,8 +75,8 @@ Do not delete their source or tests as part of this cleanup. Revisit publication
 | `npm run test:scripts` | Passed: 56 tests. |
 | `node --test scripts/verify-release-source.test.mjs` | Passed: 14 tests. |
 | `node --test scripts/fractal-identity.test.mjs` | Passed: 9 tests. |
-| `npm run release:local -- --skip-check --skip-test --out /tmp/pi-local-release-simplified --force` | Passed npm-only local package/CLI smoke. |
-| Real `@fractaal/*` artifact rehearsal | Passed: source copy applied identity to all eight packages, packed them, installed a clean consumer, and verified SDK/CLI/dependency closure. No registry publication. |
+| `npm run release:local -- --skip-check --skip-test --out /tmp/pi-local-release-final --force` | Passed against transformed `@fractaal/*` artifacts: the isolated npm consumer installed `@fractaal/pi-coding-agent`, verified SDK/CLI/dependency closure, and reported `0.86.1`. Retained log: `docs/evidence/fork-artifact-smoke.log`. |
+| Real `@fractaal/*` artifact rehearsal | Passed both through the normal local smoke and a source-copy rehearsal. All eight transformed packages were packed and a clean consumer verified SDK/CLI/dependency closure. No registry publication. |
 | npm provenance | All eight `@fractaal/*@0.86.1` attestations identify `fractaal/pi/.github/workflows/build-binaries.yml`, tag `fractaal-v0.86.1`, and the npm-publish environment. The filename was retained deliberately. |
 | Protected-main settings | Verified through GitHub ruleset API: active, PR required, strict `build-check-test`, merge-only, no bypass actors. |
 

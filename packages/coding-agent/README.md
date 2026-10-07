@@ -8,8 +8,6 @@
   <a href="https://www.npmjs.com/package/@fractaal/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@fractaal/pi-coding-agent?style=flat-square&logo=npm&logoColor=white" /></a>
 </p>
 
-> New issues and PRs from new contributors are closed automatically. Maintainers review closed submissions daily. See [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md).
-
 # Pi
 
 Pi is a minimal, extensible agent harness that you can make your own.

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { installCodingAgentConsumer, packReleasePackages, smokeTestCodingAgentConsumer } from "./coding-agent-consumer.mjs";
-import { PUBLISHABLE_PACKAGES } from "./fractal-identity.mjs";
+import { applyFractalIdentity, PUBLISHABLE_PACKAGES } from "./fractal-identity.mjs";
 
 // Same list scripts/publish.mjs publishes, so the local smoke exercises exactly the package family a
 // release ships. Names are read from the manifests at pack time rather than hardcoded, so this works both
@@ -15,8 +15,8 @@ const packages = PUBLISHABLE_PACKAGES;
 function printUsage() {
 	console.log(`Usage: node scripts/local-release.mjs [options]
 
-Builds and packs the publishable packages, then installs the tarballs into an
-isolated npm directory outside the repository for local release testing.
+Builds and packs the publishable packages with the fork identity, then installs
+the tarballs into an isolated npm directory outside the repository for local release testing.
 
 Options:
   --out <dir>          Output directory. Defaults to a new directory under ${tmpdir()}
@@ -150,16 +150,23 @@ for (const pkg of packages) {
 
 if (!options.skipTest) run("npm", ["run", "test:published"], { cwd: repoRoot });
 
-const tarballs = packReleasePackages(packages, tarballDirectory);
-const upstreamNames = new Map(packages.map((pkg) => [pkg.name, pkg.upstreamName]));
-for (const pkg of packages) upstreamNames.set(readPackageJson(pkg.directory).name, pkg.upstreamName);
+const releaseVersion = readPackageJson("packages/coding-agent").version;
+const stagedRoot = join(outDir, "fork-packages");
+const stagedPackages = packages.map((pkg) => {
+	const directory = join(stagedRoot, pkg.directory);
+	cpSync(pkg.directory, directory, { recursive: true });
+	return { ...pkg, directory };
+});
+applyFractalIdentity(stagedRoot, releaseVersion);
+const tarballs = packReleasePackages(stagedPackages, tarballDirectory);
+const upstreamNames = new Map(stagedPackages.map((pkg) => [pkg.name, pkg.upstreamName]));
+for (const pkg of stagedPackages) upstreamNames.set(readPackageJson(pkg.directory).name, pkg.upstreamName);
 
 if (!options.skipInstall) {
 	installCodingAgentConsumer(nodeInstallDirectory, tarballs, "npm", upstreamNames);
 	smokeTestCodingAgentConsumer(nodeInstallDirectory);
 	createPiShim(nodeInstallDirectory);
 
-	const releaseVersion = readPackageJson("packages/coding-agent").version;
 	assertReportedVersion(
 		"npm install",
 		join(nodeInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi"),
