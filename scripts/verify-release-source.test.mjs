@@ -310,7 +310,10 @@ test("the release workflow publishes only the verified npm package family", asyn
 	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("npm run build:offline")));
 	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("npm run check")));
 	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("test:published")));
-	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("check:package-install")));
+	assert.ok(
+		publish.steps.some((step) => String(step.run ?? "").includes("release:local")),
+		"publication must smoke-test the packages under their published fork identity",
+	);
 	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("fractal-identity.mjs")));
 
 	// The live remote check must be the last thing before the first publish side effect.

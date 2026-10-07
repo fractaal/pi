@@ -71,8 +71,10 @@ jobs:
       - name: Test published fork surface
         run: npm run test:published
 
-      - name: Smoke-test packed npm consumer
-        run: npm run check:package-install
+      # Test the packages as they will be published: release:local applies the fork
+      # identity to a staged copy, packs it, and installs it as a consumer would.
+      - name: Smoke-test the fork packages as published
+        run: npm run release:local -- --skip-check --skip-test --out "${RUNNER_TEMP}/fork-release-smoke"
 
       - name: Upgrade npm for trusted publishing
         run: |
