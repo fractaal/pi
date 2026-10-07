@@ -22,7 +22,7 @@ Options:
   --out <dir>          Output directory. Defaults to a new directory under ${tmpdir()}
   --force              Remove --out first if it already exists
   --skip-check         Do not run npm run check before building
-  --skip-test          Do not run ./test.sh before building
+  --skip-test          Do not run npm run test:published before building
   --skip-install       Only create tarballs; do not create an isolated npm install
   --help               Show help
 `);
@@ -148,7 +148,7 @@ for (const pkg of packages) {
 	run("npm", ["run", pkg.directory === "packages/ai" ? "build:offline" : "build"], { cwd: pkg.directory });
 }
 
-if (!options.skipTest) run("./test.sh", [], { cwd: repoRoot });
+if (!options.skipTest) run("npm", ["run", "test:published"], { cwd: repoRoot });
 
 const tarballs = packReleasePackages(packages, tarballDirectory);
 const upstreamNames = new Map(packages.map((pkg) => [pkg.name, pkg.upstreamName]));

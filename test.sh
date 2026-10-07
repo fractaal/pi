@@ -76,4 +76,20 @@ for name in CI GITHUB_ACTIONS; do
 done
 
 echo "Running tests without API keys in isolated home: $test_root/home"
-env -i "${test_env[@]}" npm test
+if [[ "${PI_TEST_SCOPE:-all}" == "published" ]]; then
+	env -i "${test_env[@]}" bash -c '
+		set -euo pipefail
+		npm run test:scripts
+		npm test \
+			--workspace packages/telemetry \
+			--workspace packages/chord \
+			--workspace packages/codemode \
+			--workspace packages/mcp \
+			--workspace packages/ai \
+			--workspace packages/agent \
+			--workspace packages/tui \
+			--workspace packages/coding-agent
+	'
+else
+	env -i "${test_env[@]}" npm test
+fi

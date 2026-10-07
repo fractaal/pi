@@ -68,13 +68,8 @@ jobs:
       - name: Check
         run: npm run check
 
-      # The inherited pi-env tests use the local daemon. The daemon is built for
-      # verification only; it is not a published fork release artifact.
-      - name: Build pi-env daemon for tests
-        run: npm run build:daemon --workspace packages/env
-
-      - name: Test
-        run: npm test
+      - name: Test published fork surface
+        run: npm run test:published
 
       - name: Smoke-test packed npm consumer
         run: npm run check:package-install

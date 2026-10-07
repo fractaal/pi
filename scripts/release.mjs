@@ -263,7 +263,7 @@ run("npm run build:offline");
 console.log();
 
 console.log("Running tests...");
-run("./test.sh");
+run("npm run test:published");
 console.log();
 
 console.log("Checking the packed coding-agent consumer install...");

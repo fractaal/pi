@@ -1,50 +1,58 @@
 ---
 name: release
-description: Prepare, publish, verify, and recover pi releases. Use for release preparation, local release smoke tests, publishing, and failed release CI or announcements.
+description: Prepare, publish, verify, and recover Fractaal Pi npm releases. Use for release preparation, local npm smoke tests, trusted publication, and failed release CI.
 ---
 
-# Releasing pi
+# Releasing Fractaal Pi
 
-Run repository commands from the repo root (two directories above this skill), unless instructed otherwise.
+Run repository commands from the Pi repository root. This fork publishes only the eight package family consumed by Pi and Aria:
 
-**Lockstep versioning**: all packages share one version; every release updates all together. `patch` = fixes + additions, `minor` = breaking changes. No major releases.
+- `@fractaal/pi-telemetry`
+- `@fractaal/chord`
+- `@fractaal/pi-codemode`
+- `@fractaal/pi-mcp`
+- `@fractaal/pi-ai`
+- `@fractaal/pi-agent-core`
+- `@fractaal/pi-tui`
+- `@fractaal/pi-coding-agent`
 
-1. **Update CHANGELOGs**: ask the user whether they ran the `/cl` prompt on the latest commit on `main`. If not, they must run `/cl` first to audit and update each package's `[Unreleased]` section before releasing.
+Unused inherited packages remain source and test content but are not fork-published until a real consumer needs them.
 
-2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
-   ```bash
-   npm run release:local -- --out /tmp/pi-local-release --force
-   cd /tmp
+Standalone binaries, Nix releases, GitHub Release assets, upstream model-catalog publication, and contributor-management workflows are not current fork products.
 
-   # Node package install smoke tests
-   /tmp/pi-local-release/node/pi --help
-   /tmp/pi-local-release/node/pi --version
-   /tmp/pi-local-release/node/pi --list-models
-   /tmp/pi-local-release/node/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/node/pi
+## User-authorized release
 
-   # Bun binary smoke tests
-   /tmp/pi-local-release/bun/pi --help
-   /tmp/pi-local-release/bun/pi --version
-   /tmp/pi-local-release/bun/pi --list-models
-   /tmp/pi-local-release/bun/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/bun/pi
-   ```
-   Verify both Node and Bun startup, model/account listing, interactive startup, and at least one real prompt with the intended default provider. The bare commands `/tmp/pi-local-release/node/pi` and `/tmp/pi-local-release/bun/pi` start interactive mode; run each in tmux, submit a prompt, and wait for the model reply before considering the interactive smoke test passed. Failures are release blockers unless the user explicitly accepts the risk.
+When Ben explicitly asks to fix and publish:
 
-   Load and follow [interactive-testing.md](interactive-testing.md) for the tmux workflow. Start each release binary from `/tmp`, not the repo root.
+1. Make the requested change in a task branch and run the relevant behavior-first checks.
+2. Run `npm run release:patch` or `npm run release:minor` as appropriate.
+3. Push the task branch and open the pull request into protected `main`.
+4. Wait for `build-check-test`, merge the pull request using the allowed merge method, and fetch `main`.
+5. Run `npm run release:tag -- fractaal-v<version>`.
+6. Let `.github/workflows/publish-npm.yml` verify and publish through npm Trusted Publishing/OIDC.
+7. Verify the npm package version and update/restart local Pi when the task requires it.
 
-3. **Run the release script**:
-   ```bash
-   PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:patch    # fixes + additions
-   PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:minor    # breaking changes
-   ```
-   Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or install lock diffs the release creates before push.
+Do not stop for a manual Ben handoff between these steps. Do not publish unrelated work.
 
-   The release script refreshes the Nix model catalog pin (`nix/model-catalog.json`) if stale, bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check`, commits `Release vX.Y.Z`, tags `vX.Y.Z`, adds fresh `## [Unreleased]` changelog sections, commits `Add [Unreleased] section for next cycle`, then pushes `main` and the tag. Do not rerun the release script after a tag was pushed.
+## Local npm smoke test
 
-4. **CI verifies and announces the npm release**: pushing the `vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The `publish-npm` job uses npm trusted publishing through GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, or WebAuthn flow is required. After publishing, `announce-pi-dev-release` verifies every public workspace package resolves at the exact release version and that its npm tarball is available, then writes the verified release marker to R2. `pi.dev/api/latest-version` reads that marker; it must never announce a release from npm before this job succeeds.
+```bash
+npm run release:local -- --out /tmp/pi-local-release --force
+```
 
-5. **CI builds the Nix release**: the tag push also triggers `.github/workflows/nix.yml`, which builds the tagged flake on Linux and macOS and then fast-forwards the `stable` branch to the release commit. `nix run github:earendil-works/pi/stable` runs the latest release. If the Nix build fails, `stable` stays on the previous release; the tag cannot be fixed, so fix `main` and ship the fix in the next release.
+This builds and packs the eight publishable packages, installs them into a clean npm directory outside the repository, starts the npm-installed CLI, and verifies its version and consumer boundary. It does not build standalone binaries or Bun package installs.
 
-6. **If CI publish or announcement fails**: inspect the failed job. The publish helper is idempotent and skips package versions already present on npm; the announcement job rechecks availability before updating the R2 marker. Rerun the failed job or workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
+## Publication safety
+
+The release workflow must:
+
+- verify that the tag names a release commit reachable from `main`;
+- verify that every fork-published package carries the tag version;
+- build from the committed model catalog;
+- run checks, tests, and the packed npm consumer smoke before publication;
+- apply the fork identity only after those checks;
+- verify the live remote tag immediately before the first publication side effect;
+- publish with npm Trusted Publishing/provenance rather than a stored npm token;
+- remain idempotent when a package version was already published.
+
+A failed publication is retried from the same immutable tag after the cause is fixed. Never rerun the version-bump script for a tag that already exists.
