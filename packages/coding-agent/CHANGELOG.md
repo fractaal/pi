@@ -6,6 +6,7 @@
 
 ### Fixed
 
+- Confirmation dialogs with a comment field (Goal proposals and revisions) can be declined again. The decision row starts focused, left and right arrows select Accept and Decline in their drawn order, up or Tab moves into the comment, and Enter in the comment returns to the choices instead of accepting.
 - Removed upstream's pi.dev release announcement job from the fork's tag workflow, which rejected fork tags and caused the draft GitHub release to be deleted, and guarded the model catalog upload to upstream's repository. Release 0.86.1 reached npm but had no GitHub release until this fix.
 
 ## [0.86.1] - 2026-10-06
