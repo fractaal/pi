@@ -322,7 +322,9 @@ function dereferenceSchema(schema: Tool["parameters"]): JsonSchemaObject {
 		const resolved = visit(target, new Set([...activeRefs, ref as string]));
 		return entries.length === 0 ? resolved : { ...(resolved as object), ...Object.fromEntries(entries) };
 	};
-	const dereferenced = (JSON.stringify(schema).includes('"$ref"') ? visit(schema, new Set()) : schema) as JsonSchemaObject;
+	const dereferenced = (
+		JSON.stringify(schema).includes('"$ref"') ? visit(schema, new Set()) : schema
+	) as JsonSchemaObject;
 	dereferencedSchemaCache.set(schema, dereferenced);
 	return dereferenced;
 }
@@ -370,7 +372,9 @@ function narrowUnionErrors(errors: TLocalizedValidationError[]): TLocalizedValid
 		const discriminatorPaths = new Set(discriminatorErrors.map((error) => error.instancePath));
 		if (discriminatorPaths.size !== 1) continue;
 		const allowedValues = discriminatorErrors.flatMap((error) =>
-			error.keyword === "const" ? [error.params.allowedValue] : (error.params as { allowedValues: unknown[] }).allowedValues,
+			error.keyword === "const"
+				? [error.params.allowedValue]
+				: (error.params as { allowedValues: unknown[] }).allowedValues,
 		);
 		const replacement = {
 			keyword: "enum",
@@ -379,7 +383,9 @@ function narrowUnionErrors(errors: TLocalizedValidationError[]): TLocalizedValid
 			params: { allowedValues },
 			message: "",
 		} as TLocalizedValidationError;
-		result = result.flatMap((error) => (error === union ? [replacement] : branchOf(error) === undefined ? [error] : []));
+		result = result.flatMap((error) =>
+			error === union ? [replacement] : branchOf(error) === undefined ? [error] : [],
+		);
 	}
 	return result;
 }
@@ -423,7 +429,9 @@ function explainValidationFailure(schema: JsonSchemaObject, value: unknown, base
 		.filter((error) => error.keyword === "additionalProperties")
 		.map((error) => `${error.schemaPath}/additionalProperties`);
 	for (const error of errors) {
-		if (additionalPropertiesPaths.some((path) => error.schemaPath === path || error.schemaPath.startsWith(`${path}/`))) {
+		if (
+			additionalPropertiesPaths.some((path) => error.schemaPath === path || error.schemaPath.startsWith(`${path}/`))
+		) {
 			continue;
 		}
 		const instancePath = `${basePath}${error.instancePath}`;
@@ -432,7 +440,8 @@ function explainValidationFailure(schema: JsonSchemaObject, value: unknown, base
 			continue;
 		}
 		const keys = error.params.additionalProperties;
-		const valueSchema = (resolvePointer(schema, error.schemaPath) as JsonSchemaObject | undefined)?.additionalProperties;
+		const valueSchema = (resolvePointer(schema, error.schemaPath) as JsonSchemaObject | undefined)
+			?.additionalProperties;
 		if (typeof valueSchema !== "object") {
 			issues.push({
 				instancePath,
@@ -445,7 +454,11 @@ function explainValidationFailure(schema: JsonSchemaObject, value: unknown, base
 			const segment = `/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`;
 			const entryValue = valueAtPointer(value, `${error.instancePath}${segment}`);
 			const entryIssues = explainValidationFailure(valueSchema, entryValue, `${instancePath}${segment}`);
-			issues.push(...(entryIssues.length > 0 ? entryIssues : [{ instancePath: `${instancePath}${segment}`, message: "is invalid" }]));
+			issues.push(
+				...(entryIssues.length > 0
+					? entryIssues
+					: [{ instancePath: `${instancePath}${segment}`, message: "is invalid" }]),
+			);
 		}
 	}
 	const seen = new Set<string>();
@@ -511,7 +524,10 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 	const issues =
 		explained.length > 0
 			? explained
-			: collectErrors(validator, args).map((error) => ({ instancePath: error.instancePath, message: describeError(error) }));
+			: collectErrors(validator, args).map((error) => ({
+					instancePath: error.instancePath,
+					message: describeError(error),
+				}));
 	const errors =
 		issues.map((issue) => `  - ${formatIssuePath(issue.instancePath)}: ${issue.message}`).join("\n") ||
 		"Unknown validation error";
