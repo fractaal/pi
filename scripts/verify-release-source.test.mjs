@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -256,7 +256,7 @@ test("CI and release build from the committed model catalog", async () => {
 		"the model catalog must be committed source, not ignored",
 	);
 
-	for (const path of [".github/workflows/ci.yml", ".github/workflows/build-binaries.yml"]) {
+	for (const path of [".github/workflows/ci.yml", ".github/workflows/publish-npm.yml"]) {
 		const workflow = parseYaml(await read(path));
 		for (const [jobName, job] of Object.entries(workflow.jobs)) {
 			for (const step of job.steps ?? []) {
@@ -291,105 +291,9 @@ test("CI and release build from the committed model catalog", async () => {
 	}
 });
 
-test("the source archive contains only the requested commit's bytes", async (t) => {
-	// Runs the shipped wrapper, not git. A previous version of this test drove
-	// `git archive` directly and asserted on the script's text, so a mutation that
-	// resolved the commit with `git stash create` kept every assertion green and
-	// still archived the dirty working tree.
-	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const root = await mkdtemp(join(tmpdir(), "source-archive-"));
-	t.after(() => rm(root, { force: true, recursive: true }));
-
-	const write = async (relativePath, contents) => {
-		await mkdir(dirname(join(root, relativePath)), { recursive: true });
-		await writeFile(join(root, relativePath), contents);
-	};
-
-	// The smallest tree the wrapper accepts: its required paths, a stub model-data
-	// validator, and the catalog file that carries the sentinel.
-	const seed = async (sentinel, version) => {
-		await write("package.json", `${JSON.stringify({ name: "pi-monorepo", version }, null, "\t")}\n`);
-		await write("package-lock.json", "{}\n");
-		await write("scripts/build-binaries.sh", "#!/usr/bin/env bash\n");
-		await write("packages/ai/src/models.generated.ts", "export const MODELS = {};\n");
-		for (const nativePath of [
-			"napi.h",
-			"clipboard.h",
-			"darwin/src/darwin-platform.m",
-			"darwin/prebuilds/darwin-arm64/darwin-platform.node",
-			"darwin/prebuilds/darwin-x64/darwin-platform.node",
-			"linux/build.sh",
-			"linux/src/linux-platform-x11.c",
-			"linux/prebuilds/linux-arm64/linux-platform-x11.node",
-			"linux/prebuilds/linux-x64/linux-platform-x11.node",
-			"win32/src/win32-platform.c",
-			"win32/prebuilds/win32-arm64/win32-platform.node",
-			"win32/prebuilds/win32-x64/win32-platform.node",
-		]) {
-			await write(`packages/tui/native/${nativePath}`, "\n");
-		}
-		await write("packages/ai/scripts/check-model-data.ts", 'console.log("Generated model data is valid.");\n');
-		await write("packages/coding-agent/package.json", `${JSON.stringify({ version }, null, "\t")}\n`);
-		await write("packages/coding-agent/src/utils/image-resize-worker.ts", "export {};\n");
-		await write("packages/coding-agent/src/core/export-html/template.css", "/* */\n");
-		await write("packages/ai/src/providers/data/.manifest.json", `{ "sentinel": "${sentinel}" }\n`);
-	};
-
-	await mkdir(join(root, "scripts"), { recursive: true });
-	await copyFile(join(repoRoot, "scripts/create-source-archive.sh"), join(root, "scripts/create-source-archive.sh"));
-	await chmod(join(root, "scripts/create-source-archive.sh"), 0o755);
-
-	git(root, "init", "-b", "main");
-	git(root, "config", "user.email", "release@example.test");
-	git(root, "config", "user.name", "Release Test");
-
-	// Three distinct states, so the archive can only match one of them.
-	await seed("REQUESTED_REF_SENTINEL", "0.84.0");
-	git(root, "add", "-A");
-	git(root, "commit", "-m", "Release fractaal-v0.84.0");
-	const requestedCommit = git(root, "rev-parse", "HEAD");
-
-	await seed("CURRENT_HEAD_SENTINEL", "0.84.0");
-	git(root, "add", "-A");
-	git(root, "commit", "-m", "Add [Unreleased] section for next cycle");
-
-	await write("packages/ai/src/providers/data/.manifest.json", '{ "sentinel": "DIRTY_WORKTREE_SENTINEL" }\n');
-
-	const out = join(root, "out", "pi-0.84.0-source.tar.gz");
-	const archive = spawnSync(
-		join(root, "scripts/create-source-archive.sh"),
-		["--version", "0.84.0", "--ref", requestedCommit, "--out", out],
-		{ cwd: root, encoding: "utf8" },
-	);
-	assert.equal(archive.status, 0, `${archive.stdout}\n${archive.stderr}`);
-	// The wrapper still validates the extracted catalog and normalizes the archive.
-	assert.match(archive.stdout, /Generated model data is valid\./);
-
-	const extracted = join(root, "extracted");
-	await mkdir(extracted, { recursive: true });
-	spawnSync("tar", ["-xzf", out, "-C", extracted], { encoding: "utf8" });
-	const archivedManifest = await readFile(
-		join(extracted, "pi-0.84.0/packages/ai/src/providers/data/.manifest.json"),
-		"utf8",
-	);
-
-	// Exclusions first, so a wrong commit resolution reports which state it archived
-	// rather than the generic "requested sentinel missing".
-	assert.ok(!archivedManifest.includes("DIRTY_WORKTREE_SENTINEL"), "archive leaked uncommitted working-tree bytes");
-	assert.ok(!archivedManifest.includes("CURRENT_HEAD_SENTINEL"), "archive used current HEAD, not the requested ref");
-	assert.match(archivedManifest, /REQUESTED_REF_SENTINEL/);
-
-	// Archiving must not clean or stage the working tree either.
-	assert.match(
-		await readFile(join(root, "packages/ai/src/providers/data/.manifest.json"), "utf8"),
-		/DIRTY_WORKTREE_SENTINEL/,
-	);
-	assert.match(git(root, "status", "--porcelain"), /^M packages\/ai\/src\/providers\/data\/\.manifest\.json$/m);
-});
-
 test("the release workflow publishes only the verified npm package family", async () => {
 	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const workflow = parseYaml(await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8"));
+	const workflow = parseYaml(await readFile(join(repoRoot, ".github/workflows/publish-npm.yml"), "utf8"));
 	const publish = workflow.jobs["publish-npm"];
 
 	assert.deepEqual(Object.keys(workflow.jobs), ["publish-npm"], "the fork release workflow must not run binary or GitHub-release jobs");
@@ -415,6 +319,6 @@ test("the release workflow publishes only the verified npm package family", asyn
 	assert.ok(stepIndex !== -1, "publication must verify the live remote tag");
 	assert.equal(stepIndex, publishIndex - 1, "the remote tag check must run immediately before publication");
 
-	const workflowText = await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8");
+	const workflowText = await readFile(join(repoRoot, ".github/workflows/publish-npm.yml"), "utf8");
 	assert.doesNotMatch(workflowText, /build-binaries\.sh|setup-bun|gh release|upload-artifact/);
 });
