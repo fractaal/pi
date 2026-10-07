@@ -1,5 +1,6 @@
 import { Compile } from "typebox/compile";
 import type { TLocalizedValidationError } from "typebox/error";
+import { Settings } from "typebox/system";
 import { Value } from "typebox/value";
 import type { Tool, ToolCall } from "../types.ts";
 
@@ -279,17 +280,185 @@ function getValidator(schema: Tool["parameters"]): ReturnType<typeof Compile> {
 	return validator;
 }
 
-function formatValidationPath(error: TLocalizedValidationError): string {
-	if (error.keyword === "required") {
-		const requiredProperties = (error.params as { requiredProperties?: string[] }).requiredProperties;
-		const requiredProperty = requiredProperties?.[0];
-		if (requiredProperty) {
-			const basePath = error.instancePath.replace(/^\//, "").replace(/\//g, ".");
-			return basePath ? `${basePath}.${requiredProperty}` : requiredProperty;
+interface ValidationIssue {
+	instancePath: string;
+	message: string;
+}
+
+const dereferencedSchemaCache = new WeakMap<object, JsonSchemaObject>();
+
+function decodePointerSegments(pointer: string): string[] {
+	return pointer
+		.split("/")
+		.slice(1)
+		.map((segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~"));
+}
+
+function resolvePointer(root: unknown, pointer: string): unknown {
+	if (pointer !== "#" && !pointer.startsWith("#/")) return undefined;
+	let node = root;
+	for (const segment of decodePointerSegments(pointer.slice(1))) {
+		if (typeof node !== "object" || node === null) return undefined;
+		node = (node as Record<string, unknown>)[segment];
+	}
+	return node;
+}
+
+/**
+ * Inlines local `$ref`s so that every error's schema path points into the tool schema itself. TypeBox reports
+ * errors inside a referenced schema relative to the reference target, which hides which union branch they
+ * belong to. Recursive references are left in place.
+ */
+function dereferenceSchema(schema: Tool["parameters"]): JsonSchemaObject {
+	const cached = dereferencedSchemaCache.get(schema);
+	if (cached) return cached;
+	const visit = (node: unknown, activeRefs: ReadonlySet<string>): unknown => {
+		if (Array.isArray(node)) return node.map((item) => visit(item, activeRefs));
+		if (typeof node !== "object" || node === null) return node;
+		const { $ref: ref, ...rest } = node as Record<string, unknown>;
+		const target = typeof ref === "string" && !activeRefs.has(ref) ? resolvePointer(schema, ref) : undefined;
+		const entries = Object.entries(rest).map(([key, value]) => [key, visit(value, activeRefs)]);
+		if (target === undefined) return Object.fromEntries(ref === undefined ? entries : [["$ref", ref], ...entries]);
+		const resolved = visit(target, new Set([...activeRefs, ref as string]));
+		return entries.length === 0 ? resolved : { ...(resolved as object), ...Object.fromEntries(entries) };
+	};
+	const dereferenced = (JSON.stringify(schema).includes('"$ref"') ? visit(schema, new Set()) : schema) as JsonSchemaObject;
+	dereferencedSchemaCache.set(schema, dereferenced);
+	return dereferenced;
+}
+
+// TypeBox stops collecting errors at Settings.maxErrors (8 by default). A union reports every branch in order,
+// so the cap could hide the only branch the arguments were meant for.
+function collectErrors(validator: ReturnType<typeof Compile>, value: unknown): TLocalizedValidationError[] {
+	const { maxErrors } = Settings.Get();
+	Settings.Set({ maxErrors: Number.POSITIVE_INFINITY });
+	try {
+		return validator.Errors(value);
+	} finally {
+		Settings.Set({ maxErrors });
+	}
+}
+
+/**
+ * A failed union reports the errors of every branch. When branches are told apart by a constant property, such
+ * as `operation: "save_product"`, keep only the errors of the branches the arguments selected. When no branch
+ * matches, report the allowed constants instead of every branch's shape.
+ */
+function narrowUnionErrors(errors: TLocalizedValidationError[]): TLocalizedValidationError[] {
+	let result = errors;
+	const unions = errors
+		.filter((error) => error.keyword === "anyOf" || error.keyword === "oneOf")
+		.sort((left, right) => left.schemaPath.length - right.schemaPath.length);
+	for (const union of unions) {
+		if (!result.includes(union)) continue;
+		const prefix = `${union.schemaPath}/${union.keyword}/`;
+		const branchOf = (error: TLocalizedValidationError) =>
+			error.schemaPath.startsWith(prefix) ? error.schemaPath.slice(prefix.length).split("/")[0] : undefined;
+		const discriminatorErrors = result.filter(
+			(error) =>
+				(error.keyword === "const" || error.keyword === "enum") &&
+				error.schemaPath.startsWith(prefix) &&
+				/^\d+\/properties\/[^/]+$/.test(error.schemaPath.slice(prefix.length)),
+		);
+		if (discriminatorErrors.length === 0) continue;
+		const branches = new Set(result.map(branchOf).filter((branch) => branch !== undefined));
+		const rejected = new Set(discriminatorErrors.map(branchOf));
+		if (rejected.size < branches.size) {
+			result = result.filter((error) => error !== union && !rejected.has(branchOf(error)));
+			continue;
+		}
+		const discriminatorPaths = new Set(discriminatorErrors.map((error) => error.instancePath));
+		if (discriminatorPaths.size !== 1) continue;
+		const allowedValues = discriminatorErrors.flatMap((error) =>
+			error.keyword === "const" ? [error.params.allowedValue] : (error.params as { allowedValues: unknown[] }).allowedValues,
+		);
+		const replacement = {
+			keyword: "enum",
+			schemaPath: union.schemaPath,
+			instancePath: discriminatorErrors[0].instancePath,
+			params: { allowedValues },
+			message: "",
+		} as TLocalizedValidationError;
+		result = result.flatMap((error) => (error === union ? [replacement] : branchOf(error) === undefined ? [error] : []));
+	}
+	return result;
+}
+
+function valueAtPointer(value: unknown, pointer: string): unknown {
+	let node = value;
+	for (const segment of decodePointerSegments(pointer)) {
+		if (typeof node !== "object" || node === null) return undefined;
+		node = (node as Record<string, unknown>)[segment];
+	}
+	return node;
+}
+
+function quoteList(values: unknown[]): string {
+	return values.map((value) => JSON.stringify(value)).join(", ");
+}
+
+function describeError(error: TLocalizedValidationError): string {
+	switch (error.keyword) {
+		case "required": {
+			const missing = error.params.requiredProperties;
+			return `missing required ${missing.length === 1 ? "property" : "properties"} ${quoteList(missing)}`;
+		}
+		case "const":
+			return `must be ${JSON.stringify(error.params.allowedValue)}`;
+		case "enum":
+			return `must be one of ${quoteList(error.params.allowedValues)}`;
+		default:
+			return error.message;
+	}
+}
+
+/** Explains why `value` fails `schema`, with each issue located at the argument it concerns. */
+function explainValidationFailure(schema: JsonSchemaObject, value: unknown, basePath: string): ValidationIssue[] {
+	const validator = getSubSchemaValidator(schema);
+	if (!validator) return [];
+	const issues: ValidationIssue[] = [];
+	const errors = narrowUnionErrors(collectErrors(validator, value));
+	// Each key an additionalProperties error lists is explained below, so skip TypeBox's per-key errors for them.
+	const additionalPropertiesPaths = errors
+		.filter((error) => error.keyword === "additionalProperties")
+		.map((error) => `${error.schemaPath}/additionalProperties`);
+	for (const error of errors) {
+		if (additionalPropertiesPaths.some((path) => error.schemaPath === path || error.schemaPath.startsWith(`${path}/`))) {
+			continue;
+		}
+		const instancePath = `${basePath}${error.instancePath}`;
+		if (error.keyword !== "additionalProperties") {
+			issues.push({ instancePath, message: describeError(error) });
+			continue;
+		}
+		const keys = error.params.additionalProperties;
+		const valueSchema = (resolvePointer(schema, error.schemaPath) as JsonSchemaObject | undefined)?.additionalProperties;
+		if (typeof valueSchema !== "object") {
+			issues.push({
+				instancePath,
+				message: `unexpected ${keys.length === 1 ? "property" : "properties"} ${quoteList(keys)}`,
+			});
+			continue;
+		}
+		// TypeBox names a map entry whose value is invalid as if the key itself were not allowed; explain the value.
+		for (const key of keys) {
+			const segment = `/${key.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+			const entryValue = valueAtPointer(value, `${error.instancePath}${segment}`);
+			const entryIssues = explainValidationFailure(valueSchema, entryValue, `${instancePath}${segment}`);
+			issues.push(...(entryIssues.length > 0 ? entryIssues : [{ instancePath: `${instancePath}${segment}`, message: "is invalid" }]));
 		}
 	}
-	const path = error.instancePath.replace(/^\//, "").replace(/\//g, ".");
-	return path || "root";
+	const seen = new Set<string>();
+	return issues.filter((issue) => {
+		const key = `${issue.instancePath}\0${issue.message}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function formatIssuePath(instancePath: string): string {
+	return decodePointerSegments(instancePath).join(".") || "root";
 }
 
 /**
@@ -338,11 +507,14 @@ export function validateToolArguments(tool: Tool, toolCall: ToolCall): any {
 		return args;
 	}
 
+	const explained = explainValidationFailure(dereferenceSchema(tool.parameters), args, "");
+	const issues =
+		explained.length > 0
+			? explained
+			: collectErrors(validator, args).map((error) => ({ instancePath: error.instancePath, message: describeError(error) }));
 	const errors =
-		validator
-			.Errors(args)
-			.map((error) => `  - ${formatValidationPath(error)}: ${error.message}`)
-			.join("\n") || "Unknown validation error";
+		issues.map((issue) => `  - ${formatIssuePath(issue.instancePath)}: ${issue.message}`).join("\n") ||
+		"Unknown validation error";
 
 	const errorMessage = `Validation failed for tool "${toolCall.name}":\n${errors}\n\nReceived arguments:\n${JSON.stringify(toolCall.arguments, null, 2)}`;
 
