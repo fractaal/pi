@@ -137,3 +137,10 @@ Post-smoke artifact content checks:
   version: '0.86.1',
   hasContributorGate: false
 }
+
+Final HEAD and example boundary checks:
+commit=bd3ac2e706edcd3654051ae860a13e6838e3cd9c
+{
+  sourceExampleRetainsUpstreamImport: true,
+  sdkReadmeMarksUpstreamSyncOnly: true
+}
