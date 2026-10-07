@@ -2,6 +2,8 @@
 
 Programmatic usage of pi-coding-agent via `createAgentSession()` and `createAgentSessionRuntime()`.
 
+> The TypeScript files in this directory intentionally retain upstream `@earendil-works/*` imports for upstream-sync compatibility. Published-fork applications should use the documented `@fractaal/*` package names instead.
+
 The runtime example shows how to build a recreate function that closes over process-global fixed inputs and recreates cwd-bound services and sessions as the active session cwd changes.
 
 ## Examples

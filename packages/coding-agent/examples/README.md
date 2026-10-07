@@ -2,6 +2,8 @@
 
 Example code for the pi-coding-agent SDK, process integration, and extensions.
 
+> Source-compatibility note: the TypeScript examples intentionally retain upstream `@earendil-works/*` imports so upstream merges stay mechanical. They are upstream-sync examples, not fork package manifests. Applications consuming the published fork should use the documented `@fractaal/*` package names.
+
 ## CLI integration
 
 [`rpc-client.ts`](rpc-client.ts) uses the typed `RpcClient` to run Pi in a child process, stream events, and wait for the run to settle.
