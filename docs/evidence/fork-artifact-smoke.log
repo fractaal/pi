@@ -130,3 +130,10 @@ Isolated npm install:
 
 Run the locally packed npm CLI from outside the repository:
   /tmp/pi-local-release-final/node/pi --help
+
+Post-smoke artifact content checks:
+{
+  packageName: '@fractaal/pi-coding-agent',
+  version: '0.86.1',
+  hasContributorGate: false
+}
