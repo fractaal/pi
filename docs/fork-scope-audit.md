@@ -40,6 +40,7 @@ The completed answer record is in [fork-scope-interview-answers.md](fork-scope-i
 | Upstream release announcement helpers | No current fork release announcement or pi.dev marker is required. |
 | Contributor approval, issue auto-close, triage, issue-analysis, PR gate, and inherited issue templates | Ben does not want community administration for this fork. |
 | Binary-sidecar identity CLI mode and tests | No current binary artifact consumes that path; package identity transformation remains for the eight npm packages. |
+| Upstream package names in TypeScript examples | The examples are source-sync content and are explicitly marked upstream-sync-only; published SDK documentation uses `@fractaal/*`. |
 
 ## RETAINED BUT OUTSIDE CURRENT FORK WORK
 
