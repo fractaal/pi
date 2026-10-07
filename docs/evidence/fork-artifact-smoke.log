@@ -1,0 +1,132 @@
+
+> pi-monorepo@0.0.3 release:local
+> node scripts/local-release.mjs --skip-check --skip-test --out /tmp/pi-local-release-final --force
+
+$ npm run clean
+
+> @earendil-works/pi-telemetry@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build
+
+> @earendil-works/pi-telemetry@0.86.1 build
+> tsc -p tsconfig.build.json
+
+$ npm run clean
+
+> @earendil-works/chord@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build
+
+> @earendil-works/chord@0.86.1 build
+> tsc -p tsconfig.build.json
+
+$ npm run clean
+
+> @earendil-works/pi-codemode@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build
+
+> @earendil-works/pi-codemode@0.86.1 build
+> tsc -p tsconfig.build.json
+
+$ npm run clean
+
+> @earendil-works/pi-mcp@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build
+
+> @earendil-works/pi-mcp@0.86.1 build
+> tsc -p tsconfig.build.json
+
+$ npm run clean
+
+> @earendil-works/pi-ai@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build:offline
+
+> @earendil-works/pi-ai@0.86.1 build:offline
+> npm run check:model-data && tsc -p tsconfig.build.json && shx rm -rf dist/providers/data && shx cp -r src/providers/data dist/providers/data
+
+
+> @earendil-works/pi-ai@0.86.1 check:model-data
+> node scripts/check-model-data.ts
+
+Generated model data is valid.
+$ npm run clean
+
+> @earendil-works/pi-agent-core@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build
+
+> @earendil-works/pi-agent-core@0.86.1 build
+> tsc -p tsconfig.build.json
+
+$ npm run clean
+
+> @earendil-works/pi-tui@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build
+
+> @earendil-works/pi-tui@0.86.1 build
+> tsc -p tsconfig.build.json
+
+$ npm run clean
+
+> @earendil-works/pi-coding-agent@0.86.1 clean
+> shx rm -rf dist
+
+$ npm run build
+
+> @earendil-works/pi-coding-agent@0.86.1 build
+> npm run build:unbundled && node ../../scripts/build-coding-agent-bundle.mjs
+
+
+> @earendil-works/pi-coding-agent@0.86.1 build:unbundled
+> tsc -p tsconfig.build.json && shx chmod +x dist/cli.js dist/rpc-entry.js && npm run copy-assets
+
+
+> @earendil-works/pi-coding-agent@0.86.1 copy-assets
+> shx mkdir -p dist/modes/interactive/theme && shx cp src/modes/interactive/theme/*.json dist/modes/interactive/theme/ && shx mkdir -p dist/modes/interactive/assets && shx cp src/modes/interactive/assets/*.png dist/modes/interactive/assets/ && shx mkdir -p dist/core/export-html/vendor && shx cp src/core/export-html/template.html src/core/export-html/template.css src/core/export-html/template.js dist/core/export-html/ && shx cp src/core/export-html/vendor/*.js dist/core/export-html/vendor/
+
+Built packages/coding-agent/dist/bundle (75 files, 8.7 MiB)
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm pack --ignore-scripts --json --pack-destination /tmp/pi-local-release-final/tarballs
+$ npm install --ignore-scripts --omit=dev --no-audit --no-fund
+$ /home/benjude/.nvm/versions/node/v24.15.0/bin/node /tmp/pi-local-release-final/node/smoke-sdk.mjs
+$ /home/benjude/.nvm/versions/node/v24.15.0/bin/node /tmp/pi-local-release-final/node/node_modules/@fractaal/pi-coding-agent/dist/bundle/cli.js --version
+$ /home/benjude/.nvm/versions/node/v24.15.0/bin/node /tmp/pi-local-release-final/node/node_modules/@fractaal/pi-coding-agent/dist/cli.js --version
+Coding-agent SDK and CLI consumer smoke tests passed (/home/benjude/.nvm/versions/node/v24.15.0/bin/node).
+$ /tmp/pi-local-release-final/node/pi --version
+  npm install --version -> 0.86.1
+
+Local npm release artifacts created:
+  /tmp/pi-local-release-final
+
+Tarballs:
+  /tmp/pi-local-release-final/tarballs/fractaal-pi-telemetry-0.86.1.tgz
+  /tmp/pi-local-release-final/tarballs/fractaal-chord-0.86.1.tgz
+  /tmp/pi-local-release-final/tarballs/fractaal-pi-codemode-0.86.1.tgz
+  /tmp/pi-local-release-final/tarballs/fractaal-pi-mcp-0.86.1.tgz
+  /tmp/pi-local-release-final/tarballs/fractaal-pi-ai-0.86.1.tgz
+  /tmp/pi-local-release-final/tarballs/fractaal-pi-agent-core-0.86.1.tgz
+  /tmp/pi-local-release-final/tarballs/fractaal-pi-tui-0.86.1.tgz
+  /tmp/pi-local-release-final/tarballs/fractaal-pi-coding-agent-0.86.1.tgz
+
+Isolated npm install:
+  /tmp/pi-local-release-final/node
+
+Run the locally packed npm CLI from outside the repository:
+  /tmp/pi-local-release-final/node/pi --help
