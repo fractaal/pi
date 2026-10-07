@@ -119,7 +119,7 @@ export function toFractalManifest(manifest, version) {
  */
 const SHRINKWRAP = join("packages/coding-agent", "npm-shrinkwrap.json");
 
-export function applyFractalIdentityToManifestFile(manifestPath, version) {
+function applyFractalIdentityToManifestFile(manifestPath, version) {
 	const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 	const next = toFractalManifest(manifest, version);
 	writeFileSync(manifestPath, `${JSON.stringify(next, null, "\t")}\n`);
@@ -146,32 +146,22 @@ export function applyFractalIdentity(repoRoot, version) {
 const isDirectInvocation = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
 if (isDirectInvocation) {
 	const args = process.argv.slice(2);
-	const manifestMode = args[0] === "--manifest";
-	const manifestPath = manifestMode ? args[1] : undefined;
-	const version = manifestMode ? args[2] : args[0];
+	const version = args[0];
 	try {
 		assertReleaseVersion(version);
-		if (manifestMode && !manifestPath) throw new Error("--manifest requires a path");
-		if (!manifestMode && args.length !== 1) throw new Error("expected exactly one release version");
-		if (manifestMode && args.length !== 3) throw new Error("--manifest requires a path and release version");
+		if (args.length !== 1) throw new Error("expected exactly one release version");
 	} catch (error) {
 		console.error(String(error.message ?? error));
 		console.error("usage: node scripts/fractal-identity.mjs <x.y.z>");
-		console.error("   or: node scripts/fractal-identity.mjs --manifest <package.json> <x.y.z>");
 		process.exit(1);
 	}
 
-	if (manifestMode) {
-		const applied = applyFractalIdentityToManifestFile(manifestPath, version);
+	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+	const result = applyFractalIdentity(repoRoot, version);
+	for (const applied of result.packages) {
 		console.log(`  ${applied.name}@${applied.version}`);
-	} else {
-		const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-		const result = applyFractalIdentity(repoRoot, version);
-		for (const applied of result.packages) {
-			console.log(`  ${applied.name}@${applied.version}`);
-		}
-		if (result.removedShrinkwrap) {
-			console.log(`  removed ${SHRINKWRAP} (pins upstream tarballs)`);
-		}
+	}
+	if (result.removedShrinkwrap) {
+		console.log(`  removed ${SHRINKWRAP} (pins upstream tarballs)`);
 	}
 }

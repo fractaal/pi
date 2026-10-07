@@ -16,4 +16,4 @@ tmux send-keys -t pi-test Escape               # special keys (also C-o for ctrl
 tmux kill-session -t pi-test
 ```
 
-For release smoke tests, start the tmux session with `-c /tmp` and replace `./pi-test.sh` with the absolute path to the release binary. Test both Node and Bun binaries separately, submit a prompt, and wait for the model reply; startup alone is not a passing smoke test.
+For npm release smoke tests, start the tmux session with `-c /tmp` and use the absolute path to the isolated npm CLI printed by `npm run release:local`. Submit a prompt and wait for the model reply; startup alone is not a passing smoke test. Standalone binary smoke tests are not part of the current fork release surface.

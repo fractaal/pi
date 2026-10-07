@@ -16,7 +16,7 @@
 
 Work autonomously within the agreed task. Local builds, tests, checks, unpublished package smoke builds, and task-scoped commits are routine engineering work; do not ask Ben for a separate go-ahead.
 
-**Production deployments and package publication require Ben's explicit authorization.** Judge the action by its effects: pushing a tag, merging, or running a workflow that deploys to production or publishes a package crosses that boundary. Preparing and testing unpublished artifacts locally does not. Keep the existing release pipeline and branch protections intact.
+**Production deployments still require Ben's explicit authorization.** For this fork, a task instruction such as "fix this and publish" authorizes the agent to commit, push, open and merge the protected-main PR after required checks pass, push the release tag, publish the fork packages through the existing trusted-publishing workflow, and update the local Pi installation. Do not publish changes from unrelated tasks or from unrequested background work. Keep protected main and the npm environment boundary intact.
 
 ## Code Quality
 
@@ -37,7 +37,7 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before marking work ready. WIP commits may record unfinished or failing work, but must say so; a checkpoint is not a claim of verification. This command does not run tests.
 - Run local builds and tests as needed to verify the task. Prefer focused checks and use the offline/non-e2e test paths below; authorization for local work is not a reason to run unrelated or live-provider suites.
-- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For all non-e2e tests, run `./test.sh` from the repo root. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
+- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For the full inherited monorepo suite, run `./test.sh` from the repo root. The fork's release and required CI surface uses `npm run test:published`, which covers scripts and the eight packages published under `@fractaal`. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - When regressions tests for fixing a github issue, add a comment with the github issue number next to the test.
@@ -77,17 +77,13 @@ If rebase conflicts occur:
 
 ## Issues and PRs
 
-See `CONTRIBUTING.md` for the contributor gate (auto-close workflows, `lgtm`/`lgtmi`, quality bar).
+This fork does not operate upstream's contributor approval, issue auto-close, triage, or issue-analysis program. Do not reintroduce those workflows without a new scope decision. See `CONTRIBUTING.md` for the fork's maintainer and protected-main policy.
 
 When reviewing PRs:
 
 - Do not run `gh pr checkout`, `git switch`, or otherwise move the worktree to the PR branch unless the user explicitly asks.
 - Use `gh pr view`, `gh pr diff`, `gh api`, and local `git show`/`git diff` against fetched refs to inspect PR metadata, commits, and patches without changing branches.
 - If you need PR file contents, fetch/read them into temporary files or use `git show <ref>:<path>` without switching branches.
-
-When creating issues:
-
-- Add `pkg:*` labels for affected packages (`pkg:agent`, `pkg:ai`, `pkg:coding-agent`, `pkg:tui`); use all that apply.
 
 When posting issue/PR comments:
 
@@ -122,61 +118,52 @@ Attribution:
 
 ## Releasing
 
-**Lockstep versioning**: all packages share one version; every release updates all together. `patch` = fixes + additions, `minor` = breaking changes. No major releases.
+**Lockstep versioning**: all workspace packages keep the upstream lockstep version so regular upstream merges remain mechanical. The fork publishes only the eight packages with current consumers: @fractaal/pi-telemetry, @fractaal/chord, @fractaal/pi-codemode, @fractaal/pi-mcp, @fractaal/pi-ai, @fractaal/pi-agent-core, @fractaal/pi-tui, and @fractaal/pi-coding-agent. Unused inherited packages remain source and test content but are not fork-published until a real consumer needs them.
 
-**This fork publishes `@fractaal/pi-ai`, `@fractaal/pi-agent-core`, `@fractaal/pi-tui`, and `@fractaal/pi-coding-agent`** at ordinary stable SemVer on npm's ordinary `latest` tag. There is no `-fractal.N` version suffix and no `fractal` dist-tag. The source tree keeps upstream's `@earendil-works/*` names so upstream merges stay mechanical; `scripts/fractal-identity.mjs` applies the fork identity to the manifests in CI, immediately before publishing, and is the only place that transformation exists. Release tags are `fractaal-vX.Y.Z`, because upstream `v*` tags arrive through merges and share the same Git tag namespace.
+The source tree keeps upstream's @earendil-works/* names so upstream merges stay mechanical. scripts/fractal-identity.mjs applies the @fractaal/* identity only to the artifacts being published, pins their internal versions, and is the single packaging-boundary transformation. Release tags are fractaal-vX.Y.Z and npm uses the ordinary latest tag.
 
-**Upstream-only workflow jobs stay out.** Upstream's release workflow announces releases on pi.dev and uploads the model catalog to its R2 bucket with credentials the fork does not have. The fork removes `announce-pi-dev-release` from `build-binaries.yml` (with its `needs` and cleanup conditions, so `publish-github-release` still runs) and guards the `publish-model-catalog.yml` upload job and the `nix.yml` `pin` job (which gates `build`, `update-stable` and `commit-pin`) with `github.repository == 'earendil-works/pi'`. After merging upstream, check that `build-binaries.yml` has no job that needs `PI_ARTIFACTS_R2_*` secrets or parses the tag as a plain `vX.Y.Z`, and that `scripts/publish.mjs` still reads manifests with the fork's own helpers.
+Standalone binaries, Nix releases, GitHub Release assets, upstream model-catalog publication, and contributor-management workflows are not current fork products. Do not reintroduce them from upstream without a new scope decision.
 
-1. **Update CHANGELOGs**: review the changes since the previous release and update each affected package's `[Unreleased]` section as part of release preparation. No separate prompt or user-run changelog audit is required.
+### Normal autonomous release path
 
-2. **Local smoke test**: build an unpublished release and smoke test from outside the repo (so it can't resolve workspace files):
-   ```bash
-   npm run release:local -- --out /tmp/pi-local-release --force
-   cd /tmp
+When Ben explicitly asks to fix and publish:
 
-   # Node package install smoke tests
-   /tmp/pi-local-release/node/pi --help
-   /tmp/pi-local-release/node/pi --version
-   /tmp/pi-local-release/node/pi --list-models
-   /tmp/pi-local-release/node/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/node/pi
+1. Make the requested change in a task branch and run the relevant behavior-first checks.
+2. Run npm run release:patch or npm run release:minor as appropriate. This updates the lockstep workspace version, changelogs, committed model data checks, the full local checks, tests, and the packed npm consumer check.
+3. Push the task branch and open the pull request into protected main.
+4. Wait for required checks, merge the pull request with the normal repository merge policy, and fetch main.
+5. Run npm run release:tag -- fractaal-v<version>. This verifies the release commit is reachable from current origin/main and pushes the immutable tag.
+6. The tag workflow checks the tag, builds and tests the npm package family, applies the fork identity, verifies the live tag immediately before publication, and publishes through npm trusted publishing/OIDC.
+7. Verify the new npm version and restart or update local Pi when the task requires it.
 
-   # Bun binary smoke tests
-   /tmp/pi-local-release/bun/pi --help
-   /tmp/pi-local-release/bun/pi --version
-   /tmp/pi-local-release/bun/pi --list-models
-   /tmp/pi-local-release/bun/pi -p "Say exactly: ok"
-   /tmp/pi-local-release/bun/pi
-   ```
-   Before a version exists on npm, add `--skip-bun-install` and apply the fork identity first (`node scripts/fractal-identity.mjs <version>`), then restore the manifests afterwards. The published internal edges are npm aliases (`"@earendil-works/pi-ai": "npm:@fractaal/pi-ai@X"`); npm `overrides` redirect those to the local tarballs, but Bun resolves the alias from the registry regardless and cannot install an unpublished version. The Bun binary smoke at `bun/pi` is unaffected, because it is built from the workspace rather than from tarballs.
+This is one user-authorized operation even though protected-main and npm's deployment environment still enforce their boundaries. There is no manual Ben handoff between these steps.
 
-   Verify both Node and Bun startup, model/account listing, interactive startup, and at least one real prompt with the intended default provider. The bare commands `/tmp/pi-local-release/node/pi` and `/tmp/pi-local-release/bun/pi` start interactive mode; run each in tmux, submit a prompt, and wait for the model reply before considering the interactive smoke test passed. Failures are release blockers unless the user explicitly accepts the risk.
+### Local release smoke
 
-3. **Prepare the release on a branch**. `main` is protected: pull request required, strict `build-check-test`, force-push and deletion blocked, no bypass. There is no admin override and protection is never relaxed for a release, so the release is prepared on a branch and the tag is pushed afterwards.
-   ```bash
-   git checkout -b release/v<version> origin/main
-   PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:patch    # fixes + additions
-   PI_ALLOW_LOCKFILE_CHANGE=1 npm_config_min_release_age=0 npm run release:minor    # breaking changes
-   ```
-   Use `npm_config_min_release_age=0` only for the release command. The repo's normal npm age gate can otherwise block the release lockfile refresh when the current workspace package version was published recently. Review any lockfile or install-lock diffs the release creates before pushing the branch.
+The local rehearsal is intentionally limited to the product we ship:
 
-   The release script bumps all package versions, updates changelogs, regenerates release artifacts, runs `npm run check` and the tests, commits `Release fractaal-vX.Y.Z`, creates the tag locally, adds fresh `## [Unreleased]` changelog sections, and commits `Add [Unreleased] section for next cycle`. It pushes nothing, and it refuses to run on `main`.
+npm run release:local -- --out /tmp/pi-local-release --force
 
-4. **Merge the release branch as a normal pull request**, with `build-check-test` green. **Merge it with a merge commit.** Squash and rebase merges create a new commit, which leaves the tag pointing at a commit that is not on `main`; the tag step then refuses to publish, by design. Both the release commit and the next-cycle commit stay reachable on `main`.
+It must build and pack the eight publishable packages, install them into a clean directory outside the repository, start the npm-installed CLI, report the expected version, and run the intended offline/provider smoke checks. It does not build standalone binaries or Bun package installs.
 
-5. **Publish — only after Ben explicitly authorizes package publication.** Pushing the release tag starts publication:
-   ```bash
-   git checkout main && git pull
-   npm run release:tag -- fractaal-v<version>
-   ```
-   This is the irreversible step, so it proves everything first: the working tree is clean, `origin/main` is fetched fresh rather than read from a possibly stale local ref, the tag's commit carries the exact `Release fractaal-vX.Y.Z` subject and that version in every published manifest and is reachable from that fresh `origin/main`, and the remote tag is either absent or already exactly this commit. Rerunning after a successful push is a no-op. A remote tag pointing at a different commit is a hard stop: release tags are immutable, so publish a new version rather than moving one. Use `--dry-run` to verify without pushing.
+### Publication safety
 
-6. **CI publishes npm packages**: pushing the `fractaal-vX.Y.Z` tag triggers `.github/workflows/build-binaries.yml`. The tag is the only publishable source, and every release output comes from one commit. `build` checks out the tag and `scripts/verify-release-source.mjs` fails the run unless the checked-out commit is the tag target, is reachable from `main`, has the subject `Release fractaal-vX.Y.Z`, and carries that version in every published manifest; `build` then exports that commit. `publish-npm` checks out that exact SHA rather than the tag, and immediately before publishing re-runs the verifier with `--remote`, which asks origin whether the public tag still points at it and fails closed if it moved after checkout. A recovery run reruns the same tag; there is no source-ref override. The `publish-npm` job runs check and test against the ordinary source tree, then applies `scripts/fractal-identity.mjs` and publishes through npm trusted publishing over GitHub Actions OIDC with environment `npm-publish`; no local `npm publish`, `npm whoami`, OTP, WebAuthn, or `NPM_TOKEN` is required. Publishing four packages by hand is retired.
+The release workflow must:
 
-7. **If CI publish fails**: inspect the failed `publish-npm` job. The publish helper is idempotent and skips package versions already present on npm, so rerun the tag workflow after fixing CI or transient npm issues. Do not rerun `npm run release:patch` or `npm run release:minor` for the same version.
+- verify that the tag names a release commit reachable from main;
+- verify that every fork-published package carries the tag version;
+- run checks, tests, and the packed npm consumer smoke before publication;
+- apply the fork identity only after those checks;
+- verify the live remote tag immediately before the first publication side effect;
+- publish with npm trusted publishing/provenance rather than a stored npm token;
+- remain idempotent when a package version was already published.
+
+A failed publication is retried from the same immutable tag after the cause is fixed. Do not create a second version merely because a workflow failed after some packages were already published.
+
+main remains protected. The agent may automate the pull request and merge after required checks, but branch protection and the npm deployment environment are not weakened.
 
 ## Intentional Divergences from Upstream
+
 
 Upstream merges must preserve these behaviors. When an upstream test asserts the opposite, adapt that test to the fork contract instead of dropping the behavior. Revisit a divergence only when its reason no longer holds.
 

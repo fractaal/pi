@@ -5,10 +5,8 @@
 </p>
 <p align="center">
   <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-  <a href="https://www.npmjs.com/package/@earendil-works/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@earendil-works/pi-coding-agent?style=flat-square&logo=npm&logoColor=white" /></a>
+  <a href="https://www.npmjs.com/package/@fractaal/pi-coding-agent"><img alt="npm" src="https://img.shields.io/npm/v/@fractaal/pi-coding-agent?style=flat-square&logo=npm&logoColor=white" /></a>
 </p>
-
-> New issues and PRs from new contributors are closed automatically. Maintainers review closed submissions daily. See [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md).
 
 # Pi
 
@@ -22,27 +20,13 @@ Use Pi [interactively](docs/usage.md), automate it in [print or JSON mode](docs/
 
 ## Getting started
 
-Install the command-line interface:
+Install the command-line interface with npm:
 
 ```bash
-curl -fsSL https://pi.dev/install.sh | sh
+npm install -g --ignore-scripts @fractaal/pi-coding-agent
 ```
 
-On Windows:
-
-```shell
-powershell -c "irm https://pi.dev/install.ps1 | iex"
-```
-
-The installer pins all dependencies and updates Pi with `pi update`. Alternatively, install directly with npm, which does not pin transitive dependencies:
-
-```bash
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-```
-
-Pi requires Node.js 22.19 or newer. The macOS, Linux, and Windows installers can install it if needed. Pi does not require dependency lifecycle scripts for a normal npm installation.
-
-On macOS and Linux, Nix users can install the latest release with `nix profile add github:earendil-works/pi/stable`. See the [quickstart](docs/quickstart.md#1-install-pi) for updating and pinning releases.
+Pi requires Node.js 22.19 or newer. Pi does not require dependency lifecycle scripts for a normal npm installation.
 
 Start Pi in the directory where you want it to work:
 
@@ -70,10 +54,10 @@ To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi
 
 ## Development
 
-Clone the repository, install its dependencies, and run Pi from source:
+Clone the fork, install its dependencies, and run Pi from source:
 
 ```bash
-git clone https://github.com/earendil-works/pi
+git clone https://github.com/fractaal/pi
 cd pi
 npm install --ignore-scripts
 ./pi-test.sh
@@ -85,10 +69,10 @@ Before submitting changes, run:
 
 ```bash
 npm run check
-./test.sh
+npm run test:published
 ```
 
-Read [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md) before opening an issue or pull request. It defines the contribution gate, issue quality bar, and required checks. Read [AGENTS.md](https://github.com/earendil-works/pi/blob/main/AGENTS.md) for repository-specific implementation, testing, dependency, and release rules.
+Read [AGENTS.md](https://github.com/fractaal/pi/blob/main/AGENTS.md) for repository-specific implementation, testing, dependency, and release rules. This fork does not run upstream's contributor gate or issue-quality automation.
 
 ## License
 

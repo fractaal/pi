@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -291,144 +291,37 @@ test("CI and release build from the committed model catalog", async () => {
 	}
 });
 
-test("the source archive contains only the requested commit's bytes", async (t) => {
-	// Runs the shipped wrapper, not git. A previous version of this test drove
-	// `git archive` directly and asserted on the script's text, so a mutation that
-	// resolved the commit with `git stash create` kept every assertion green and
-	// still archived the dirty working tree.
-	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-	const root = await mkdtemp(join(tmpdir(), "source-archive-"));
-	t.after(() => rm(root, { force: true, recursive: true }));
-
-	const write = async (relativePath, contents) => {
-		await mkdir(dirname(join(root, relativePath)), { recursive: true });
-		await writeFile(join(root, relativePath), contents);
-	};
-
-	// The smallest tree the wrapper accepts: its required paths, a stub model-data
-	// validator, and the catalog file that carries the sentinel.
-	const seed = async (sentinel, version) => {
-		await write("package.json", `${JSON.stringify({ name: "pi-monorepo", version }, null, "\t")}\n`);
-		await write("package-lock.json", "{}\n");
-		await write("scripts/build-binaries.sh", "#!/usr/bin/env bash\n");
-		await write("packages/ai/src/models.generated.ts", "export const MODELS = {};\n");
-		for (const nativePath of [
-			"napi.h",
-			"clipboard.h",
-			"darwin/src/darwin-platform.m",
-			"darwin/prebuilds/darwin-arm64/darwin-platform.node",
-			"darwin/prebuilds/darwin-x64/darwin-platform.node",
-			"linux/build.sh",
-			"linux/src/linux-platform-x11.c",
-			"linux/prebuilds/linux-arm64/linux-platform-x11.node",
-			"linux/prebuilds/linux-x64/linux-platform-x11.node",
-			"win32/src/win32-platform.c",
-			"win32/prebuilds/win32-arm64/win32-platform.node",
-			"win32/prebuilds/win32-x64/win32-platform.node",
-		]) {
-			await write(`packages/tui/native/${nativePath}`, "\n");
-		}
-		await write("packages/ai/scripts/check-model-data.ts", 'console.log("Generated model data is valid.");\n');
-		await write("packages/coding-agent/package.json", `${JSON.stringify({ version }, null, "\t")}\n`);
-		await write("packages/coding-agent/src/utils/image-resize-worker.ts", "export {};\n");
-		await write("packages/coding-agent/src/core/export-html/template.css", "/* */\n");
-		await write("packages/ai/src/providers/data/.manifest.json", `{ "sentinel": "${sentinel}" }\n`);
-	};
-
-	await mkdir(join(root, "scripts"), { recursive: true });
-	await copyFile(join(repoRoot, "scripts/create-source-archive.sh"), join(root, "scripts/create-source-archive.sh"));
-	await chmod(join(root, "scripts/create-source-archive.sh"), 0o755);
-
-	git(root, "init", "-b", "main");
-	git(root, "config", "user.email", "release@example.test");
-	git(root, "config", "user.name", "Release Test");
-
-	// Three distinct states, so the archive can only match one of them.
-	await seed("REQUESTED_REF_SENTINEL", "0.84.0");
-	git(root, "add", "-A");
-	git(root, "commit", "-m", "Release fractaal-v0.84.0");
-	const requestedCommit = git(root, "rev-parse", "HEAD");
-
-	await seed("CURRENT_HEAD_SENTINEL", "0.84.0");
-	git(root, "add", "-A");
-	git(root, "commit", "-m", "Add [Unreleased] section for next cycle");
-
-	await write("packages/ai/src/providers/data/.manifest.json", '{ "sentinel": "DIRTY_WORKTREE_SENTINEL" }\n');
-
-	const out = join(root, "out", "pi-0.84.0-source.tar.gz");
-	const archive = spawnSync(
-		join(root, "scripts/create-source-archive.sh"),
-		["--version", "0.84.0", "--ref", requestedCommit, "--out", out],
-		{ cwd: root, encoding: "utf8" },
-	);
-	assert.equal(archive.status, 0, `${archive.stdout}\n${archive.stderr}`);
-	// The wrapper still validates the extracted catalog and normalizes the archive.
-	assert.match(archive.stdout, /Generated model data is valid\./);
-
-	const extracted = join(root, "extracted");
-	await mkdir(extracted, { recursive: true });
-	spawnSync("tar", ["-xzf", out, "-C", extracted], { encoding: "utf8" });
-	const archivedManifest = await readFile(
-		join(extracted, "pi-0.84.0/packages/ai/src/providers/data/.manifest.json"),
-		"utf8",
-	);
-
-	// Exclusions first, so a wrong commit resolution reports which state it archived
-	// rather than the generic "requested sentinel missing".
-	assert.ok(!archivedManifest.includes("DIRTY_WORKTREE_SENTINEL"), "archive leaked uncommitted working-tree bytes");
-	assert.ok(!archivedManifest.includes("CURRENT_HEAD_SENTINEL"), "archive used current HEAD, not the requested ref");
-	assert.match(archivedManifest, /REQUESTED_REF_SENTINEL/);
-
-	// Archiving must not clean or stage the working tree either.
-	assert.match(
-		await readFile(join(root, "packages/ai/src/providers/data/.manifest.json"), "utf8"),
-		/DIRTY_WORKTREE_SENTINEL/,
-	);
-	assert.match(git(root, "status", "--porcelain"), /^M packages\/ai\/src\/providers\/data\/\.manifest\.json$/m);
-});
-
-test("the release workflow pins publication to the verified build commit", async () => {
+test("the release workflow publishes only the verified npm package family", async () => {
 	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 	const workflow = parseYaml(await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8"));
-	const build = workflow.jobs.build;
 	const publish = workflow.jobs["publish-npm"];
-	const buildBinaries = build.steps.find((step) => step.name === "Build binaries from source archive");
-	const preparePayload = build.steps.find((step) => step.name === "Prepare GitHub release payload");
-	const binaryRun = String(buildBinaries?.run ?? "");
-	const payloadRun = String(preparePayload?.run ?? "");
-	const binaryBuildIndex = binaryRun.indexOf("build-binaries.sh");
-	const forkIdentityIndex = binaryRun.indexOf("--fork-identity");
-	const buildScript = await readFile(join(repoRoot, "scripts/build-binaries.sh"), "utf8");
-	const sidecarTransformIndex = buildScript.indexOf("fractal-identity.mjs");
-	const archiveCreationIndex = buildScript.indexOf("# Create archives");
-	assert.ok(binaryBuildIndex !== -1, "release binaries must be built from the source archive");
-	assert.ok(forkIdentityIndex > binaryBuildIndex, "CI must pass fork identity into the binary build");
-	assert.ok(sidecarTransformIndex !== -1 && sidecarTransformIndex < archiveCreationIndex, "binary sidecars must be transformed before archives");
-	assert.doesNotMatch(binaryRun, /fractal-identity\.mjs --manifest/, "CI must not transform extracted archives after compression");
-	assert.match(payloadRun, /generate-coding-agent-install-lock\.mjs[\s\\]+--fork-identity/);
-	assert.match(payloadRun, /--out-dir/);
-	assert.doesNotMatch(payloadRun, /generate-coding-agent-install-lock\.mjs --check/);
 
-	// build must publish the commit it verified, not just the version.
-	assert.match(build.outputs.commit, /steps\.release\.outputs\.commit/);
-
-	// publish-npm must consume it, and must not re-resolve the mutable tag name.
-	assert.ok(publish.needs.includes("build"), "publish-npm must depend on build");
-	assert.ok(publish.needs.includes("stage-github-release"), "publish-npm must keep the release lifecycle order");
-	assert.match(publish.env.RELEASE_COMMIT, /needs\.build\.outputs\.commit/);
+	assert.deepEqual(Object.keys(workflow.jobs), ["publish-npm"], "the fork release workflow must not run binary or GitHub-release jobs");
+	assert.equal(publish.environment, "npm-publish");
+	assert.equal(publish.needs, undefined, "the single publication job owns its verification path");
+	assert.equal(publish.permissions["id-token"], "write", "npm publication must use trusted publishing");
 
 	const checkout = publish.steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout"));
-	assert.equal(checkout.with.ref, "${{ env.RELEASE_COMMIT }}");
-
-	// ...and must still re-verify the tag against that pinned checkout.
+	assert.equal(checkout.with.ref, "${{ env.RELEASE_TAG }}");
 	assert.ok(
 		publish.steps.some((step) => String(step.run ?? "").includes("verify-release-source.mjs")),
-		"publish-npm must re-run the release source verifier",
+		"publication must verify the release source",
 	);
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("npm run build:offline")));
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("npm run check")));
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("test:published")));
+	assert.ok(
+		publish.steps.some((step) => String(step.run ?? "").includes("release:local")),
+		"publication must smoke-test the packages under their published fork identity",
+	);
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("fractal-identity.mjs")));
 
 	// The live remote check must be the last thing before the first publish side effect.
 	const stepIndex = publish.steps.findIndex((step) => String(step.run ?? "").includes("--remote"));
 	const publishIndex = publish.steps.findIndex((step) => String(step.run ?? "").includes("publish.mjs"));
-	assert.ok(stepIndex !== -1, "publish-npm must verify the live remote tag");
+	assert.ok(stepIndex !== -1, "publication must verify the live remote tag");
 	assert.equal(stepIndex, publishIndex - 1, "the remote tag check must run immediately before publication");
+
+	const workflowText = await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8");
+	assert.doesNotMatch(workflowText, /build-binaries\.sh|setup-bun|gh release|upload-artifact/);
 });
