@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -12,21 +12,19 @@ import { PUBLISHABLE_PACKAGES } from "./fractal-identity.mjs";
 // on the plain source tree and after scripts/fractal-identity.mjs has applied the published fork identity.
 const packages = PUBLISHABLE_PACKAGES;
 
-
 function printUsage() {
 	console.log(`Usage: node scripts/local-release.mjs [options]
 
 Builds and packs the publishable packages, then installs the tarballs into an
-isolated directory outside the repository for local release testing.
+isolated npm directory outside the repository for local release testing.
 
 Options:
   --out <dir>          Output directory. Defaults to a new directory under ${tmpdir()}
   --force              Remove --out first if it already exists
   --skip-check         Do not run npm run check before building
   --skip-test          Do not run ./test.sh before building
-  --skip-install       Only create tarballs; do not create isolated installs
-  --skip-bun-install   Do not create the isolated Bun install
-  --help               Show this help
+  --skip-install       Only create tarballs; do not create an isolated npm install
+  --help               Show help
 `);
 }
 
@@ -34,7 +32,6 @@ function parseArgs() {
 	const options = {
 		force: false,
 		outDir: undefined,
-		skipBunInstall: false,
 		skipCheck: false,
 		skipInstall: false,
 		skipTest: false,
@@ -55,23 +52,17 @@ function parseArgs() {
 			options.skipCheck = true;
 			continue;
 		}
-		if (arg === "--skip-test") {
-			options.skipTest = true;
-			continue;
-		}
 		if (arg === "--skip-install") {
 			options.skipInstall = true;
 			continue;
 		}
-		if (arg === "--skip-bun-install") {
-			options.skipBunInstall = true;
+		if (arg === "--skip-test") {
+			options.skipTest = true;
 			continue;
 		}
 		if (arg === "--out") {
 			const value = args[++i];
-			if (!value) {
-				throw new Error("--out requires a directory");
-			}
+			if (!value) throw new Error("--out requires a directory");
 			options.outDir = value;
 			continue;
 		}
@@ -90,19 +81,12 @@ function run(command, args, options = {}) {
 		stdio: options.capture ? ["inherit", "pipe", "inherit"] : "inherit",
 	});
 
-	if (result.status !== 0) {
-		throw new Error(`Command failed: ${[command, ...args].join(" ")}`);
-	}
-
+	if (result.status !== 0) throw new Error(`Command failed: ${[command, ...args].join(" ")}`);
 	return result.stdout ?? "";
 }
 
 function readPackageJson(directory) {
 	return JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
-}
-
-function commandExists(command) {
-	return spawnSync(command, ["--version"], { stdio: "ignore" }).status === 0;
 }
 
 function isInsidePath(child, parent) {
@@ -111,57 +95,16 @@ function isInsidePath(child, parent) {
 }
 
 function prepareOutputDirectory(options, repoRoot) {
-	if (!options.outDir) {
-		return mkdtempSync(join(tmpdir(), "pi-local-release-"));
-	}
+	if (!options.outDir) return mkdtempSync(join(tmpdir(), "pi-local-release-"));
 
 	const outDir = resolve(options.outDir);
-
-	if (isInsidePath(outDir, repoRoot)) {
-		throw new Error(`Output directory must be outside the repository: ${outDir}`);
-	}
-
+	if (isInsidePath(outDir, repoRoot)) throw new Error(`Output directory must be outside the repository: ${outDir}`);
 	if (existsSync(outDir)) {
-		if (!options.force) {
-			throw new Error(`Output directory already exists. Use --force to replace it: ${outDir}`);
-		}
+		if (!options.force) throw new Error(`Output directory already exists. Use --force to replace it: ${outDir}`);
 		rmSync(outDir, { force: true, recursive: true });
 	}
-
 	mkdirSync(outDir, { recursive: true });
 	return outDir;
-}
-
-function currentBinaryPlatform() {
-	if (process.platform === "win32") return process.arch === "arm64" ? "windows-arm64" : "windows-x64";
-	if (process.platform === "darwin") return process.arch === "arm64" ? "darwin-arm64" : "darwin-x64";
-	if (process.platform === "linux") return process.arch === "arm64" ? "linux-arm64" : "linux-x64";
-	throw new Error(`Unsupported binary platform: ${process.platform} ${process.arch}`);
-}
-
-function buildBunBinaryRelease(targetDirectory, archiveDirectory) {
-	if (!commandExists("bun")) {
-		throw new Error("Bun is required for the local binary release build.");
-	}
-	const platform = currentBinaryPlatform();
-	const binaryBuildDirectory = join(archiveDirectory, "binary-build");
-	run("./scripts/build-binaries.sh", [
-		"--skip-install",
-		"--skip-build",
-		// Same model-data preparation the release workflow uses. Without this the
-		// local smoke refreshes the committed catalog from live provider APIs and
-		// silently diverges from the commit it is supposed to be rehearsing.
-		"--offline-model-data",
-		"--platform",
-		platform,
-		"--out",
-		binaryBuildDirectory,
-	]);
-	rmSync(targetDirectory, { force: true, recursive: true });
-	cpSync(join(binaryBuildDirectory, platform), targetDirectory, { recursive: true });
-	const archiveName = platform.startsWith("windows-") ? `pi-${platform}.zip` : `pi-${platform}.tar.gz`;
-	cpSync(join(binaryBuildDirectory, archiveName), join(archiveDirectory, archiveName));
-	return platform;
 }
 
 function createPiShim(installDirectory) {
@@ -179,11 +122,7 @@ function createPiShim(installDirectory) {
 	symlinkSync(join("node_modules", ".bin", "pi"), join(installDirectory, "pi"));
 }
 
-/**
- * The published version is the exact package version. A build signature is internal
- * routing state and must never reach a product-visible version string, so assert it
- * against the real artifacts rather than trusting the constant it is derived from.
- */
+/** Verify the npm package's CLI reports its package version. */
 function assertReportedVersion(label, executable, expectedVersion) {
 	const reported = run(executable, ["--version"], { capture: true }).trim();
 	if (reported !== expectedVersion) {
@@ -195,93 +134,47 @@ function assertReportedVersion(label, executable, expectedVersion) {
 const options = parseArgs();
 const repoRoot = process.cwd();
 const rootPackageJson = readPackageJson(repoRoot);
-
-if (rootPackageJson.name !== "pi-monorepo") {
-	throw new Error("Run this script from the repository root");
-}
+if (rootPackageJson.name !== "pi-monorepo") throw new Error("Run this script from the repository root");
 
 const outDir = prepareOutputDirectory(options, repoRoot);
 const tarballDirectory = join(outDir, "tarballs");
 const nodeInstallDirectory = join(outDir, "node");
-const bunInstallDirectory = join(outDir, "bun-install");
-const binaryDirectory = join(outDir, "bun");
 mkdirSync(tarballDirectory, { recursive: true });
 
-if (!options.skipCheck) {
-	run("npm", ["run", "check"], { cwd: repoRoot });
-}
+if (!options.skipCheck) run("npm", ["run", "check"], { cwd: repoRoot });
 
 for (const pkg of packages) {
 	run("npm", ["run", "clean"], { cwd: pkg.directory });
 	run("npm", ["run", pkg.directory === "packages/ai" ? "build:offline" : "build"], { cwd: pkg.directory });
 }
 
-if (!options.skipTest) {
-	run("./test.sh", [], { cwd: repoRoot });
-}
+if (!options.skipTest) run("./test.sh", [], { cwd: repoRoot });
 
 const tarballs = packReleasePackages(packages, tarballDirectory);
-// Internal dependency edges keep the upstream key and alias it to the fork package once the identity is applied.
 const upstreamNames = new Map(packages.map((pkg) => [pkg.name, pkg.upstreamName]));
 for (const pkg of packages) upstreamNames.set(readPackageJson(pkg.directory).name, pkg.upstreamName);
 
-let binaryPlatform;
 if (!options.skipInstall) {
-	binaryPlatform = buildBunBinaryRelease(binaryDirectory, outDir);
-
 	installCodingAgentConsumer(nodeInstallDirectory, tarballs, "npm", upstreamNames);
 	smokeTestCodingAgentConsumer(nodeInstallDirectory);
 	createPiShim(nodeInstallDirectory);
 
-	if (!options.skipBunInstall) {
-		if (!commandExists("bun")) {
-			throw new Error("Bun is required for the isolated Bun install. Use --skip-bun-install to skip it.");
-		}
-		installCodingAgentConsumer(bunInstallDirectory, tarballs, "bun", upstreamNames);
-		smokeTestCodingAgentConsumer(bunInstallDirectory, "bun");
-		createPiShim(bunInstallDirectory);
-	}
-
 	const releaseVersion = readPackageJson("packages/coding-agent").version;
-	console.log("\nVerifying reported versions:");
-	assertReportedVersion("node install", join(nodeInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi"), releaseVersion);
 	assertReportedVersion(
-		"bun binary",
-		join(binaryDirectory, String(binaryPlatform).startsWith("windows-") ? "pi.exe" : "pi"),
+		"npm install",
+		join(nodeInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi"),
 		releaseVersion,
 	);
-	if (!options.skipBunInstall) {
-		assertReportedVersion(
-			"bun install",
-			join(bunInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi"),
-			releaseVersion,
-		);
-	}
 }
 
-console.log("\nLocal release artifacts created:");
+console.log("\nLocal npm release artifacts created:");
 console.log(`  ${outDir}`);
 console.log("\nTarballs:");
-for (const tarball of tarballs.values()) {
-	console.log(`  ${tarball}`);
-}
+for (const tarball of tarballs.values()) console.log(`  ${tarball}`);
 
 if (!options.skipInstall) {
-	console.log("\nLocal Bun binary release:");
-	console.log(`  ${binaryDirectory}`);
-	console.log(`  ${join(outDir, `pi-${binaryPlatform}.${String(binaryPlatform).startsWith("windows-") ? "zip" : "tar.gz"}`)}`);
-	console.log("\nRun the local Bun binary release from outside the repository:");
-	console.log(`  ${join(binaryDirectory, String(binaryPlatform).startsWith("windows-") ? "pi.exe" : "pi")} --help`);
-
 	console.log("\nIsolated npm install:");
 	console.log(`  ${nodeInstallDirectory}`);
 	console.log("\nRun the locally packed npm CLI from outside the repository:");
 	console.log(`  ${join(nodeInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi")} --help`);
-
-	if (!options.skipBunInstall) {
-		console.log("\nIsolated Bun package install:");
-		console.log(`  ${bunInstallDirectory}`);
-		console.log("\nRun the locally packed Bun package CLI from outside the repository:");
-		console.log(`  ${join(bunInstallDirectory, process.platform === "win32" ? "pi.cmd" : "pi")} --help`);
-	}
 }
