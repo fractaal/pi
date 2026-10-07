@@ -82,7 +82,7 @@ Do not delete their source or tests as part of this cleanup. Revisit publication
 
 ## Changed files
 
-The implementation is seven local commits ahead of `origin/main` in the isolated worktree. Runtime source under `packages/*/src` was not changed.
+The implementation is recorded in task-scoped local commits ahead of `origin/main` in the isolated worktree. Runtime source under `packages/*/src` was not changed.
 
 Primary changes:
 
