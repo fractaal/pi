@@ -54,10 +54,10 @@ To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi
 
 ## Development
 
-Clone the repository, install its dependencies, and run Pi from source:
+Clone the fork, install its dependencies, and run Pi from source:
 
 ```bash
-git clone https://github.com/earendil-works/pi
+git clone https://github.com/fractaal/pi
 cd pi
 npm install --ignore-scripts
 ./pi-test.sh
@@ -69,10 +69,10 @@ Before submitting changes, run:
 
 ```bash
 npm run check
-./test.sh
+npm run test:published
 ```
 
-Read [CONTRIBUTING.md](https://github.com/earendil-works/pi/blob/main/CONTRIBUTING.md) before opening an issue or pull request. It defines the contribution gate, issue quality bar, and required checks. Read [AGENTS.md](https://github.com/earendil-works/pi/blob/main/AGENTS.md) for repository-specific implementation, testing, dependency, and release rules.
+Read [AGENTS.md](https://github.com/fractaal/pi/blob/main/AGENTS.md) for repository-specific implementation, testing, dependency, and release rules. This fork does not run upstream's contributor gate or issue-quality automation.
 
 ## License
 
