@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.86.3] - 2026-10-07
+
+### Fixed
+
+- Confirmation dialogs with a comment field (Goal proposals and revisions) can be declined again. The decision row starts focused, left and right arrows select Accept and Decline in their drawn order, up or Tab moves into the comment, and Enter in the comment returns to the choices instead of accepting.
+
 ## [0.86.2] - 2026-10-07
 
 ### Fixed

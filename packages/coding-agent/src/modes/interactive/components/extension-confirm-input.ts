@@ -5,6 +5,7 @@ import {
 	Input,
 	Markdown,
 	type MarkdownTheme,
+	matchesKey,
 	Spacer,
 	Text,
 	type TUI,
@@ -13,7 +14,7 @@ import type { ExtensionUIConfirmWithInputResult } from "../../../core/extensions
 import { theme } from "../theme/theme.ts";
 import { CountdownTimer } from "./countdown-timer.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.ts";
+import { keyHint, rawKeyHint } from "./keybinding-hints.ts";
 
 export interface ExtensionConfirmInputOptions {
 	tui?: TUI;
@@ -35,9 +36,11 @@ export class ExtensionConfirmInputComponent extends Container implements Focusab
 	private readonly titleText: Text;
 	private readonly baseTitle: string;
 	private readonly choiceText: Text;
+	private readonly hintText: Text;
 	private countdown: CountdownTimer | undefined;
 	private _focused = false;
-	private inputFocused = true;
+	// The decision is the primary action; the comment is optional, so the choices start focused.
+	private inputFocused = false;
 	private confirmed = true;
 
 	get focused(): boolean {
@@ -84,13 +87,8 @@ export class ExtensionConfirmInputComponent extends Container implements Focusab
 		this.choiceText = new Text("", 1, 0);
 		this.addChild(this.choiceText);
 		this.addChild(new Spacer(1));
-		this.addChild(
-			new Text(
-				`${keyHint("tui.input.submit", "submit")}  tab switch field  ${keyHint("tui.select.cancel", "cancel")}`,
-				1,
-				0,
-			),
-		);
+		this.hintText = new Text("", 1, 0);
+		this.addChild(this.hintText);
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.updateChoiceText();
@@ -111,24 +109,33 @@ export class ExtensionConfirmInputComponent extends Container implements Focusab
 			this.onCancelCallback();
 			return;
 		}
-		if (keyData === "\t") {
-			this.inputFocused = !this.inputFocused;
-			this.input.focused = this._focused && this.inputFocused;
-			this.updateChoiceText();
-			return;
-		}
+		const enter = kb.matches(keyData, "tui.select.confirm") || keyData === "\n";
 		if (this.inputFocused) {
-			if (kb.matches(keyData, "tui.input.submit") || keyData === "\n") {
-				this.submit();
+			// Enter leaves the comment rather than submitting, so typing a reservation never accepts by accident.
+			if (enter || kb.matches(keyData, "tui.input.tab") || kb.matches(keyData, "tui.select.down")) {
+				this.setInputFocused(false);
 				return;
 			}
 			this.input.handleInput(keyData);
 			return;
 		}
-		if (keyData === "\u001b[D" || keyData === "\u001b[A" || keyData === "h" || keyData === "k")
-			this.confirmed = false;
-		if (keyData === "\u001b[C" || keyData === "\u001b[B" || keyData === "l" || keyData === "j") this.confirmed = true;
-		if (kb.matches(keyData, "tui.input.submit") || keyData === "\n") this.submit();
+		if (enter) {
+			this.submit();
+			return;
+		}
+		if (kb.matches(keyData, "tui.input.tab") || kb.matches(keyData, "tui.select.up")) {
+			this.setInputFocused(true);
+			return;
+		}
+		// Accept is drawn first, so left selects it and right selects Decline.
+		if (matchesKey(keyData, "left")) this.confirmed = true;
+		else if (matchesKey(keyData, "right")) this.confirmed = false;
+		this.updateChoiceText();
+	}
+
+	private setInputFocused(inputFocused: boolean): void {
+		this.inputFocused = inputFocused;
+		this.input.focused = this._focused && inputFocused;
 		this.updateChoiceText();
 	}
 
@@ -138,10 +145,16 @@ export class ExtensionConfirmInputComponent extends Container implements Focusab
 	}
 
 	private updateChoiceText(): void {
-		const accept = this.confirmed ? theme.fg("accent", "→ Accept") : `  ${theme.fg("text", "Accept")}`;
-		const decline = this.confirmed ? `  ${theme.fg("text", "Decline")}` : theme.fg("accent", "→ Decline");
-		const field = this.inputFocused ? theme.fg("accent", "input") : theme.fg("muted", "choices");
-		this.choiceText.setText(`${accept}    ${decline}    ${theme.fg("muted", `[${field}]`)}`);
+		const option = (label: string, selected: boolean) => {
+			if (!selected) return `  ${theme.fg(this.inputFocused ? "muted" : "text", label)}`;
+			return this.inputFocused ? theme.fg("muted", `→ ${label}`) : theme.fg("accent", theme.bold(`→ ${label}`));
+		};
+		this.choiceText.setText(`${option("Accept", this.confirmed)}    ${option("Decline", !this.confirmed)}`);
+		this.hintText.setText(
+			this.inputFocused
+				? `${keyHint("tui.select.confirm", "done")}  ${keyHint("tui.select.cancel", "cancel")}`
+				: `${rawKeyHint("←→", "choose")}  ${rawKeyHint("↑", "comment")}  ${keyHint("tui.select.confirm", "submit")}  ${keyHint("tui.select.cancel", "cancel")}`,
+		);
 	}
 
 	dispose(): void {
