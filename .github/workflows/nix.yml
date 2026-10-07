@@ -46,7 +46,9 @@ concurrency:
 
 jobs:
   pin:
-    if: ${{ github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main') }}
+    # Upstream-only: the pin tracks the pi.dev catalog and update-stable moves upstream's stable branch. Every
+    # other job needs pin, so gating it keeps the whole workflow from running in the fork.
+    if: ${{ github.repository == 'earendil-works/pi' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
