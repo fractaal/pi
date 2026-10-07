@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.86.2] - 2026-10-07
+
+### Fixed
+
+- Tool argument validation errors now explain the mistake. When a union's variants are told apart by a constant property such as `operation`, only the variant the arguments selected is reported, or the allowed values when none matches. Unexpected and missing properties are named, an invalid value inside a map is reported at that value instead of as a disallowed key, and errors are no longer cut off at TypeBox's default limit of eight.
+
 ## [0.86.1] - 2026-10-06
 
 ## [0.86.0] - 2026-10-06
