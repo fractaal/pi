@@ -387,48 +387,34 @@ test("the source archive contains only the requested commit's bytes", async (t) 
 	assert.match(git(root, "status", "--porcelain"), /^M packages\/ai\/src\/providers\/data\/\.manifest\.json$/m);
 });
 
-test("the release workflow pins publication to the verified build commit", async () => {
+test("the release workflow publishes only the verified npm package family", async () => {
 	const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 	const workflow = parseYaml(await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8"));
-	const build = workflow.jobs.build;
 	const publish = workflow.jobs["publish-npm"];
-	const buildBinaries = build.steps.find((step) => step.name === "Build binaries from source archive");
-	const preparePayload = build.steps.find((step) => step.name === "Prepare GitHub release payload");
-	const binaryRun = String(buildBinaries?.run ?? "");
-	const payloadRun = String(preparePayload?.run ?? "");
-	const binaryBuildIndex = binaryRun.indexOf("build-binaries.sh");
-	const forkIdentityIndex = binaryRun.indexOf("--fork-identity");
-	const buildScript = await readFile(join(repoRoot, "scripts/build-binaries.sh"), "utf8");
-	const sidecarTransformIndex = buildScript.indexOf("fractal-identity.mjs");
-	const archiveCreationIndex = buildScript.indexOf("# Create archives");
-	assert.ok(binaryBuildIndex !== -1, "release binaries must be built from the source archive");
-	assert.ok(forkIdentityIndex > binaryBuildIndex, "CI must pass fork identity into the binary build");
-	assert.ok(sidecarTransformIndex !== -1 && sidecarTransformIndex < archiveCreationIndex, "binary sidecars must be transformed before archives");
-	assert.doesNotMatch(binaryRun, /fractal-identity\.mjs --manifest/, "CI must not transform extracted archives after compression");
-	assert.match(payloadRun, /generate-coding-agent-install-lock\.mjs[\s\\]+--fork-identity/);
-	assert.match(payloadRun, /--out-dir/);
-	assert.doesNotMatch(payloadRun, /generate-coding-agent-install-lock\.mjs --check/);
 
-	// build must publish the commit it verified, not just the version.
-	assert.match(build.outputs.commit, /steps\.release\.outputs\.commit/);
-
-	// publish-npm must consume it, and must not re-resolve the mutable tag name.
-	assert.ok(publish.needs.includes("build"), "publish-npm must depend on build");
-	assert.ok(publish.needs.includes("stage-github-release"), "publish-npm must keep the release lifecycle order");
-	assert.match(publish.env.RELEASE_COMMIT, /needs\.build\.outputs\.commit/);
+	assert.deepEqual(Object.keys(workflow.jobs), ["publish-npm"], "the fork release workflow must not run binary or GitHub-release jobs");
+	assert.equal(publish.environment, "npm-publish");
+	assert.equal(publish.needs, undefined, "the single publication job owns its verification path");
+	assert.equal(publish.permissions["id-token"], "write", "npm publication must use trusted publishing");
 
 	const checkout = publish.steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout"));
-	assert.equal(checkout.with.ref, "${{ env.RELEASE_COMMIT }}");
-
-	// ...and must still re-verify the tag against that pinned checkout.
+	assert.equal(checkout.with.ref, "${{ env.RELEASE_TAG }}");
 	assert.ok(
 		publish.steps.some((step) => String(step.run ?? "").includes("verify-release-source.mjs")),
-		"publish-npm must re-run the release source verifier",
+		"publication must verify the release source",
 	);
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("npm run build:offline")));
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("npm run check")));
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("npm test")));
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("check:package-install")));
+	assert.ok(publish.steps.some((step) => String(step.run ?? "").includes("fractal-identity.mjs")));
 
 	// The live remote check must be the last thing before the first publish side effect.
 	const stepIndex = publish.steps.findIndex((step) => String(step.run ?? "").includes("--remote"));
 	const publishIndex = publish.steps.findIndex((step) => String(step.run ?? "").includes("publish.mjs"));
-	assert.ok(stepIndex !== -1, "publish-npm must verify the live remote tag");
+	assert.ok(stepIndex !== -1, "publication must verify the live remote tag");
 	assert.equal(stepIndex, publishIndex - 1, "the remote tag check must run immediately before publication");
+
+	const workflowText = await readFile(join(repoRoot, ".github/workflows/build-binaries.yml"), "utf8");
+	assert.doesNotMatch(workflowText, /build-binaries\.sh|setup-bun|gh release|upload-artifact/);
 });
