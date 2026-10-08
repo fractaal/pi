@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.86.5] - 2026-10-08
+
+### Added
+
+- `supportsAddedToolsField` OpenAI Completions compat for servers that render mid-conversation tool additions where they happen, such as the fork's patched llama.cpp server. A tool loaded by `tool_search` is listed as `added_tools` on the user or tool message the model reads before it can call the tool, instead of only joining the tool list at the head of the prompt, so loading it no longer invalidates a local server's prompt cache.
+
 ## [0.86.4] - 2026-10-08
 
 ## [0.86.3] - 2026-10-07
