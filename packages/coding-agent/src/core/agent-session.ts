@@ -566,6 +566,7 @@ export class AgentSession {
 		this._installAgentBoundaryHooks();
 		this._installHiddenDeclarationsProjection();
 		this._installAgentForcedPromptProjection();
+		this._installContextWithSystemHandlers();
 
 		this._buildRuntime({
 			activeToolNames: this._initialActiveToolNames,
@@ -2099,6 +2100,20 @@ export class AgentSession {
 				timestamp: current?.timestamp ?? Date.now(),
 			};
 			return [head, ...transformed.filter((message) => message.role !== "system")];
+		};
+	}
+
+	/**
+	 * Run `context_with_system` handlers last, on the transcript as the request sends it: after
+	 * the `context` handlers and the hidden-declaration and forced-prompt projections. Their
+	 * output is the request, so nothing may transform it afterwards.
+	 */
+	private _installContextWithSystemHandlers(): void {
+		const previousTransformContext = this.agent.transformContext;
+		this.agent.transformContext = async (messages, signal) => {
+			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
+			if (!this._extensionRunner.hasHandlers("context_with_system")) return transformed;
+			return this._extensionRunner.emitContextWithSystem(transformed);
 		};
 	}
 

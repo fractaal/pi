@@ -199,6 +199,36 @@ describe("context_with_system handlers", () => {
 		expect(toolNames(getRequest())).toEqual(harness.session.getActiveToolNames().filter((name) => name !== "bash"));
 	});
 
+	it("sees a prompt forced for the run and sends its own edits to it", async () => {
+		const seen: string[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.on("before_agent_start", async (event) => ({
+						systemPrompt: `${event.systemPrompt}\n\nForced for this run.`,
+					}));
+					pi.on("context_with_system", async (event) => {
+						seen.push(getCurrentSystemPrompt(event.messages));
+						return {
+							messages: event.messages.map((message, index) =>
+								index === 0 && message.role === "system"
+									? { ...message, content: `${getCurrentSystemPrompt([message])}\n\nAdded by handler.` }
+									: message,
+							),
+						};
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		const getRequest = captureRequest(harness, "done");
+
+		await harness.session.prompt("hello");
+
+		expect(seen.at(-1)).toMatch(/Forced for this run\.$/);
+		expect(getCurrentSystemPrompt(getRequest().messages)).toMatch(/Forced for this run\.\n\nAdded by handler\.$/);
+	});
+
 	it("reports a handler that drops the leading system message but honors its output", async () => {
 		const harness = await createHarness({
 			extensionFactories: [

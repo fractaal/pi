@@ -915,9 +915,11 @@ export interface ContextEvent {
 }
 
 /**
- * Fired before each LLM call, after every `context` handler has run and Pi has restored
- * the prompt and tool state. `messages` is the full transcript including system messages,
- * and the result is sent as returned: the handler owns the prompt and tool declarations.
+ * Fired before each LLM call, after every `context` handler has run and Pi has applied its
+ * own request projections: a prompt forced for the run by `before_agent_start`, and tool
+ * declarations hidden by `prepareLoadout`. `messages` is the full transcript as the request
+ * sends it, including system messages, and the result is sent as returned: the handler owns
+ * the prompt and tool declarations.
  */
 export interface ContextWithSystemEvent {
 	type: "context_with_system";
