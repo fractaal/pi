@@ -2057,9 +2057,12 @@ export class AgentSession {
 	 * A `before_agent_start` handler that returns `systemPrompt` needs that exact text at the
 	 * head of the request; a mid-conversation system message would leave the original prompt
 	 * in place. The forced text is a rendering of the current prompt, so the transcript keeps
-	 * its structured sections and the request is projected instead: the system messages
-	 * collapse into one head holding the forced text and the current tools. Runs after the
-	 * `context` extension handlers.
+	 * its structured sections and the request is projected instead: the head carries the forced
+	 * text and the initial tools, and later system messages keep only their tool changes, since the
+	 * forced text already renders their prompt updates. Keeping the tool changes in place lets
+	 * providers anchor tools loaded mid-conversation (tool_search) where they were loaded instead
+	 * of redeclaring the whole tool list at the head, which would invalidate the prompt cache.
+	 * Runs after the `context` extension handlers.
 	 */
 	/**
 	 * Remove the declarations that `prepareLoadout` hooks hide from every request. The whole
@@ -2092,14 +2095,27 @@ export class AgentSession {
 			const transformed = previousTransformContext ? await previousTransformContext(messages, signal) : messages;
 			const forced = this._runSystemPromptOptions?.forceSystemPrompt;
 			if (forced === undefined) return transformed;
-			const current = getCurrentSystemMessage(transformed);
+			const first = transformed[0]?.role === "system" ? transformed[0] : undefined;
 			const head: SystemMessage = {
 				role: "system",
 				content: forced,
-				...(current?.toolsAdded ? { toolsAdded: current.toolsAdded } : {}),
-				timestamp: current?.timestamp ?? Date.now(),
+				...(first?.toolsAdded ? { toolsAdded: first.toolsAdded } : {}),
+				timestamp: first?.timestamp ?? Date.now(),
 			};
-			return [head, ...transformed.filter((message) => message.role !== "system")];
+			const rest = transformed.slice(first ? 1 : 0).flatMap((message): AgentMessage[] => {
+				if (message.role !== "system") return [message];
+				if (!message.toolsAdded?.length && !message.toolsRemoved?.length) return [];
+				return [
+					{
+						role: "system",
+						content: "",
+						...(message.toolsAdded?.length ? { toolsAdded: message.toolsAdded } : {}),
+						...(message.toolsRemoved?.length ? { toolsRemoved: message.toolsRemoved } : {}),
+						timestamp: message.timestamp,
+					},
+				];
+			});
+			return [head, ...rest];
 		};
 	}
 

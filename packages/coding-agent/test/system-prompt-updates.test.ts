@@ -167,6 +167,92 @@ describe("system prompt updates", () => {
 		}
 	});
 
+	test("a forced prompt keeps a tool loaded mid-conversation anchored where it was loaded", async () => {
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerTool({
+				name: "loader",
+				label: "loader",
+				description: "Loads the late tool.",
+				parameters: Type.Object({}),
+				execute: async () => {
+					pi.setActiveTools([...pi.getActiveTools(), "late"]);
+					return { content: [{ type: "text", text: "Loaded late" }], details: {} };
+				},
+			});
+			pi.registerTool({
+				name: "late",
+				label: "late",
+				description: "Available once loaded.",
+				exposure: "deferred",
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "late result" }], details: {} }),
+			});
+			// Like a memory extension: append to the prompt on every turn.
+			pi.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt}\n\nMemory block.` }));
+		};
+		const harness = await createHarness({
+			extensionFactories: [extension],
+			initialActiveToolNames: ["read", "loader"],
+		});
+		try {
+			// Snapshot each request: the faux provider receives live transcript objects.
+			const requests: TranscriptContext[] = [];
+			const capture = (providerContext: TranscriptContext) =>
+				requests.push(JSON.parse(JSON.stringify(providerContext)) as TranscriptContext);
+			harness.setResponses([
+				(providerContext) => {
+					capture(providerContext);
+					return fauxAssistantMessage([fauxToolCall("loader", {})], { stopReason: "toolUse" });
+				},
+				(providerContext) => {
+					capture(providerContext);
+					return fauxAssistantMessage([fauxToolCall("late", {})], { stopReason: "toolUse" });
+				},
+				(providerContext) => {
+					capture(providerContext);
+					return fauxAssistantMessage("done");
+				},
+			]);
+			await harness.session.prompt("load a tool and use it");
+			expect(requests).toHaveLength(3);
+
+			const head = requests[0]?.messages[0];
+			if (head?.role !== "system") throw new Error("expected a leading system message");
+			expect(head.content).toContain("Memory block.");
+			const initialTools = head.toolsAdded?.map((tool) => tool.name);
+			expect(initialTools).not.toContain("late");
+
+			// After the load, the head is unchanged and the addition follows the result that caused it.
+			const afterLoad = requests[1]!.messages;
+			expect(afterLoad[0]).toEqual(head);
+			expect(afterLoad.map((message) => message.role)).toEqual([
+				"system",
+				"user",
+				"assistant",
+				"toolResult",
+				"system",
+			]);
+			expect(afterLoad[4]).toEqual({
+				role: "system",
+				content: "",
+				toolsAdded: [expect.objectContaining({ name: "late" })],
+				timestamp: expect.any(Number),
+			});
+			expect(getCurrentSystemMessage(afterLoad)?.toolsAdded?.map((tool) => tool.name)).toEqual([
+				...(initialTools ?? []),
+				"late",
+			]);
+
+			// The loaded tool was callable, and the anchor stays in place on later requests.
+			const lateResult = requests[2]!.messages.filter((message) => message.role === "toolResult").at(-1);
+			expect(lateResult).toMatchObject({ toolName: "late", isError: false });
+			expect(requests[2]!.messages[0]).toEqual(head);
+			expect(requests[2]!.messages.filter((message) => message.role === "system")).toHaveLength(2);
+		} finally {
+			harness.cleanup();
+		}
+	});
+
 	test("setActiveTools emits prompt sections and tool changes before the next request", async () => {
 		const extension: ExtensionFactory = (pi) => {
 			for (const name of ["first", "second"]) {

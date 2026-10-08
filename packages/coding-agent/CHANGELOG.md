@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.86.6] - 2026-10-08
+
+### Fixed
+
+- Tools loaded mid-conversation (for example by `tool_search`) stay anchored where they were loaded when an extension's `before_agent_start` handler returns a `systemPrompt`, as memory and goal extensions do on every turn. The forced-prompt projection used to fold every tool into the leading system message, so providers redeclared the whole tool list at the head of the prompt and the prompt cache was invalidated on each load. It now keeps the initial tools at the head and the later tool changes in place.
+
 ## [0.86.5] - 2026-10-08
 
 ## [0.86.4] - 2026-10-08
