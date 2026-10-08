@@ -47,6 +47,7 @@ import { sanitizeSurrogates } from "../utils/sanitize-unicode.ts";
 import { getSystemMessageText, renderSystemMessageUpdate } from "../utils/text.ts";
 import {
 	getDeclaredTools,
+	hasNonAdditiveToolChanges,
 	resolveTranscript,
 	resolveTranscriptTools,
 	type TranscriptContext,
@@ -174,6 +175,7 @@ type ResolvedOpenAICompletionsCompat = Omit<
 	| "thinkingTokenBudgetField"
 	| "supportsMidConvoSystemMessages"
 	| "supportsMidConvoToolAdditions"
+	| "supportsAddedToolsField"
 	| "vllmPriority"
 > & {
 	cacheControlFormat?: OpenAICompletionsCompat["cacheControlFormat"];
@@ -181,6 +183,7 @@ type ResolvedOpenAICompletionsCompat = Omit<
 	thinkingTokenBudgetField?: OpenAICompletionsCompat["thinkingTokenBudgetField"];
 	supportsMidConvoSystemMessages?: OpenAICompletionsCompat["supportsMidConvoSystemMessages"];
 	supportsMidConvoToolAdditions?: OpenAICompletionsCompat["supportsMidConvoToolAdditions"];
+	supportsAddedToolsField?: OpenAICompletionsCompat["supportsAddedToolsField"];
 	vllmPriority?: OpenAICompletionsCompat["vllmPriority"];
 };
 
@@ -192,6 +195,54 @@ type KimiToolSystemMessageParam = {
 	role: "system";
 	tools: OpenAI.Chat.Completions.ChatCompletionTool[];
 };
+
+/** Names of tools added mid-conversation, carried on a user or tool message for `supportsAddedToolsField`. */
+const ADDED_TOOLS = Symbol("addedTools");
+type WithAddedTools = { [ADDED_TOOLS]?: string[] };
+
+/**
+ * For `supportsAddedToolsField`: mark the first user or tool result after each mid-conversation
+ * tool addition with the added names. The transcript is then collapsed as usual, so the request
+ * still declares every current tool; the server renders the marked ones at that message instead of
+ * at the head of the prompt. The mark is a symbol-keyed field so it survives the message copies made
+ * by later transforms. Removals and redeclarations cannot be expressed this way; such histories stay
+ * unmarked and the server lists every tool at the head.
+ */
+function markToolAdditions(context: TranscriptContext): TranscriptContext {
+	if (hasNonAdditiveToolChanges(context.messages)) return context;
+	let pending: string[] = [];
+	const messages = context.messages.map((message, index) => {
+		if (message.role === "system") {
+			if (index > 0) pending.push(...(message.toolsAdded ?? []).map((tool) => tool.name));
+			return message;
+		}
+		if (pending.length === 0) return message;
+		const added = pending;
+		pending = [];
+		// An addition followed directly by an assistant turn has no message to carry it.
+		return message.role === "assistant" ? message : { ...message, [ADDED_TOOLS]: added };
+	});
+	return { messages } as TranscriptContext;
+}
+
+/** Collapse later system messages when the model cannot take them, marking tool additions first for `supportsAddedToolsField`. */
+function resolveCompletionsTranscript(
+	context: TranscriptContext,
+	compat: ResolvedOpenAICompletionsCompat,
+): TranscriptContext {
+	const marksAdditions =
+		compat.supportsAddedToolsField === true &&
+		!(compat.supportsMidConvoSystemMessages === true && compat.supportsMidConvoToolAdditions === true);
+	return resolveTranscript(
+		marksAdditions ? markToolAdditions(context) : context,
+		compat.supportsMidConvoSystemMessages,
+	);
+}
+
+function withAddedTools<T extends ChatCompletionMessageParam>(param: T, message: Message): T {
+	const added = (message as WithAddedTools)[ADDED_TOOLS];
+	return added ? { ...param, added_tools: added } : param;
+}
 
 type OpenAIReasoningDetailBase = Record<string, JsonValue> & {
 	id?: string | null;
@@ -307,7 +358,7 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 	options?: OpenAICompletionsOptions,
 ): AssistantMessageEventStream => {
 	const stream = new AssistantMessageEventStream();
-	const normalizedContext = resolveTranscript(context, getCompat(model).supportsMidConvoSystemMessages);
+	const normalizedContext = resolveCompletionsTranscript(context, getCompat(model));
 
 	(async () => {
 		const output: AssistantMessage = {
@@ -1196,7 +1247,7 @@ export function convertMessages(
 	compat: ResolvedOpenAICompletionsCompat,
 	options?: ConvertCompletionsMessagesOptions,
 ): ChatCompletionMessageParam[] {
-	const normalizedContext = resolveTranscript(context, compat.supportsMidConvoSystemMessages);
+	const normalizedContext = resolveCompletionsTranscript(context, compat);
 	const params: ChatCompletionMessageParam[] = [];
 
 	const normalizeToolCallId = (id: string): string => {
@@ -1260,10 +1311,15 @@ export function convertMessages(
 			}
 		} else if (msg.role === "user") {
 			if (typeof msg.content === "string") {
-				params.push({
-					role: "user",
-					content: sanitizeSurrogates(msg.content),
-				});
+				params.push(
+					withAddedTools(
+						{
+							role: "user",
+							content: sanitizeSurrogates(msg.content),
+						},
+						msg,
+					),
+				);
 			} else {
 				const content: ChatCompletionContentPart[] = msg.content
 					.filter((item) => item.type !== "text" || item.text.length > 0)
@@ -1283,10 +1339,15 @@ export function convertMessages(
 						}
 					});
 				if (content.length === 0) continue;
-				params.push({
-					role: "user",
-					content,
-				});
+				params.push(
+					withAddedTools(
+						{
+							role: "user",
+							content,
+						},
+						msg,
+					),
+				);
 			}
 		} else if (msg.role === "assistant") {
 			// Some providers don't accept null content, use empty string instead
@@ -1429,7 +1490,7 @@ export function convertMessages(
 				if (compat.requiresToolResultName && toolMsg.toolName) {
 					(toolResultMsg as any).name = toolMsg.toolName;
 				}
-				params.push(toolResultMsg);
+				params.push(withAddedTools(toolResultMsg, toolMsg));
 
 				if (hasImages && model.input.includes("image")) {
 					for (const block of toolMsg.content) {
@@ -1676,6 +1737,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		supportsOpenAIGrammarTools: false,
 		supportsMidConvoSystemMessages: false,
 		supportsMidConvoToolAdditions: false,
+		supportsAddedToolsField: false,
 		cacheControlFormat,
 		sendSessionAffinityHeaders: isOpenRouter,
 		sessionAffinityFormat: isOpenRouter ? "openrouter" : "openai",
@@ -1725,6 +1787,7 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 			model.compat.supportsMidConvoSystemMessages ?? detected.supportsMidConvoSystemMessages,
 		supportsMidConvoToolAdditions:
 			model.compat.supportsMidConvoToolAdditions ?? detected.supportsMidConvoToolAdditions,
+		supportsAddedToolsField: model.compat.supportsAddedToolsField ?? detected.supportsAddedToolsField,
 		cacheControlFormat: model.compat.cacheControlFormat ?? detected.cacheControlFormat,
 		sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,
 		sessionAffinityFormat: model.compat.sessionAffinityFormat ?? detected.sessionAffinityFormat,
