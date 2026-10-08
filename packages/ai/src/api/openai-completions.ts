@@ -201,27 +201,41 @@ const ADDED_TOOLS = Symbol("addedTools");
 type WithAddedTools = { [ADDED_TOOLS]?: string[] };
 
 /**
- * For `supportsAddedToolsField`: mark the first user or tool result after each mid-conversation
- * tool addition with the added names. The transcript is then collapsed as usual, so the request
- * still declares every current tool; the server renders the marked ones at that message instead of
- * at the head of the prompt. The mark is a symbol-keyed field so it survives the message copies made
- * by later transforms. Removals and redeclarations cannot be expressed this way; such histories stay
- * unmarked and the server lists every tool at the head.
+ * For `supportsAddedToolsField`: mark each mid-conversation tool addition on the user or tool
+ * result the model reads right before it can call the tool: the latest such message not yet
+ * followed by an assistant turn (a tool loop records additions after the results that caused
+ * them), or else the next one (an addition between turns). The transcript is then collapsed as
+ * usual, so the request still declares every current tool; the server renders the marked ones at
+ * that message instead of at the head of the prompt. The mark is a symbol-keyed field so it
+ * survives the message copies made by later transforms. Removals and redeclarations cannot be
+ * expressed this way; such histories stay unmarked and the server lists every tool at the head.
  */
 function markToolAdditions(context: TranscriptContext): TranscriptContext {
 	if (hasNonAdditiveToolChanges(context.messages)) return context;
+	const messages: Message[] = [...context.messages];
+	const marks = new Map<number, string[]>();
+	let unanswered: number | undefined;
 	let pending: string[] = [];
-	const messages = context.messages.map((message, index) => {
+	messages.forEach((message, index) => {
 		if (message.role === "system") {
-			if (index > 0) pending.push(...(message.toolsAdded ?? []).map((tool) => tool.name));
-			return message;
+			const added = index > 0 ? (message.toolsAdded ?? []).map((tool) => tool.name) : [];
+			if (unanswered === undefined) pending.push(...added);
+			else marks.set(unanswered, [...(marks.get(unanswered) ?? []), ...added]);
+		} else if (message.role === "assistant") {
+			unanswered = undefined;
+			pending = []; // an addition followed directly by an assistant turn has no message to carry it
+		} else {
+			unanswered = index;
+			if (pending.length > 0) marks.set(index, pending);
+			pending = [];
 		}
-		if (pending.length === 0) return message;
-		const added = pending;
-		pending = [];
-		// An addition followed directly by an assistant turn has no message to carry it.
-		return message.role === "assistant" ? message : { ...message, [ADDED_TOOLS]: added };
 	});
+	for (const [index, names] of marks) {
+		if (names.length === 0) continue;
+		const marked: Message & WithAddedTools = { ...messages[index] };
+		marked[ADDED_TOOLS] = names;
+		messages[index] = marked;
+	}
 	return { messages } as TranscriptContext;
 }
 

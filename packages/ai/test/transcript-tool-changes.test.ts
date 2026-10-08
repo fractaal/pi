@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
 import { streamSimple } from "../src/compat.ts";
-import type { Api, Context, Model, Tool } from "../src/types.ts";
+import type { Api, AssistantMessage, Context, Message, Model, Tool } from "../src/types.ts";
 
 class PayloadCaptured extends Error {}
 
@@ -394,36 +394,40 @@ describe("llama.cpp added_tools", () => {
 		messages: Array<{ role: string; content?: unknown; added_tools?: string[] }>;
 	};
 	const searchTool = tool("tool_search");
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const assistant = (content: AssistantMessage["content"], timestamp: number): AssistantMessage => ({
+		role: "assistant",
+		content,
+		api: "openai-completions",
+		provider: "llama-server",
+		model: "qwen-local",
+		usage,
+		stopReason: content.some((block) => block.type === "toolCall") ? "toolUse" : "stop",
+		timestamp,
+	});
+	const toolResult = (toolCallId: string, toolName: string, text: string, timestamp: number): Message => ({
+		role: "toolResult",
+		toolCallId,
+		toolName,
+		content: [{ type: "text", text }],
+		isError: false,
+		timestamp,
+	});
+	// The agent records the addition after the tool result that caused it.
 	const loadedBySearch: Context = {
 		messages: [
 			{ role: "system", content: "base prompt", toolsAdded: [baseTool, searchTool], timestamp: 0 },
 			{ role: "user", content: "find a tool", timestamp: 1 },
-			{
-				role: "assistant",
-				content: [{ type: "toolCall", id: "call_1", name: "tool_search", arguments: { query: "late" } }],
-				api: "openai-completions",
-				provider: "llama-server",
-				model: "qwen-local",
-				usage: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					totalTokens: 0,
-					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-				},
-				stopReason: "toolUse",
-				timestamp: 2,
-			},
-			{ role: "system", content: "", toolsAdded: [lateTool], timestamp: 3 },
-			{
-				role: "toolResult",
-				toolCallId: "call_1",
-				toolName: "tool_search",
-				content: [{ type: "text", text: "Loaded late_tool" }],
-				isError: false,
-				timestamp: 4,
-			},
+			assistant([{ type: "toolCall", id: "call_1", name: "tool_search", arguments: { query: "late" } }], 2),
+			toolResult("call_1", "tool_search", "Loaded late_tool", 3),
+			{ role: "system", content: "", toolsAdded: [lateTool], timestamp: 4 },
 		],
 	};
 
@@ -439,9 +443,43 @@ describe("llama.cpp added_tools", () => {
 		]);
 	});
 
+	test("keeps the mark on that tool result once the model has used the tool", async () => {
+		const payload = await capturePayload<Payload>(model, {
+			messages: [
+				...loadedBySearch.messages,
+				assistant([{ type: "toolCall", id: "call_2", name: "late_tool", arguments: {} }], 5),
+				toolResult("call_2", "late_tool", "done", 6),
+			],
+		});
+
+		expect(payload.messages.map((message) => [message.role, message.added_tools])).toEqual([
+			["system", undefined],
+			["user", undefined],
+			["assistant", undefined],
+			["tool", ["late_tool"]],
+			["assistant", undefined],
+			["tool", undefined],
+		]);
+	});
+
+	test("marks an addition recorded before the tool result on that result", async () => {
+		const [system, user, call, result, addition] = loadedBySearch.messages;
+		const payload = await capturePayload<Payload>(model, { messages: [system, user, call, addition, result] });
+
+		expect(
+			payload.messages.filter((message) => message.role === "tool").map((message) => message.added_tools),
+		).toEqual([["late_tool"]]);
+	});
+
 	test("lists a tool added between turns on the next user message", async () => {
 		const payload = await capturePayload<Payload>(model, {
-			messages: [...additionContext.messages, { role: "user", content: "after", timestamp: 3 }],
+			messages: [
+				additionContext.messages[0],
+				additionContext.messages[1],
+				assistant([{ type: "text", text: "reply" }], 2),
+				additionContext.messages[2],
+				{ role: "user", content: "after", timestamp: 3 },
+			],
 		});
 
 		expect(payload.tools?.map((value) => value.function?.name)).toEqual(["base_tool", "late_tool"]);
