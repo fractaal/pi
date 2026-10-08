@@ -1346,9 +1346,8 @@ export class ExtensionRunner {
 	}
 
 	/**
-	 * Run the request-time transforms in two phases. `context` handlers see the conversation
-	 * only and Pi restores the prompt and tool state after each; `context_with_system`
-	 * handlers then see the full transcript and their output is used as returned.
+	 * Run the `context` handlers on a request-local copy of the transcript. They see the
+	 * conversation only, and Pi restores the prompt and tool state after each.
 	 */
 	async emitContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
 		let currentMessages = structuredClone(messages);
@@ -1380,6 +1379,17 @@ export class ExtensionRunner {
 				}
 			}
 		}
+
+		return currentMessages;
+	}
+
+	/**
+	 * Run the `context_with_system` handlers on the transcript as the request will send it,
+	 * after the `context` handlers and Pi's own request projections. Their output is sent as
+	 * returned. `messages` must already be request-local; handlers may edit it in place.
+	 */
+	async emitContextWithSystem(messages: AgentMessage[]): Promise<AgentMessage[]> {
+		let currentMessages = messages;
 
 		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, "context_with_system")) {
 			const ctx = this.createContext(ext.path);

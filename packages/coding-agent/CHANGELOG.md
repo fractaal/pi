@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.86.4] - 2026-10-08
+
+### Fixed
+
+- `context_with_system` handlers run after Pi's own request projections, so they see and send the transcript the request actually carries. Before, a prompt that a `before_agent_start` handler forced for the run (by returning `systemPrompt`) replaced the system messages after these handlers ran: handlers saw the unforced prompt, and their edits to system messages were discarded. Declarations hidden by `prepareLoadout` are likewise already removed when the handlers run.
+
 ## [0.86.3] - 2026-10-07
 
 ### Fixed
