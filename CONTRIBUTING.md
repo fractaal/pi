@@ -12,7 +12,7 @@ Fractaal Pi is maintained as Ben's fork and as the runtime dependency for Pi and
 
 ## Pull requests
 
-`main` is protected. Changes merge through a pull request after the required `build-check-test` status succeeds. The repository ruleset allows merge commits and does not grant bypass actors.
+`main` is protected. Changes merge through a pull request; there is no CI status check, so run `npm run check` and the relevant tests locally first. The repository ruleset allows merge commits and does not grant bypass actors.
 
 When Ben says to fix and publish, the authorized agent may prepare and merge the protected-main PR, push the immutable release tag, let GitHub Actions publish through npm Trusted Publishing, and update the local Pi installation. Do not publish unrelated work or publish from an unrequested background task.
 

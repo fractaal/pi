@@ -242,7 +242,7 @@ test("fails closed when the release tag is absent from the remote", async (t) =>
 	);
 });
 
-test("CI and release build from the committed model catalog", async () => {
+test("the release builds from the committed model catalog", async () => {
 	// The model types are derived from packages/ai/src/providers/data at compile
 	// time. Regenerating that data from live provider APIs during a build makes the
 	// same commit typecheck differently on different days, and makes published
@@ -256,7 +256,7 @@ test("CI and release build from the committed model catalog", async () => {
 		"the model catalog must be committed source, not ignored",
 	);
 
-	for (const path of [".github/workflows/ci.yml", ".github/workflows/build-binaries.yml"]) {
+	for (const path of [".github/workflows/build-binaries.yml"]) {
 		const workflow = parseYaml(await read(path));
 		for (const [jobName, job] of Object.entries(workflow.jobs)) {
 			for (const step of job.steps ?? []) {

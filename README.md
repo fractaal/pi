@@ -93,7 +93,7 @@ We treat npm dependency changes as reviewed code changes.
 - The npm package does not pin transitive dependencies; `package-lock.json` remains the repository's dependency ground truth.
 - Release smoke tests use `npm run release:local` to build, pack, and create an isolated npm install outside the repo before tagging a release.
 - Local release installs and documented npm installs use `--ignore-scripts` where supported.
-- CI installs with `npm ci --ignore-scripts`, and a scheduled GitHub workflow runs `npm audit --omit=dev` plus `npm audit signatures --omit=dev`.
+- The publish workflow installs with `npm ci --ignore-scripts`.
 - Install lock generation has an explicit allowlist for dependency lifecycle scripts; new lifecycle-script deps fail checks until reviewed.
 
 ## Share your OSS coding agent sessions

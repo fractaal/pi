@@ -297,7 +297,7 @@ const branch = run("git rev-parse --abbrev-ref HEAD", { silent: true }).trim();
 console.log(`=== Prepared release ${releaseTag} on ${branch} ===\n`);
 console.log("Nothing has been pushed. To publish:\n");
 console.log(`  1. git push -u origin ${branch}`);
-console.log(`  2. open a pull request into main and let build-check-test pass`);
+console.log(`  2. open a pull request into main and merge it (merge commit)`);
 console.log(`  3. merge it with a merge commit, so ${releaseTag}'s commit stays on main`);
 console.log(`  4. git checkout main && git pull`);
 console.log(`  5. npm run release:tag -- ${releaseTag}`);
