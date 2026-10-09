@@ -74,6 +74,53 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	describe("custom prompt guidelines", () => {
+		const options = {
+			customPrompt: "You are Exact.",
+			selectedTools: ["bash", "todo", "secret"],
+			hiddenTools: ["secret"],
+			builtInTools: ["bash"],
+			toolGuidelines: {
+				bash: ["Built-in bash guidance."],
+				todo: ["Use todo when work has several meaningful steps.", "Shared guidance."],
+				secret: ["Hidden tool guidance."],
+			},
+			promptGuidelines: ["Shared guidance.", "Explicit prompt guidance."],
+			contextFiles: [],
+			skills: [],
+			cwd: "/tmp",
+		};
+
+		test("renders guidelines a custom prompt cannot contain right after it", () => {
+			const prompt = buildSystemPrompt(options);
+
+			expect(prompt).toContain(
+				"You are Exact.\n\n<tool_guidelines>\n- Use todo when work has several meaningful steps.\n- Shared guidance.\n- Explicit prompt guidance.\n</tool_guidelines>",
+			);
+		});
+
+		test("keeps Pi's own rules and built-in tool guidelines out of a custom prompt", () => {
+			const prompt = buildSystemPrompt(options);
+
+			expect(prompt).not.toContain("Built-in bash guidance.");
+			expect(prompt).not.toContain("Hidden tool guidance.");
+			expect(prompt).not.toContain("Be concise in your responses");
+			expect(prompt).not.toContain("Show file paths clearly");
+			expect(prompt).not.toContain("<rules>");
+		});
+
+		test("adds no section when there is nothing to render", () => {
+			const prompt = buildSystemPrompt({
+				...options,
+				toolGuidelines: { bash: ["Built-in bash guidance."] },
+				promptGuidelines: [],
+			});
+
+			expect(prompt).not.toContain("<tool_guidelines>");
+			expect(prompt.startsWith("You are Exact.\n\n<cwd>")).toBe(true);
+		});
+	});
+
 	describe("default tools", () => {
 		test("includes all default tools when snippets are provided", () => {
 			const prompt = buildSystemPrompt({

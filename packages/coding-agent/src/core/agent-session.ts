@@ -523,6 +523,8 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
+	/** Tools whose registered definition is Pi's built-in one, not an extension or SDK replacement. */
+	private _builtInToolNames: string[] = [];
 
 	private _baseSystemPromptOptions!: NormalizedBuildSystemPromptOptions;
 	/** Prompt options after before_agent_start mutations for the active run. */
@@ -990,6 +992,7 @@ export class AgentSession {
 				selectedTools: this.getActiveToolNames(),
 				toolSnippets: { ...this._baseSystemPromptOptions.toolSnippets, ...runOptions.toolSnippets },
 				toolGuidelines: { ...this._baseSystemPromptOptions.toolGuidelines, ...runOptions.toolGuidelines },
+				builtInTools: this._baseSystemPromptOptions.builtInTools,
 			});
 			const updateMessage = this._preparePromptAndToolLoadout(options, nextContext.messages);
 			// Keep session.systemPrompt and ctx.getSystemPrompt() in step with what the provider sees.
@@ -2024,6 +2027,7 @@ export class AgentSession {
 			hiddenTools: [...this._hiddenDeclarations],
 			toolSnippets,
 			toolGuidelines: Object.fromEntries(this._toolPromptGuidelines),
+			builtInTools: this._builtInToolNames,
 		});
 	}
 
@@ -4318,6 +4322,9 @@ export class AgentSession {
 			});
 		}
 		this._toolDefinitions = definitionRegistry;
+		this._builtInToolNames = Array.from(definitionRegistry)
+			.filter(([, entry]) => entry.sourceInfo.source === "builtin")
+			.map(([name]) => name);
 		this._toolPromptSnippets = new Map(
 			Array.from(definitionRegistry.values())
 				.map(({ definition }) => {

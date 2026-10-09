@@ -619,7 +619,11 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	description: string;
 	/** Optional one-line snippet for the Available tools section in the default system prompt. Custom tools are omitted from that section when this is not provided. */
 	promptSnippet?: string;
-	/** Optional guideline bullets appended to the default system prompt Guidelines section when this tool is active. */
+	/**
+	 * Optional guideline bullets for the system prompt while this tool is active: appended to the default
+	 * prompt's rules, or rendered in a `tool_guidelines` section after a custom prompt (`SYSTEM.md`,
+	 * `--system-prompt`), which replaces only Pi's own text and the guidelines of Pi's built-in tools.
+	 */
 	promptGuidelines?: string[];
 	/** Parameter schema (TypeBox) */
 	parameters: TParams;

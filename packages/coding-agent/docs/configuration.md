@@ -38,6 +38,8 @@ The agent directory is shown as `<agent-dir>` below. Set its location with the `
 
 For `SYSTEM.md` and `APPEND_SYSTEM.md`, the trusted project file takes precedence over the corresponding agent-directory file. Files with the same name are not combined.
 
+A `SYSTEM.md` replaces Pi's own prompt text, including its rules and the guidelines of Pi's built-in tools. Guidelines contributed by extension and SDK tools (`promptGuidelines`) are still sent, in a `<tool_guidelines>` section right after your prompt, because a custom prompt cannot know which extensions are active.
+
 ## Context files
 
 Context files are separate from project `.pi` configuration. Pi loads them from the agent directory, the working directory, and its parent directories. A context file applies whenever Pi runs in its directory or anywhere below it.
