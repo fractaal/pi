@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Removed
+
+- The `supportsAddedToolsField` OpenAI Completions compat added in 0.86.5. Its `added_tools` wire field is understood only by one patched llama.cpp server, so it moves out of the core into an extension next to that server's configuration. Tool definitions in requests are unchanged for every provider.
+
 ## [0.86.6] - 2026-10-08
 
 ## [0.86.5] - 2026-10-08

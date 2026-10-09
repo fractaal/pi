@@ -848,15 +848,6 @@ export interface OpenAICompletionsCompat {
 	supportsMidConvoSystemMessages?: boolean;
 	/** Whether system messages can introduce additional tools mid-conversation. Requires `supportsMidConvoSystemMessages`. Default: false; the generated model catalog enables it for capable models. */
 	supportsMidConvoToolAdditions?: boolean;
-	/**
-	 * Whether the server accepts an `added_tools` name list on user and tool messages and renders those
-	 * tools' definitions there instead of in the tool list at the head of the prompt (the fork's patched
-	 * llama.cpp server). For models without mid-conversation system messages: each mid-conversation tool
-	 * addition is listed on the first following user or tool message, so loading a tool leaves the earlier
-	 * prompt, and the server's prompt cache, unchanged. The request still declares every current tool.
-	 * Default: false.
-	 */
-	supportsAddedToolsField?: boolean;
 	/** Whether the provider supports the `strict` field in tool definitions. Default: false; generated capable models enable it explicitly. */
 	supportsStrictMode?: boolean;
 	/** Cache control convention for prompt caching. "anthropic" applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user, assistant, or tool-result text content. */
