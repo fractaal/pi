@@ -16,7 +16,7 @@
 
 Work autonomously within the agreed task. Local builds, tests, checks, unpublished package smoke builds, and task-scoped commits are routine engineering work; do not ask Ben for a separate go-ahead.
 
-**Production deployments still require Ben's explicit authorization.** For this fork, a task instruction such as "fix this and publish" authorizes the agent to commit, push, open and merge the protected-main PR after required checks pass, push the release tag, publish the fork packages through the existing trusted-publishing workflow, and update the local Pi installation. Do not publish changes from unrelated tasks or from unrequested background work. Keep protected main and the npm environment boundary intact.
+**Production deployments still require Ben's explicit authorization.** For this fork, a task instruction such as "fix this and publish" authorizes the agent to commit, push, open and merge the protected-main PR once the local release checks pass, push the release tag, publish the fork packages through the existing trusted-publishing workflow, and update the local Pi installation. Do not publish changes from unrelated tasks or from unrequested background work. Keep protected main and the npm environment boundary intact.
 
 ## Code Quality
 
@@ -37,7 +37,7 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before marking work ready. WIP commits may record unfinished or failing work, but must say so; a checkpoint is not a claim of verification. This command does not run tests.
 - Run local builds and tests as needed to verify the task. Prefer focused checks and use the offline/non-e2e test paths below; authorization for local work is not a reason to run unrelated or live-provider suites.
-- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For the full inherited monorepo suite, run `./test.sh` from the repo root. The fork's release and required CI surface uses `npm run test:published`, which covers scripts and the eight packages published under `@fractaal`. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
+- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For the full inherited monorepo suite, run `./test.sh` from the repo root. The fork's release surface (the local release script and the tag publish workflow) uses `npm run test:published`, which covers scripts and the eight packages published under `@fractaal`. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - When regressions tests for fixing a github issue, add a comment with the github issue number next to the test.
@@ -122,7 +122,7 @@ Attribution:
 
 The source tree keeps upstream's @earendil-works/* names so upstream merges stay mechanical. scripts/fractal-identity.mjs applies the @fractaal/* identity only to the artifacts being published, pins their internal versions, and is the single packaging-boundary transformation. Release tags are fractaal-vX.Y.Z and npm uses the ordinary latest tag.
 
-Standalone binaries, Nix releases, GitHub Release assets, upstream model-catalog publication, and contributor-management workflows are not current fork products. Do not reintroduce them from upstream without a new scope decision.
+Standalone binaries, Nix releases, GitHub Release assets, upstream model-catalog publication, and contributor-management workflows are not current fork products. GitHub Actions runs only the tag publish workflow: pull-request CI, the pi-env daemon build matrix, and the scheduled npm audit were removed. Do not reintroduce them from upstream without a new scope decision.
 
 ### Normal autonomous release path
 
@@ -131,7 +131,7 @@ When Ben explicitly asks to fix and publish:
 1. Make the requested change in a task branch and run the relevant behavior-first checks.
 2. Run npm run release:patch or npm run release:minor as appropriate. This updates the lockstep workspace version, changelogs, committed model data checks, the full local checks, tests, and the packed npm consumer check.
 3. Push the task branch and open the pull request into protected main.
-4. Wait for required checks, merge the pull request with the normal repository merge policy, and fetch main.
+4. Merge the pull request with the normal repository merge policy and fetch main. Pull requests get no CI run: step 2's local checks and the tag workflow's checks are the gates.
 5. Run npm run release:tag -- fractaal-v<version>. This verifies the release commit is reachable from current origin/main and pushes the immutable tag.
 6. The tag workflow checks the tag, builds and tests the npm package family, applies the fork identity, verifies the live tag immediately before publication, and publishes through npm trusted publishing/OIDC.
 7. Verify the new npm version and restart or update local Pi when the task requires it.
@@ -160,7 +160,7 @@ The release workflow must:
 
 A failed publication is retried from the same immutable tag after the cause is fixed. Do not create a second version merely because a workflow failed after some packages were already published.
 
-main remains protected. The agent may automate the pull request and merge after required checks, but branch protection and the npm deployment environment are not weakened.
+main remains protected: changes land through a pull request, merge commits only, with force pushes and deletion blocked. It has no required status check, because GitHub Actions runs only the tag publish workflow, which runs the checks and tests before publishing. Do not weaken the remaining protection or the npm deployment environment.
 
 ## Intentional Divergences from Upstream
 
