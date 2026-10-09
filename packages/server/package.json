@@ -1,6 +1,6 @@
 {
 	"name": "@earendil-works/pi-server",
-	"version": "0.86.6",
+	"version": "0.86.7",
 	"description": "experimental server package for pi",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -47,8 +47,8 @@
 		"node": ">=22.19.0"
 	},
 	"dependencies": {
-		"@earendil-works/chord": "^0.86.6",
-		"@earendil-works/pi-protocol": "^0.86.6"
+		"@earendil-works/chord": "^0.86.7",
+		"@earendil-works/pi-protocol": "^0.86.7"
 	},
 	"devDependencies": {
 		"shx": "0.4.0",
