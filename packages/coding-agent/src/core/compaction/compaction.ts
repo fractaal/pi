@@ -122,12 +122,17 @@ export interface CompactionSettings {
 	enabled: boolean;
 	reserveTokens: number;
 	keepRecentTokens: number;
+	/** Most of the compactable history to keep, as a fraction; caps keepRecentTokens. Default 0.5. */
+	keepRecentFraction?: number;
 }
+
+const DEFAULT_KEEP_RECENT_FRACTION = 0.5;
 
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	reserveTokens: 16384,
 	keepRecentTokens: 20000,
+	keepRecentFraction: DEFAULT_KEEP_RECENT_FRACTION,
 };
 
 // ============================================================================
@@ -1027,7 +1032,14 @@ export function prepareCompaction(
 	}
 	const boundaryEnd = projectedEntries.length;
 	const tokensBefore = estimateProjectedContextTokens(projection, pathEntries).tokens;
-	const cutPoint = findProjectedCutPoint(projectedEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+	// Keep at most a fraction of the history, so a keepRecentTokens sized for large context
+	// windows still leaves something to summarize when the whole history is smaller than it.
+	const compactableTokens = projectedEntries
+		.slice(boundaryStart, boundaryEnd)
+		.reduce((sum, entry) => sum + entry.messages.reduce((total, message) => total + estimateTokens(message), 0), 0);
+	const keepRecentFraction = settings.keepRecentFraction ?? DEFAULT_KEEP_RECENT_FRACTION;
+	const keepRecentTokens = Math.min(settings.keepRecentTokens, Math.floor(compactableTokens * keepRecentFraction));
+	const cutPoint = findProjectedCutPoint(projectedEntries, boundaryStart, boundaryEnd, keepRecentTokens);
 
 	const firstKeptEntry = projectedEntries[cutPoint.firstKeptEntryIndex]?.sourceEntry;
 	if (!firstKeptEntry?.id) return undefined;

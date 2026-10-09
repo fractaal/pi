@@ -70,6 +70,7 @@ CLI tool options override this setting for one invocation; `--tools` does not ac
 | `compaction.enabled` | boolean | `true` | Enable automatic compaction. |
 | `compaction.reserveTokens` | number | `16384` | Tokens reserved for the model response. |
 | `compaction.keepRecentTokens` | number | `20000` | Recent tokens retained without summarization. |
+| `compaction.keepRecentFraction` | number | `0.5` | Most of the compactable history retained, from 0 to 1; caps `keepRecentTokens`. |
 | `compaction.modelOverrides` | object | None | Per-model token settings keyed by exact `provider/modelId`. |
 
 <a id="per-model-compaction-overrides"></a>

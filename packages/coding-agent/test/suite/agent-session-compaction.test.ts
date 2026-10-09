@@ -381,6 +381,29 @@ describe("AgentSession compaction characterization", () => {
 		);
 	});
 
+	it("compacts the older half of a session smaller than keepRecentTokens", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 64000 } });
+		useSummaryStreamFn(harness, "summary of the older half");
+
+		const result = await harness.session.compact();
+
+		expect(result.summary).toContain("summary of the older half");
+		expect(getUserTexts(harness)).not.toContain("message to compact");
+	});
+
+	it("reports nothing to compact when keepRecentFraction keeps the whole session", async () => {
+		const harness = await createHarness({ withConfiguredAuth: false });
+		harnesses.push(harness);
+		seedCompactableSession(harness);
+		harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 64000, keepRecentFraction: 1 } });
+		useSummaryStreamFn(harness, "unused");
+
+		await expect(harness.session.compact()).rejects.toThrow("Nothing to compact (session too small)");
+	});
+
 	it("auto-compacts with a custom streamFn when registry auth is absent", async () => {
 		const harness = await createHarness({ withConfiguredAuth: false });
 		harnesses.push(harness);
@@ -539,7 +562,12 @@ describe("AgentSession compaction characterization", () => {
 			await harness.session.prompt("run the large tool");
 
 			expect(order.slice(0, 2)).toEqual(["compaction", "provider"]);
-			expect(observedSettings[0]).toEqual({ enabled: true, reserveTokens: 400, keepRecentTokens: 1750 });
+			expect(observedSettings[0]).toEqual({
+				enabled: true,
+				reserveTokens: 400,
+				keepRecentTokens: 1750,
+				keepRecentFraction: 0.5,
+			});
 			// Compaction is stop-the-world: the run ends at the tool-batch boundary and a recovery run resumes it.
 			expect(harness.eventsOfType("agent_start")).toHaveLength(agentStartsBefore + 2);
 			expect(harness.eventsOfType("compaction_start").at(-1)).toEqual({

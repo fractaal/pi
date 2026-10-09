@@ -29,6 +29,7 @@ export interface CompactionSettings {
 	enabled?: boolean; // default: true
 	reserveTokens?: number; // default: 16384
 	keepRecentTokens?: number; // default: 20000
+	keepRecentFraction?: number; // default: 0.5; most of the compactable history kept, caps keepRecentTokens
 	modelOverrides?: Record<string, CompactionModelOverride>; // exact "provider/modelId" keys
 }
 
@@ -963,16 +964,28 @@ export class SettingsManager {
 		return this.getCompactionTokenSetting("keepRecentTokens", model);
 	}
 
+	getCompactionKeepRecentFraction(): number {
+		const fraction = this.settings.compaction?.keepRecentFraction;
+		if (fraction !== undefined && (typeof fraction !== "number" || !(fraction >= 0 && fraction <= 1))) {
+			throw new Error(
+				`Invalid compaction.keepRecentFraction setting: ${String(fraction)}. Expected a number from 0 to 1.`,
+			);
+		}
+		return fraction ?? 0.5;
+	}
+
 	/** Resolve each token setting through model override, ordinary setting, then built-in default. */
 	getCompactionSettings(model?: Pick<Model<string>, "provider" | "id">): {
 		enabled: boolean;
 		reserveTokens: number;
 		keepRecentTokens: number;
+		keepRecentFraction: number;
 	} {
 		return {
 			enabled: this.getCompactionEnabled(),
 			reserveTokens: this.getCompactionReserveTokens(model),
 			keepRecentTokens: this.getCompactionKeepRecentTokens(model),
+			keepRecentFraction: this.getCompactionKeepRecentFraction(),
 		};
 	}
 
