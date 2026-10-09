@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `compaction.keepRecentFraction` (default `0.5`) caps the recent history that compaction keeps at a fraction of the history it could summarize. A `keepRecentTokens` larger than the whole session (common when it is sized for large context windows and the model has a small one) left compaction with nothing to summarize: auto-compaction silently did nothing and `/compact` reported "Nothing to compact". Set it to `1` for the previous behavior.
+
 ## [0.86.8] - 2026-10-09
 
 ### Fixed

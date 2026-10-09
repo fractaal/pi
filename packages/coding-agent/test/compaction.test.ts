@@ -520,6 +520,47 @@ describe("prepareCompaction", () => {
 	});
 });
 
+describe("prepareCompaction keepRecentFraction", () => {
+	const turns = () =>
+		[1, 2, 3, 4].flatMap((n) => [
+			createMessageEntry(createUserMessage(`user msg ${n} `.repeat(20))),
+			createMessageEntry(createAssistantMessage(`assistant msg ${n} `.repeat(20))),
+		]);
+
+	it("summarizes the older half when the whole history is below keepRecentTokens", () => {
+		const entries = turns();
+		const preparation = prepareCompaction(entries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentTokens: 64000 });
+
+		expect(preparation).toBeDefined();
+		const summarized = extractText(preparation!.messagesToSummarize);
+		expect(summarized).toContain("user msg 1");
+		expect(summarized).toContain("assistant msg 2");
+		expect(summarized).not.toContain("user msg 3");
+		expect(preparation!.firstKeptEntryId).toBe(entries[4].id);
+	});
+
+	it("leaves keepRecentTokens in charge when it is the smaller budget", () => {
+		const entries = turns();
+		const preparation = prepareCompaction(entries, {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 1,
+			keepRecentFraction: 0.5,
+		});
+
+		expect(preparation!.firstKeptEntryId).toBe(entries[7].id);
+	});
+
+	it("keeps the whole history at a fraction of 1, leaving nothing to compact", () => {
+		const preparation = prepareCompaction(turns(), {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: 64000,
+			keepRecentFraction: 1,
+		});
+
+		expect(preparation).toBeUndefined();
+	});
+});
+
 describe("prepareCompaction with previous compaction", () => {
 	it("should skip repeated compactions when kept messages still fit", () => {
 		const u1 = createMessageEntry(createUserMessage("user msg 1 (summarized by compaction1)"));
@@ -533,7 +574,7 @@ describe("prepareCompaction with previous compaction", () => {
 		const a4 = createMessageEntry(createAssistantMessage("assistant msg 4", createMockUsage(8000, 2000)));
 
 		const pathEntries = [u1, a1, u2, a2, u3, a3, compaction1, u4, a4];
-		const preparation = prepareCompaction(pathEntries, DEFAULT_COMPACTION_SETTINGS);
+		const preparation = prepareCompaction(pathEntries, { ...DEFAULT_COMPACTION_SETTINGS, keepRecentFraction: 1 });
 
 		expect(preparation).toBeUndefined();
 	});

@@ -85,6 +85,7 @@ describe("AgentSession compaction model overrides", () => {
 				enabled: path !== "manual",
 				reserveTokens: 2000,
 				keepRecentTokens: 150,
+				keepRecentFraction: 0.5,
 			});
 			expect(preparations[0]?.reason).toBe(
 				path === "manual" ? "manual" : path === "overflow" ? "overflow" : "threshold",

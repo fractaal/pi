@@ -42,7 +42,7 @@ You can also trigger manually with `/compact [instructions]`, where optional ins
 
 ### How It Works
 
-1. **Find cut point**: Walk backwards through the finalized session projection, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
+1. **Find cut point**: Walk backwards through the finalized session projection, accumulating token estimates until the keep budget is reached: `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`), capped at `keepRecentFraction` (default half) of the history since the previous kept boundary. The cap keeps a `keepRecentTokens` sized for large context windows from leaving nothing to summarize in a small one
 2. **Extract messages**: Collect projected messages from the previous kept boundary (or session start) up to the cut point
 3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
 4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
@@ -423,7 +423,8 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
   "compaction": {
     "enabled": true,
     "reserveTokens": 16384,
-    "keepRecentTokens": 20000
+    "keepRecentTokens": 20000,
+    "keepRecentFraction": 0.5
   }
 }
 ```
@@ -433,6 +434,7 @@ Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settin
 | `enabled` | `true` | Enable auto-compaction |
 | `reserveTokens` | `16384` | Tokens to reserve for LLM response |
 | `keepRecentTokens` | `20000` | Recent tokens to keep (not summarized) |
+| `keepRecentFraction` | `0.5` | Most of the compactable history to keep, from 0 to 1; caps `keepRecentTokens`. `1` keeps the whole history when it is under `keepRecentTokens`, so compaction reports nothing to compact |
 
 Disable auto-compaction with `"enabled": false`. You can still compact manually with `/compact`.
 
