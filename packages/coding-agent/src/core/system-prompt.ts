@@ -22,7 +22,12 @@ export interface BuildSystemPromptOptions {
 	toolSnippets?: Record<string, string>;
 	/** Guideline bullets contributed by each tool, keyed by tool name. */
 	toolGuidelines?: Record<string, string[]>;
-	/** Additional guideline bullets appended to the default system prompt rules. */
+	/**
+	 * Tools whose definitions are Pi's own built-ins. A custom prompt replaces their guidelines along
+	 * with the rest of Pi's prompt text; guidelines of every other tool are still rendered.
+	 */
+	builtInTools?: string[];
+	/** Additional guideline bullets appended to the default system prompt rules, or to `tool_guidelines` under a custom prompt. */
 	promptGuidelines?: string[];
 	/** Text appended from user configuration before project context, skills, and cwd. */
 	appendSystemPrompt?: string;
@@ -41,6 +46,7 @@ export type NormalizedBuildSystemPromptOptions = BuildSystemPromptOptions & {
 	hiddenTools: string[];
 	toolSnippets: Record<string, string>;
 	toolGuidelines: Record<string, string[]>;
+	builtInTools: string[];
 	promptGuidelines: string[];
 	appendSystemPrompt: string;
 	sections: Record<string, string>;
@@ -67,6 +73,7 @@ export function normalizeBuildSystemPromptOptions(input: BuildSystemPromptOption
 		toolGuidelines: Object.fromEntries(
 			Object.entries(input.toolGuidelines ?? {}).map(([name, guidelines]) => [name, [...guidelines]]),
 		),
+		builtInTools: [...(input.builtInTools ?? [])],
 		promptGuidelines: [...(input.promptGuidelines ?? [])],
 		appendSystemPrompt: input.appendSystemPrompt ?? "",
 		sections: { ...(input.sections ?? {}) },
@@ -85,19 +92,28 @@ function renderProjectContext(contextFiles: Array<{ path: string; content: strin
 	].join("\n\n");
 }
 
+/** Collects trimmed, de-duplicated guideline bullets. */
+function createRuleList(): { add: (rule: string) => void; render: () => string } {
+	const rules: string[] = [];
+	const seen = new Set<string>();
+	return {
+		add: (rule) => {
+			const normalized = rule.trim();
+			if (!normalized || seen.has(normalized)) return;
+			seen.add(normalized);
+			rules.push(normalized);
+		},
+		render: () => rules.map((rule) => `- ${rule}`).join("\n"),
+	};
+}
+
 function buildRules(
 	selectedTools: string[],
 	toolGuidelines: Record<string, string[]>,
 	promptGuidelines: string[],
 ): string {
-	const rules: string[] = [];
-	const seen = new Set<string>();
-	const addRule = (rule: string): void => {
-		const normalized = rule.trim();
-		if (!normalized || seen.has(normalized)) return;
-		seen.add(normalized);
-		rules.push(normalized);
-	};
+	const list = createRuleList();
+	const addRule = list.add;
 
 	const hasBash = selectedTools.includes("bash");
 	const hasPowerShell = selectedTools.includes("powershell");
@@ -121,7 +137,27 @@ function buildRules(
 	for (const rule of promptGuidelines) addRule(rule);
 	addRule("Be concise in your responses");
 	addRule("Show file paths clearly when working with files");
-	return rules.map((rule) => `- ${rule}`).join("\n");
+	return list.render();
+}
+
+/**
+ * Guidelines a custom prompt cannot contain itself: those of tools that are not Pi built-ins (for
+ * example extension tools) and explicit prompt guidelines. Pi's own rules and built-in tool
+ * guidelines stay replaced by the custom prompt.
+ */
+function buildCustomPromptGuidelines(
+	selectedTools: string[],
+	builtInTools: string[],
+	toolGuidelines: Record<string, string[]>,
+	promptGuidelines: string[],
+): string {
+	const list = createRuleList();
+	for (const name of selectedTools) {
+		if (builtInTools.includes(name)) continue;
+		for (const rule of toolGuidelines[name] ?? []) list.add(rule);
+	}
+	for (const rule of promptGuidelines) list.add(rule);
+	return list.render();
 }
 
 /** Build the ordered, independently replaceable sections of the structured system prompt. */
@@ -133,6 +169,7 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 		hiddenTools,
 		toolSnippets,
 		toolGuidelines,
+		builtInTools,
 		promptGuidelines,
 		appendSystemPrompt,
 		sections: customSections,
@@ -151,6 +188,8 @@ export function buildSystemPromptSections(input: BuildSystemPromptOptions): Syst
 	const promptSections: Record<string, string> = {};
 	if (customPrompt) {
 		promptSections.preamble = customPrompt;
+		const guidelines = buildCustomPromptGuidelines(declaredTools, builtInTools, toolGuidelines, promptGuidelines);
+		if (guidelines) promptSections.tool_guidelines = guidelines;
 	} else {
 		promptSections.preamble =
 			"You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.";

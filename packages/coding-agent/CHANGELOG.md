@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Tool `promptGuidelines` from extensions and SDK tools now reach the model when a custom system prompt is set (`SYSTEM.md` or `--system-prompt`). The custom prompt replaced the whole default prompt, including the rules section where those guidelines are rendered, so every extension's guidance was silently dropped. They now follow the custom prompt in a `<tool_guidelines>` section; Pi's own rules and its built-in tools' guidelines stay replaced.
+
 ## [0.86.7] - 2026-10-09
 
 ## [0.86.6] - 2026-10-08

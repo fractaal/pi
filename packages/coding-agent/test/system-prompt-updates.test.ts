@@ -13,6 +13,7 @@ import {
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import { describe, expect, test } from "vitest";
+import type { ResourceLoader } from "../src/core/resource-loader.ts";
 import { createAgentSession } from "../src/core/sdk.ts";
 import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
@@ -21,8 +22,10 @@ import {
 	buildSystemPromptState,
 	diffSystemPromptSections,
 } from "../src/core/system-prompt.ts";
+import { bashToolSystemPromptContribution } from "../src/core/tools/bash.ts";
 import type { ExtensionFactory } from "../src/index.ts";
 import { createHarness } from "./suite/harness.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "./utilities.ts";
 
 describe("system prompt updates", () => {
 	test("declares the prompt and tools once and reuses them across resume", async () => {
@@ -250,6 +253,50 @@ describe("system prompt updates", () => {
 			expect(requests[2]!.messages.filter((message) => message.role === "system")).toHaveLength(2);
 		} finally {
 			harness.cleanup();
+		}
+	});
+
+	test("a custom prompt still carries extension tool guidelines but not Pi's built-in ones", async () => {
+		const extension: ExtensionFactory = (pi) => {
+			pi.registerTool({
+				name: "planner",
+				label: "planner",
+				description: "Plans work.",
+				promptGuidelines: ["Use planner when work has several meaningful steps."],
+				parameters: Type.Object({}),
+				execute: async () => ({ content: [{ type: "text", text: "planned" }], details: {} }),
+			});
+		};
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-custom-prompt-guidelines-"));
+		try {
+			const extensionsResult = await createTestExtensionsResult([extension], tempDir);
+			const resourceLoader: ResourceLoader = {
+				...createTestResourceLoader({ extensionsResult }),
+				getSystemPrompt: () => "You are Exact.",
+			};
+			const harness = await createHarness({ resourceLoader, initialActiveToolNames: ["read", "bash", "planner"] });
+			try {
+				const requests: TranscriptContext[] = [];
+				harness.setResponses([
+					(providerContext) => {
+						requests.push(JSON.parse(JSON.stringify(providerContext)) as TranscriptContext);
+						return fauxAssistantMessage("ok");
+					},
+				]);
+				await harness.session.prompt("hello");
+
+				const text = getCurrentSystemPrompt(requests[0]!.messages);
+				expect(text.startsWith("You are Exact.")).toBe(true);
+				expect(text).toContain(
+					"<tool_guidelines>\n- Use planner when work has several meaningful steps.\n</tool_guidelines>",
+				);
+				expect(text).not.toContain(bashToolSystemPromptContribution.guidelines[0]);
+				expect(text).not.toContain("Be concise in your responses");
+			} finally {
+				harness.cleanup();
+			}
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
 		}
 	});
 
