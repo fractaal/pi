@@ -763,7 +763,12 @@ describe("a call that precedes its tool's declaration", () => {
 		const output = payload.input.find((item) => item.type === "function_call_output");
 		expect(call?.name).toBe("late_tool");
 		expect(output?.call_id).toBe(call?.call_id);
-		const declaration = types.findIndex((type) => type === "additional_tools" || type === "tool_search_output");
+		// Upstream declares the starting tool set as an additional_tools item too, so find the one that adds late_tool.
+		const declaration = payload.input.findIndex(
+			(item) =>
+				(item.type === "additional_tools" || item.type === "tool_search_output") &&
+				item.tools?.some((value) => value.name === "late_tool"),
+		);
 		expect(declaration).toBeGreaterThan(types.indexOf("function_call_output"));
 		const declared = payload.input[declaration];
 		expect(declared?.tools?.map((value) => value.name)).toEqual(["late_tool"]);

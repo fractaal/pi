@@ -356,6 +356,7 @@ describe("InteractiveMode compaction events", () => {
 			showStatus: vi.fn(),
 			isInitialized: true,
 			footer: { invalidate: vi.fn() },
+			programStatus: { handleEvent: vi.fn() },
 			autoCompactionEscapeHandler: undefined as (() => void) | undefined,
 			autoCompactionLoader: undefined,
 			defaultEditor: {},

@@ -116,6 +116,13 @@
           "maximum": 9007199254740991,
           "default": 20000
         },
+        "keepRecentFraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Share of the compactable history kept; caps keepRecentTokens.",
+          "default": 0.5
+        },
         "modelOverrides": {
           "type": "object",
           "patternProperties": {
@@ -163,16 +170,16 @@
         },
         "maxRetries": {
           "type": "number",
-          "default": 3
+          "description": "Agent retry attempts. Unbounded when unset."
         },
         "baseDelayMs": {
           "type": "number",
-          "description": "Exponential backoff base delay in milliseconds: 2s, 4s, 8s.",
+          "description": "Exponential backoff base delay in milliseconds, capped by maxAgentDelayMs.",
           "default": 2000
         },
         "maxAgentDelayMs": {
           "type": "number",
-          "default": 60000
+          "default": 10000
         },
         "provider": {
           "type": "object",
