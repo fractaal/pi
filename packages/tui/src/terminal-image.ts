@@ -86,6 +86,16 @@ function detectCapabilitiesFromEnvironment(tmuxForwardsHyperlink: () => boolean)
 		return { images: null, trueColor: hasTrueColorHint, hyperlinks: false };
 	}
 
+	// Herdr forwards OSC 8 hyperlinks and supports the Kitty graphics protocol. Check it before
+	// outer-terminal detection because variables like KITTY_WINDOW_ID can leak into its panes.
+	if (termProgram === "herdr") {
+		return { images: "kitty", trueColor: hasTrueColorHint, hyperlinks: true };
+	}
+
+	if (termProgram === "rex") {
+		return { images: "kitty", trueColor: true, hyperlinks: true };
+	}
+
 	if (process.env.KITTY_WINDOW_ID || termProgram === "kitty") {
 		return { images: "kitty", trueColor: true, hyperlinks: true };
 	}
@@ -339,15 +349,24 @@ export interface KittyImagePlacement {
 
 const kittyImageMetadata = new Map<number, RegisteredKittyImageMetadata>();
 let kittyTransmissionGeneration = 0;
+// Tallest registered image. Bounds backward searches for image lines above a
+// viewport: no image line further up than this can reach into it.
+let maxKittyImageRows = 0;
 
 export function registerKittyImageMetadata(metadata: KittyImageMetadata): void {
 	kittyTransmissionGeneration += 1;
+	maxKittyImageRows = Math.max(maxKittyImageRows, metadata.rows);
 	kittyImageMetadata.delete(metadata.imageId);
 	kittyImageMetadata.set(metadata.imageId, { ...metadata, transmissionGeneration: kittyTransmissionGeneration });
 	if (kittyImageMetadata.size > 1000) {
 		const oldestImageId = kittyImageMetadata.keys().next().value;
 		if (oldestImageId !== undefined) kittyImageMetadata.delete(oldestImageId);
 	}
+}
+
+/** Return the row height of the tallest Kitty image registered so far. */
+export function getMaxKittyImageRows(): number {
+	return maxKittyImageRows;
 }
 
 function getRegisteredKittyImageMetadataFromControls(controls: string): RegisteredKittyImageMetadata | undefined {

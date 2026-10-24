@@ -21,6 +21,7 @@ import {
 } from "./errors.ts";
 import {
 	type AuthorizationServerMetadata,
+	isHttpUrl,
 	type OAuthClientInformation,
 	type OAuthClientInformationFull,
 	type OAuthClientInformationMixed,
@@ -80,6 +81,8 @@ export interface OAuthFlowOptions {
 	 */
 	authorizationServerMetadataUrl?: URL;
 	fetch?: McpFetch;
+	/** Aborts every request of the flow. Requests have no time limit of their own; combine with a timeout as needed. */
+	signal?: AbortSignal;
 	skipIssuerValidation?: boolean;
 	/**
 	 * Go straight to the authorization redirect instead of refreshing stored tokens, for example when the
@@ -97,6 +100,7 @@ export interface TokenRequestOptions {
 	resource?: string;
 	addClientAuthentication?: AddClientAuthentication;
 	fetch?: McpFetch;
+	signal?: AbortSignal;
 }
 
 function loopback(hostname: string): boolean {
@@ -183,6 +187,8 @@ export async function startAuthorization(
 		throw new Error("Authorization server does not support PKCE S256");
 	}
 	const url = new URL(metadata?.authorization_endpoint ?? new URL("/authorize", authorizationServerUrl));
+	// Callers open this URL with the platform URL handler, which also launches files and custom protocols.
+	if (!isHttpUrl(url)) throw new Error(`Invalid authorization endpoint ${url.href}`);
 	const { verifier, challenge } = await pkce();
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("client_id", options.clientInformation.client_id);
@@ -217,7 +223,12 @@ async function tokenRequest(
 			params,
 		);
 	}
-	const response = await (options.fetch ?? globalThis.fetch)(url, { method: "POST", headers, body: params });
+	const response = await (options.fetch ?? globalThis.fetch)(url, {
+		method: "POST",
+		headers,
+		body: params,
+		signal: options.signal,
+	});
 	const text = await response.text();
 	let value: unknown;
 	try {
@@ -242,6 +253,7 @@ export async function registerClient(
 		clientMetadata: OAuthClientMetadata;
 		scope?: string;
 		fetch?: McpFetch;
+		signal?: AbortSignal;
 	},
 ): Promise<OAuthClientInformationFull> {
 	const endpoint = options.metadata?.registration_endpoint;
@@ -258,6 +270,7 @@ export async function registerClient(
 					options.clientMetadata.application_type ?? applicationType(options.clientMetadata.redirect_uris),
 				...(options.scope ? { scope: options.scope } : {}),
 			}),
+			signal: options.signal,
 		},
 	);
 	if (!response.ok) throw new OAuthRegistrationError(response.status, await response.text());
@@ -319,6 +332,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 					(await discoverAuthorizationServerMetadata(cached.authorizationServerUrl, {
 						fetch: options.fetch,
 						skipIssuerValidation: options.skipIssuerValidation,
+						signal: options.signal,
 					})),
 				resourceMetadata: cached.resourceMetadata,
 			}
@@ -327,6 +341,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 				authorizationServerMetadataUrl: metadataUrl,
 				fetch: options.fetch,
 				skipIssuerValidation: options.skipIssuerValidation,
+				signal: options.signal,
 			});
 	if (!metadataUrl) {
 		await provider.saveDiscoveryState?.({
@@ -354,6 +369,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 			clientMetadata: provider.clientMetadata,
 			scope,
 			fetch: options.fetch,
+			signal: options.signal,
 		});
 		await provider.saveClientInformation(client);
 	}
@@ -365,12 +381,14 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 		resource,
 		addClientAuthentication: provider.addClientAuthentication,
 		fetch: options.fetch,
+		signal: options.signal,
 	};
 	if (options.authorizationCode) {
-		// RFC 9207: never send a code from another authorization server to this one.
+		// RFC 9207: never send a code from another authorization server to this one. Without metadata there
+		// is no issuer to compare with, so any `iss` is rejected.
 		const iss = options.iss;
-		if (metadata && (iss !== undefined || metadata.authorization_response_iss_parameter_supported)) {
-			if (iss !== metadata.issuer) throw new OAuthIssuerMismatchError(metadata.issuer, iss);
+		if (iss !== undefined || metadata?.authorization_response_iss_parameter_supported) {
+			if (iss !== metadata?.issuer) throw new OAuthIssuerMismatchError(metadata?.issuer, iss);
 		}
 		const tokens = await exchangeAuthorizationCode(discovered.authorizationServerUrl, {
 			...tokenOptions,
@@ -394,7 +412,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 			await provider.saveTokens(withScope(tokens, existing.scope));
 			return "AUTHORIZED";
 		} catch (error) {
-			if (error instanceof OAuthInsecureEndpointError) throw error;
+			if (options.signal?.aborted || error instanceof OAuthInsecureEndpointError) throw error;
 			if (error instanceof OAuthError && error.code !== "server_error") throw error;
 		}
 	}

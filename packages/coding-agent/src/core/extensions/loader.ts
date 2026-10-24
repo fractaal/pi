@@ -100,6 +100,7 @@ function getAliases(): Record<string, string> {
 		"ai/dist/api/transform-messages.js",
 		"@earendil-works/pi-ai/api/transform-messages",
 	);
+	const piAiModelsEntry = resolveWorkspaceOrImport("ai/dist/models.js", "@earendil-works/pi-ai/models");
 	const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@earendil-works/pi-ai/oauth");
 	const piAiProvidersEntry = resolveWorkspaceOrImport(
 		"ai/dist/providers/all.js",
@@ -114,6 +115,7 @@ function getAliases(): Record<string, string> {
 		"@earendil-works/pi-ai/api/openai-codex-responses": piAiOpenAICodexResponsesEntry,
 		"@earendil-works/pi-ai/api/transform-messages": piAiTransformMessagesEntry,
 		"@earendil-works/pi-ai/compat": piAiCompatEntry,
+		"@earendil-works/pi-ai/models": piAiModelsEntry,
 		"@earendil-works/pi-ai/oauth": piAiOauthEntry,
 		"@earendil-works/pi-ai": piAiCompatEntry,
 		"@mariozechner/pi-coding-agent": piCodingAgentEntry,
@@ -123,6 +125,7 @@ function getAliases(): Record<string, string> {
 		"@mariozechner/pi-ai/api/openai-codex-responses": piAiOpenAICodexResponsesEntry,
 		"@mariozechner/pi-ai/api/transform-messages": piAiTransformMessagesEntry,
 		"@mariozechner/pi-ai/compat": piAiCompatEntry,
+		"@mariozechner/pi-ai/models": piAiModelsEntry,
 		"@mariozechner/pi-ai/oauth": piAiOauthEntry,
 		"@mariozechner/pi-ai": piAiCompatEntry,
 		typebox: typeboxEntry,

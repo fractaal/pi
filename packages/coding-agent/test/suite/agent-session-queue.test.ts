@@ -1,9 +1,14 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, getCurrentSystemPrompt } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent";
+import type { BeforeAgentStartEvent, ExtensionAPI, InputEvent } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
+
+/** The text of the message that starts the run. */
+function startText(event: BeforeAgentStartEvent): string {
+	return event.messageType === "user" ? event.prompt : getMessageText(event.message);
+}
 
 async function createWaitingHarness(
 	options: {
@@ -311,8 +316,8 @@ describe("AgentSession queue characterization", () => {
 		const waiting = await createWaitingHarness({
 			extensionFactories: [
 				(pi) => {
-					pi.on("before_agent_start", ({ prompt }) => {
-						promptsSeen.push(prompt);
+					pi.on("before_agent_start", (event) => {
+						promptsSeen.push(startText(event));
 					});
 				},
 			],
@@ -385,15 +390,19 @@ describe("AgentSession queue characterization", () => {
 
 	it("runs before_agent_start when a triggerTurn custom message starts an agent run", async () => {
 		const promptsSeen: string[] = [];
-		const initiatorsSeen: string[] = [];
+		const messageTypesSeen: string[] = [];
 		const imagesSeen: number[] = [];
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
-					pi.on("before_agent_start", ({ prompt, initiator, images, systemPrompt }) => {
-						promptsSeen.push(prompt);
-						initiatorsSeen.push(initiator);
-						imagesSeen.push(images?.length ?? 0);
+					pi.on("before_agent_start", (event) => {
+						const { systemPrompt } = event;
+						promptsSeen.push(startText(event));
+						messageTypesSeen.push(event.messageType);
+						const content = event.messageType === "user" ? (event.images ?? []) : event.message.content;
+						imagesSeen.push(
+							typeof content === "string" ? 0 : content.filter((part) => part.type === "image").length,
+						);
 						return {
 							systemPrompt: `${systemPrompt}\n\nExtension prompt append.`,
 							message: {
@@ -431,7 +440,7 @@ describe("AgentSession queue characterization", () => {
 		);
 
 		expect(promptsSeen).toEqual(["Host custom turn."]);
-		expect(initiatorsSeen).toEqual(["custom_message"]);
+		expect(messageTypesSeen).toEqual(["custom"]);
 		expect(imagesSeen).toEqual([1]);
 		expect(providerSystemPrompt).toContain("Extension prompt append.");
 		expect(providerMessages).toContain("Host custom turn.");
@@ -451,8 +460,8 @@ describe("AgentSession queue characterization", () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
-					pi.on("before_agent_start", async ({ prompt }) => {
-						promptsSeen.push(prompt);
+					pi.on("before_agent_start", async (event) => {
+						promptsSeen.push(startText(event));
 						if (promptsSeen.length === 1) {
 							markFirstHookStarted();
 							await firstHookRelease;
@@ -495,8 +504,8 @@ describe("AgentSession queue characterization", () => {
 		const harness = await createHarness({
 			extensionFactories: [
 				(pi) => {
-					pi.on("before_agent_start", ({ prompt }) => {
-						promptsSeen.push(prompt);
+					pi.on("before_agent_start", (event) => {
+						promptsSeen.push(startText(event));
 					});
 				},
 			],

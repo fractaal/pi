@@ -2,6 +2,7 @@ import * as bundledPiAgentCore from "@earendil-works/pi-agent-core";
 import * as bundledOpenAICodexResponses from "@earendil-works/pi-ai/api/openai-codex-responses";
 import * as bundledPiAiTransformMessages from "@earendil-works/pi-ai/api/transform-messages";
 import * as bundledPiAiCompat from "@earendil-works/pi-ai/compat";
+import * as bundledPiAiModels from "@earendil-works/pi-ai/models";
 import * as bundledPiAiOauth from "@earendil-works/pi-ai/oauth";
 import * as bundledPiAiProviders from "@earendil-works/pi-ai/providers/all";
 import * as bundledPiTui from "@earendil-works/pi-tui";
@@ -29,6 +30,7 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@earendil-works/pi-ai/api/openai-codex-responses": bundledOpenAICodexResponses,
 	"@earendil-works/pi-ai/api/transform-messages": bundledPiAiTransformMessages,
 	"@earendil-works/pi-ai/compat": bundledPiAiCompat,
+	"@earendil-works/pi-ai/models": bundledPiAiModels,
 	"@earendil-works/pi-ai/oauth": bundledPiAiOauth,
 	"@earendil-works/pi-ai/providers/all": bundledPiAiProviders,
 	"@earendil-works/pi-coding-agent": bundledPiCodingAgent,
@@ -38,6 +40,7 @@ export const VIRTUAL_MODULES: Record<string, unknown> = {
 	"@mariozechner/pi-ai/api/openai-codex-responses": bundledOpenAICodexResponses,
 	"@mariozechner/pi-ai/api/transform-messages": bundledPiAiTransformMessages,
 	"@mariozechner/pi-ai/compat": bundledPiAiCompat,
+	"@mariozechner/pi-ai/models": bundledPiAiModels,
 	"@mariozechner/pi-ai/oauth": bundledPiAiOauth,
 	"@mariozechner/pi-ai/providers/all": bundledPiAiProviders,
 	"@mariozechner/pi-coding-agent": bundledPiCodingAgent,
