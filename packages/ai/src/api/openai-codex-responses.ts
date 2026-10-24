@@ -6,7 +6,6 @@ import type {
 	ResponseInput,
 	ResponseStreamEvent,
 } from "openai/resources/responses/responses.js";
-
 import { clampThinkingLevel, type Provider } from "../models.ts";
 import { registerSessionResourceCleanup } from "../session-resources.ts";
 import type {
@@ -31,8 +30,8 @@ import {
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord } from "../utils/headers.ts";
+import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
-import { getPiUserAgent } from "../utils/pi-user-agent.ts";
 import { isRetryableAssistantError, retryAssistantCall } from "../utils/retry.ts";
 import { getSystemMessageText } from "../utils/text.ts";
 import {
@@ -46,7 +45,12 @@ import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { retainCodexCompactionInput, trimCodexCompactionToolOutputs } from "./openai-codex-compaction-history.ts";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.ts";
-import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.ts";
+import {
+	convertResponsesMessages,
+	convertResponsesTools,
+	getResponsesToolSupport,
+	processResponsesStream,
+} from "./openai-responses-shared.ts";
 import { buildBaseOptions } from "./simple-options.ts";
 
 // ============================================================================
@@ -324,7 +328,7 @@ function loadNodeZlib(): typeof NodeZlib | null {
 // Returns the zstd-compressed body bytes, or null when compression is
 // unavailable (browser/Vite builds). Callers fall back to sending the
 // uncompressed JSON when this returns null.
-function compressRequestBodyZstd(bodyJson: string): Uint8Array | null {
+function compressRequestBodyZstd(bodyJson: string): Uint8Array<ArrayBuffer> | null {
 	const zlib = loadNodeZlib();
 	if (!zlib || typeof zlib.zstdCompressSync !== "function") {
 		return null;
@@ -333,7 +337,8 @@ function compressRequestBodyZstd(bodyJson: string): Uint8Array | null {
 		const compressed = zlib.zstdCompressSync(bodyJson, {
 			params: { [zlib.constants.ZSTD_c_compressionLevel]: REQUEST_COMPRESSION_ZSTD_LEVEL },
 		});
-		return new Uint8Array(compressed.buffer, compressed.byteOffset, compressed.byteLength);
+		// A copy owns a plain ArrayBuffer, which fetch accepts as a body under every lib.
+		return new Uint8Array(compressed);
 	} catch {
 		return null;
 	}
@@ -393,8 +398,18 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				body = nextBody as RequestBody;
 			}
 			const websocketRequestId = codexSessionId || uuidv7();
-			const sseHeaders = buildSSEHeaders(model.headers, options?.headers, accountId, apiKey, codexSessionId);
+			// Codex expects an originator on every request; it is not attribution.
+			const identityHeaders = { originator: "pi", ...getIdentityHeaders(model, options?.identity) };
+			const sseHeaders = buildSSEHeaders(
+				identityHeaders,
+				model.headers,
+				options?.headers,
+				accountId,
+				apiKey,
+				codexSessionId,
+			);
 			const websocketHeaders = buildWebSocketHeaders(
+				identityHeaders,
 				model.headers,
 				options?.headers,
 				accountId,
@@ -494,7 +509,7 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			if (compressedBody) {
 				sseHeaders.set("content-encoding", "zstd");
 			}
-			const sseBody: Uint8Array | string = compressedBody ?? bodyJson;
+			const sseBody: Uint8Array<ArrayBuffer> | string = compressedBody ?? bodyJson;
 
 			// Fetch with retry logic for rate limits and transient errors
 			let response: Response | undefined;
@@ -733,7 +748,14 @@ function buildRequestBody(
 	const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
 	const supportsAdditionalTools = model.compat?.supportsAdditionalTools ?? false;
 	const supportsToolSearch = model.compat?.supportsToolSearch ?? false;
-	const transcriptTools = resolveTranscriptTools(context.messages, supportsAdditionalTools || supportsToolSearch);
+	const transcriptTools = resolveTranscriptTools(
+		context.messages,
+		getResponsesToolSupport({
+			supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
+			supportsAdditionalTools,
+			supportsToolSearch,
+		}),
+	);
 	const checkpoint = options?.nativeCompactionCheckpoint;
 	const checkpointInput: ResponseInput = checkpoint ? [...(checkpoint.retainedInput ?? []), checkpoint.item] : [];
 	const requestContext = options?.nativeCompaction
@@ -1892,12 +1914,17 @@ function extractAccountId(token: string): string {
 }
 
 function buildBaseCodexHeaders(
+	defaultHeaders: Record<string, string>,
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
 	accountId: string | undefined,
 	token: string | undefined,
 ): Headers {
-	const headers = new Headers(initHeaders);
+	// Defaults first so model and caller headers can override them, matching the other providers.
+	const headers = new Headers(defaultHeaders);
+	for (const [key, value] of Object.entries(initHeaders || {})) {
+		headers.set(key, value);
+	}
 	for (const [key, value] of Object.entries(additionalHeaders || {})) {
 		if (value === null) {
 			headers.delete(key);
@@ -1913,19 +1940,18 @@ function buildBaseCodexHeaders(
 		headers.delete("Authorization");
 		headers.delete("chatgpt-account-id");
 	}
-	headers.set("originator", "pi");
-	headers.set("User-Agent", getPiUserAgent());
 	return headers;
 }
 
 function buildSSEHeaders(
+	defaultHeaders: Record<string, string>,
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
 	accountId: string | undefined,
 	token: string | undefined,
 	sessionId?: string,
 ): Headers {
-	const headers = buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token);
+	const headers = buildBaseCodexHeaders(defaultHeaders, initHeaders, additionalHeaders, accountId, token);
 	headers.set("OpenAI-Beta", "responses=experimental");
 	headers.set("accept", "text/event-stream");
 	headers.set("content-type", "application/json");
@@ -1939,13 +1965,14 @@ function buildSSEHeaders(
 }
 
 function buildWebSocketHeaders(
+	defaultHeaders: Record<string, string>,
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
 	accountId: string | undefined,
 	token: string | undefined,
 	requestId: string,
 ): Headers {
-	const headers = buildBaseCodexHeaders(initHeaders, additionalHeaders, accountId, token);
+	const headers = buildBaseCodexHeaders(defaultHeaders, initHeaders, additionalHeaders, accountId, token);
 	headers.delete("accept");
 	headers.delete("content-type");
 	headers.delete("OpenAI-Beta");

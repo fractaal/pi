@@ -49,7 +49,7 @@ it("uses the provider's native discovery instead of replacing it with pi.dev, an
 					],
 				});
 			if (String(url).includes("pi.dev/api/models/providers/openai-codex"))
-				return Response.json({ [modelId]: { ...getBuiltinModel("openai-codex", "gpt-5.5"), id: modelId } });
+				return Response.json({ [modelId]: { ...getBuiltinModel("openai-codex", "gpt-6-astra"), id: modelId } });
 			throw new Error("Unexpected catalog request");
 		}),
 	);

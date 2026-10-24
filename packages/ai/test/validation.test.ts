@@ -352,4 +352,24 @@ describe("validateToolArguments", () => {
 
 		expect(issues.map((issue) => issue.split(":")[0])).toEqual(fields);
 	});
+
+	// #10897
+	it("reports malformed arguments JSON instead of validating empty arguments", () => {
+		const tool: Tool = {
+			name: "echo",
+			description: "Echo tool",
+			parameters: Type.Object({ value: Type.Optional(Type.String()) }),
+		};
+		const toolCall: ToolCall = {
+			type: "toolCall",
+			id: "tool-1",
+			name: "echo",
+			arguments: {},
+			argumentsError: "Unexpected token",
+		};
+
+		expect(() => validateToolArguments(tool, toolCall)).toThrow(
+			'Invalid arguments for tool "echo": Unexpected token',
+		);
+	});
 });

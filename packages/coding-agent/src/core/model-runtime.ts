@@ -25,6 +25,7 @@ import {
 	type DeferredCancelOptions,
 	type DeferredFetchOptions,
 	type DeferredHandle,
+	getOpenCodeSessionHeaders,
 	type ImageApi,
 	type ImageModel,
 	type ImagesContext,
@@ -62,8 +63,10 @@ import {
 	type OpenAICodexSimpleStreamOptions,
 } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import * as builtinProviderCatalog from "@earendil-works/pi-ai/providers/all";
+import { personalizeOpenRouterCatalog } from "@earendil-works/pi-ai/providers/openrouter";
 import {
 	assertChatModel,
+	assertClassifierInputSupported,
 	assertClassifierModel,
 	assertImageModel,
 	classifierErrorResult,
@@ -84,7 +87,7 @@ import {
 	resolveConfiguredModelHeaders,
 	validateExtensionProvider,
 } from "./provider-composer.ts";
-import { withRemoteCatalog } from "./remote-catalog-provider.ts";
+import { withPersonalizedCatalog, withRemoteCatalog } from "./remote-catalog-provider.ts";
 import { RuntimeCredentials } from "./runtime-credentials.ts";
 import {
 	createVirtualModel,
@@ -228,13 +231,20 @@ export class ModelRuntime implements Models {
 				? new FileModelsStore(options.modelsStorePath ?? join(dirname(modelsPath), "models-store.json"))
 				: new InMemoryCodingAgentModelsStore());
 		const builtinModelDataGeneratedAt = builtinProviderCatalog.getBuiltinModelDataGeneratedAt();
-		const providers = builtinProviderCatalog
-			.builtinProviders()
-			.map((provider) =>
-				provider.refreshModels
-					? provider
-					: withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt),
-			);
+		const providers = builtinProviderCatalog.builtinProviders().map((provider) => {
+			// Providers with their own discovery (Radius, the native Codex catalog) keep it.
+			if (provider.refreshModels) return provider;
+			// OpenRouter narrows the catalog to the models, limits and prices of the user's key.
+			if (provider.id === "openrouter") {
+				return withPersonalizedCatalog(
+					provider,
+					personalizeOpenRouterCatalog,
+					options.catalogBaseUrl,
+					builtinModelDataGeneratedAt,
+				);
+			}
+			return withRemoteCatalog(provider, options.catalogBaseUrl, builtinModelDataGeneratedAt);
+		});
 		const runtime = new ModelRuntime(
 			credentials,
 			config,
@@ -674,13 +684,20 @@ export class ModelRuntime implements Models {
 
 		const { transformHeaders, ...rawProviderOptions } = options ?? {};
 		const providerOptions = rawProviderOptions as Omit<TOptions, "transformHeaders"> & ProviderRequestOptions<TModel>;
-		let headers = mergeHeaders(resolution.auth.headers, providerOptions.headers);
+		const requestModel: TModel = resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model;
+		const sessionId =
+			"sessionId" in providerOptions && typeof providerOptions.sessionId === "string"
+				? providerOptions.sessionId
+				: undefined;
+		let headers = mergeHeaders(
+			mergeHeaders(getOpenCodeSessionHeaders(requestModel, sessionId), resolution.auth.headers),
+			providerOptions.headers,
+		);
 		if (transformHeaders) headers = await transformHeaders(headers ?? {});
 		const env =
 			resolution.env || providerOptions.env
 				? { ...(resolution.env ?? {}), ...(providerOptions.env ?? {}) }
 				: undefined;
-		const requestModel: TModel = resolution.auth.baseUrl ? { ...model, baseUrl: resolution.auth.baseUrl } : model;
 		return {
 			provider,
 			model: requestModel,
@@ -830,6 +847,7 @@ export class ModelRuntime implements Models {
 	): Promise<ClassifierResult> {
 		try {
 			assertClassifierModel(model);
+			assertClassifierInputSupported(model, context);
 			const prepared = await this.prepareRequest(model, options);
 			if (!prepared.provider.classify) {
 				throw new ModelsError("provider", `Provider ${model.provider} does not support classification`);

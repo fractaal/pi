@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `streamProxy()` re-parsing the accumulated tool-call arguments on every delta and keeping their raw text on the partial content block ([#9265](https://github.com/earendil-works/pi/issues/9265))
+
+## [1.4.0] - 2026-10-21
+
+### Added
+
+- Added `AgentOptions.identity` and `Agent.identity` (a pi-ai `ClientIdentity`) to set the `User-Agent` and provider attribution of agent loop requests.
+
+## [1.3.0] - 2026-10-15
+
+## [1.2.0] - 2026-10-12
+
+## [1.1.0] - 2026-10-07
+
+### Added
+
+- Added `durationMs` to tool result messages, `AgentToolCallOutcome`, and `tool_execution_end` events: how long `execute()` took, measured with a monotonic clock and excluding hooks. Calls that did not run have none ([#10549](https://github.com/earendil-works/pi/issues/10549))
+
+### Changed
+
+- `streamProxy()` returns an `AssistantMessageEventStream`, so proxied responses get `durationMs` like direct ones
+
 ## [0.86.9] - 2026-10-09
 
 ## [0.86.8] - 2026-10-09

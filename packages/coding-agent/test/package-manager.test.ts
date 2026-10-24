@@ -1612,6 +1612,37 @@ Content`,
 	});
 
 	describe("pattern filtering in top-level arrays", () => {
+		// #10765
+		it("should expand ~ in exclusion and exact patterns", async () => {
+			const previousHome = process.env.HOME;
+			process.env.HOME = tempDir;
+
+			try {
+				const skillsDir = join(tempDir, "extra", "skills");
+				for (const name of ["keep", "glob-excluded", "exact-excluded"]) {
+					mkdirSync(join(skillsDir, name), { recursive: true });
+					writeFileSync(join(skillsDir, name, "SKILL.md"), `---\nname: ${name}\ndescription: ${name}\n---\n`);
+				}
+
+				settingsManager.setSkillPaths([
+					"~/extra/skills",
+					"!~/extra/skills/glob-*",
+					"-~/extra/skills/exact-excluded",
+				]);
+
+				const result = await packageManager.resolve();
+				expect(result.skills.some((r) => isEnabled(r, "keep/SKILL.md"))).toBe(true);
+				expect(result.skills.some((r) => isDisabled(r, "glob-excluded/SKILL.md"))).toBe(true);
+				expect(result.skills.some((r) => isDisabled(r, "exact-excluded/SKILL.md"))).toBe(true);
+			} finally {
+				if (previousHome === undefined) {
+					delete process.env.HOME;
+				} else {
+					process.env.HOME = previousHome;
+				}
+			}
+		});
+
 		it("should exclude extensions with ! pattern", async () => {
 			const extDir = join(agentDir, "extensions");
 			mkdirSync(extDir, { recursive: true });
@@ -2372,6 +2403,46 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 			// Should only find the valid top-level extension
 			expect(result.extensions.some((r) => pathEndsWith(r.path, "valid.ts") && r.enabled)).toBe(true);
 			expect(result.extensions.filter((r) => r.enabled).length).toBe(1);
+		});
+	});
+
+	describe("package install failures", () => {
+		// #11088
+		it("should skip a package source that fails to install and report it", async () => {
+			settingsManager.setProjectPackages(["npm:broken-package"]);
+			const installParsedSource = vi
+				.spyOn(packageManager as any, "installParsedSource")
+				.mockRejectedValue(new Error("npm install broken-package failed with code 1"));
+
+			const result = await packageManager.resolve();
+
+			expect(installParsedSource).toHaveBeenCalledTimes(1);
+			expect(result.installFailures).toEqual([
+				{
+					source: "npm:broken-package",
+					scope: "project",
+					message: "npm install broken-package failed with code 1",
+				},
+			]);
+			expect(result.extensions).toEqual([]);
+		});
+
+		it("should not report install failures for sources that are skipped", async () => {
+			settingsManager.setProjectPackages(["npm:missing-package"]);
+			const installParsedSource = vi.spyOn(packageManager as any, "installParsedSource");
+
+			const result = await packageManager.resolve(async () => "skip");
+
+			expect(installParsedSource).not.toHaveBeenCalled();
+			expect(result.installFailures).toEqual([]);
+		});
+
+		it("should keep a missing source an error when the caller asks for one", async () => {
+			settingsManager.setProjectPackages(["npm:missing-package"]);
+
+			await expect(packageManager.resolve(async () => "error")).rejects.toThrow(
+				"Missing source: npm:missing-package",
+			);
 		});
 	});
 
