@@ -346,7 +346,7 @@ describe("createAgentSession stream options", () => {
 			extensionFactories: [
 				(pi) => {
 					pi.on("before_provider_headers", (event) => {
-						event.headers["x-hook"] = `${event.headers["HTTP-Referer"]}:${event.headers["x-provider"]}`;
+						event.headers["x-hook"] = `hook:${event.headers["x-provider"]}`;
 					});
 					pi.on("session_before_compact", async (event) => {
 						const response = await event.summarizeNativeContext!(
@@ -464,12 +464,8 @@ describe("createAgentSession stream options", () => {
 				session.agent.streamFunction({ ...model, api: "openai-completions" }, normalizeContext({ messages: [] })),
 			).rejects.toThrow(/checkpoint requires the openai-codex Responses route/);
 			expect(providerStream).toHaveBeenCalledTimes(1);
-			expect(transformedHeaders).toMatchObject({
-				"x-provider": "provider",
-				"HTTP-Referer": "https://pi.dev",
-				"X-OpenRouter-Title": "pi",
-				"x-hook": "https://pi.dev:provider",
-			});
+			// Provider attribution is pi-ai's request identity now, not a header the hook pipeline adds.
+			expect(transformedHeaders).toEqual({ "x-provider": "provider", "x-hook": "hook:provider" });
 			session.setCompactionMode("fractal");
 			for (let turn = 0; turn < 3; turn++) {
 				sessionManager.appendMessage({

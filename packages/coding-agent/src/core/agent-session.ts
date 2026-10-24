@@ -3735,6 +3735,16 @@ export class AgentSession {
 			// Case 2: the response completed successfully (or its tool calls already ran). Compact without
 			// omitting the response: agent.continue() cannot continue from a completed assistant response.
 			if (!willRetry || assistantMessage.stopReason === "toolUse") {
+				// A resumed length stop without visible text was never delivered, so it leaves the model
+				// context with its unexecuted tool calls and their results (upstream #11227).
+				if (
+					!skipAbortedCheck &&
+					recoverableLength &&
+					assistantMessage.stopReason === "length" &&
+					contentText(assistantMessage.content, "").trim().length === 0
+				) {
+					this._omitRecoveryAttempt(assistantMessage);
+				}
 				return await this._runAutoCompaction("overflow", willRetry);
 			}
 

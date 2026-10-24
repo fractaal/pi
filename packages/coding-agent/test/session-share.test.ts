@@ -110,7 +110,12 @@ describe("shareSession", () => {
 
 		await shareSession({
 			session: {
-				sessionManager: { getSessionId: () => "gist", getCwd: () => "/tmp", getBranch: () => [] },
+				sessionManager: {
+					getSessionId: () => "gist",
+					getCwd: () => "/tmp",
+					getBranch: () => [],
+					getHeader: () => undefined,
+				},
 				state: { systemPrompt: "", tools: [] },
 				settingsManager: { getSessionShareDestination: () => "gist" },
 				modelRuntime: { getProvider },
@@ -138,7 +143,12 @@ describe("shareSession", () => {
 
 		await shareSession({
 			session: {
-				sessionManager: { getSessionId: () => "radius", getCwd: () => "/tmp", getBranch: () => [] },
+				sessionManager: {
+					getSessionId: () => "radius",
+					getCwd: () => "/tmp",
+					getBranch: () => [],
+					getHeader: () => undefined,
+				},
 				state: { systemPrompt: "", tools: [] },
 				settingsManager: { getSessionShareDestination: () => "radius" },
 				modelRuntime: { getProvider: () => undefined },
