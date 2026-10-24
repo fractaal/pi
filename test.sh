@@ -87,7 +87,6 @@ if [[ "${PI_TEST_SCOPE:-all}" == "published" ]]; then
 		npm run test:scripts
 		npm test \
 			--workspace packages/telemetry \
-			--workspace packages/chord \
 			--workspace packages/codemode \
 			--workspace packages/mcp \
 			--workspace packages/ai \

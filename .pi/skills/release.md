@@ -5,10 +5,9 @@ description: Prepare, publish, verify, and recover Fractaal Pi npm releases. Use
 
 # Releasing Fractaal Pi
 
-Run repository commands from the Pi repository root. This fork publishes only the eight package family consumed by Pi and Aria:
+Run repository commands from the Pi repository root. This fork publishes only the seven package family consumed by Pi and Aria:
 
 - `@fractaal/pi-telemetry`
-- `@fractaal/chord`
 - `@fractaal/pi-codemode`
 - `@fractaal/pi-mcp`
 - `@fractaal/pi-ai`
@@ -40,7 +39,7 @@ Do not stop for a manual Ben handoff between these steps. Do not publish unrelat
 npm run release:local -- --out /tmp/pi-local-release --force
 ```
 
-This builds and packs the eight publishable packages, installs them into a clean npm directory outside the repository, starts the npm-installed CLI, and verifies its version and consumer boundary. It does not build standalone binaries or Bun package installs.
+This builds and packs the seven publishable packages, installs them into a clean npm directory outside the repository, starts the npm-installed CLI, and verifies its version and consumer boundary. It does not build standalone binaries or Bun package installs.
 
 ## Publication safety
 
