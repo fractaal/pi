@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-10-24
+
 ### Fixed
 
 - Fixed fullscreen double-click selection splitting paths and tokens at `~`, `.`, `\`, and `+`. Word characters now match iTerm2's defaults ([#10980](https://github.com/earendil-works/pi/issues/10980))
