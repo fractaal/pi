@@ -538,7 +538,9 @@ await root.reset(undefined, context);                                  // start 
 await root.reset("We were fixing the flaky login test. Continue.", context); // start from a handoff note
 ```
 
-While busy, the reset is queued like a write. When it is placed during a tool round, the current run ends. A tool can request the same with `control: { handoff: "..." }`.
+While busy, the reset is queued like a write. When it is placed during a tool round, the current run ends: its inputs settle `unanswered` with reason `reset`, and queued inputs run in the new context.
+
+A tool can return `control: { handoff: "..." }` to write the same reset with its text, but the run continues: the next model request starts in the new context, and the submission settles with that eventual answer. Queued writes and steers land after the handoff text, follow-ups wait for the run's end, and a queued `reset()` still ends the run. When every call of the round also returns `terminate: true`, the run ends after the handoff instead.
 
 ## Compaction
 

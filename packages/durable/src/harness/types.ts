@@ -142,6 +142,10 @@ export type ToolControl = {
 	readonly addTools?: readonly string[];
 	/** End the run without another model request when every result of the round sets it to `true`; `false` is a no-op. */
 	readonly terminate?: boolean;
+	/**
+	 * Start a new context with this text as its user message, as `reset(handoff)` writes, and continue the run there.
+	 * The last handoff in call order wins.
+	 */
 	readonly handoff?: string;
 };
 
