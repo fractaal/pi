@@ -2730,8 +2730,11 @@ A reset placed at a `final` boundary follows the answer, so the inputs are
 already `done`.
 
 At ordinary `postTools`, generation continues even with no queued trigger;
-selected steer IDs join that continuation. A terminating or handoff tool round
-(section 8.5) uses final behavior instead. At `final`, the current run's placed
+selected steer IDs join that continuation. A handoff tool round (section 8.5)
+first appends its reset and then applies this ordinary `postTools` boundary, so
+queued writes and selected steers land in the new context and follow-ups wait
+for the run's final boundary. A terminating tool round uses final behavior
+instead. At `final`, the current run's placed
 input submissions settle first, unless an `onYield` continuation keeps them open
 (below); selected user IDs start one successor generation with those IDs as the
 new run's inputs. Writes never trigger generation by
@@ -2739,10 +2742,9 @@ themselves. A final boundary without user triggers leaves the conversation idle,
 except for an `onYield` continuation (section 8.3), which applies only when the
 boundary selected no user item and no reset.
 
-Only successful run ends apply the final boundary: an answer, `terminate`, or
-`handoff`. Failure, a run task's abort handler, fault, and orphan settle the
-run's inputs `unanswered` and leave the inbox alone (`Conversation.abort()`
-separately withdraws queued user items); the queued items stay visible in
+Only successful run ends apply the final boundary: an answer or `terminate`.
+Failure, a run task's abort handler, fault, and orphan settle the run's inputs
+`unanswered` and leave the inbox alone (`Conversation.abort()` separately withdraws queued user items); the queued items stay visible in
 `pi.inbox` until the next input or queued write runs a boundary, or their withdrawal.
 
 Selected and stale items are removed positionally while retained item order is
@@ -3703,10 +3705,13 @@ generation's `tools` phase (section 8.5) adds the named tools to the
 conversation's stored tools filter; they take effect at the next preparation. The round
 terminates only when every result of the round requests `terminate`, as in the
 pi agent loop; the `tools` phase then uses a final boundary. Any
-`handoff` in the round, the last one in call order when several ask, ends the
-run the same way after appending a `pi.reset` entry with `head: "self"` and the
-handoff text as a user message (section 8.1), exactly what `reset(handoff)`
-writes.
+`handoff` in the round, the last one in call order when several ask, appends a
+`pi.reset` entry with `head: "self"` and the handoff text as a user message
+(section 8.1), exactly what `reset(handoff)` writes, and the run continues: the
+next generation answers in the new context, and the run's inputs settle with
+that eventual answer or error, not with the tool-calling answer. A later round
+may hand off again. A round that also terminates writes the reset and then ends
+the run as `terminate` does.
 
 A result's `usage` is stored on the tool-result message and added to the
 conversation's `pi.usage.tools[toolName]` in the result commit (section 8.6). A
@@ -4516,15 +4521,20 @@ and then commits once:
   no effect for others. Names are written without consulting the registry, so a
   tool that is not registered now is offered once it is again. The next
   preparation offers the tool when it resolves and the model may call it.
-- When every result of the round requests `terminate`, or any requests
-  `handoff`, it appends the handoff's `pi.reset` entry, if any, settles the
-  run's inputs `done` with the tool-calling answer, removes `run` and `tools`,
-  and applies the final boundary.
+- When any result requests `handoff`, it first appends the `pi.reset` entry of
+  the last one in call order and advances the boundary's active range start to
+  it, so the boundary below places its writes and user items after the handoff
+  text, and a queued head write targeting an entry before it is stale.
+- When every result of the round requests `terminate`, it settles the run's
+  inputs `done` with the tool-calling answer, removes `run` and `tools`, and
+  applies the final boundary.
 - Otherwise it removes `tools` and applies the `postTools` boundary. When that
-  boundary placed a reset, the run's inputs settle `unanswered` with `reset` and
-  selected user items start a successor run (section 6). Otherwise selected
-  steer IDs join `pi.live.run`, and it creates the next generation, owned by the
-  conversation, and hands it the run.
+  boundary placed a queued reset, which wins over a handoff written before it,
+  the run's inputs settle `unanswered` with `reset` and selected user items
+  start a successor run (section 6). Otherwise selected steer IDs join
+  `pi.live.run`, and it creates the next generation, owned by the conversation,
+  and hands it the run; after a handoff, that generation prepares and requests
+  in the new context.
 
 It completes with `{ entryId }` of the tool-calling answer. Its abort handler
 runs only after its tool tasks are terminal (section 5.5). For every call still

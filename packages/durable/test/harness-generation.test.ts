@@ -385,6 +385,24 @@ describe("generation", () => {
 		await harness.close(context);
 	});
 
+	it("records the requested thinking level on answers, streamed and polled", async () => {
+		const setup = chatSetup({ deferred: { pendingFetches: 1, pollAfterMs: 1 } });
+		setup.faux.setResponses([fauxAssistantMessage("streamed"), fauxAssistantMessage("polled")]);
+		const { harness, root } = await openChat(new MemoryStorage(), setup);
+		harness.resume();
+		const answer = async (content: string) => {
+			const settled = await (await root.submit({ type: "input", content }, context)).wait(context);
+			if (settled.status !== "done" || settled.type !== "input") throw new Error(`Unexpected ${settled.status}`);
+			return (await root.commit((tx) => tx.entry(AssistantEntry, settled.answer), context))?.model?.[0];
+		};
+		await root.configure({ thinkingLevel: "high" }, context);
+		expect(await answer("one")).toMatchObject({ thinkingLevel: "high" });
+		setup.settings.stream = { deferred: true };
+		expect(await answer("two")).toMatchObject({ thinkingLevel: "high" });
+		expect(setup.faux.state.deferredFetchCount).toBe(2);
+		await harness.close(context);
+	});
+
 	it("attributes model requests to pi by default and merges the Harness identity over it", async () => {
 		const seen: (SimpleStreamOptions["identity"] | undefined)[] = [];
 		const capture = (_context: unknown, options?: SimpleStreamOptions) => {
