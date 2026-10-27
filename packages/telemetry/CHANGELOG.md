@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The package root and `./testing` exports have a `source` condition, like `./render`, so workspace tests that resolve with `source` (Durable's and pi-env's, as the Environments workflow runs them) work without a build.
+
 ## [1.4.1] - 2026-10-24
 
 ## [1.4.0] - 2026-10-21

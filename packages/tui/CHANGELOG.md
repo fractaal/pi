@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `replaceControlCharacters()` to replace runs of C0 and C1 control characters with a space
+
+### Fixed
+
+- Fixed `ProcessTerminal.setTitle()` writing control characters from the title, which could end the title sequence and send the rest to the terminal as escape sequences
+
 ## [1.4.1] - 2026-10-24
 
 ### Fixed
