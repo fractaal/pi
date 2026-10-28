@@ -36,7 +36,7 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before marking work ready. WIP commits may record unfinished or failing work, but must say so; a checkpoint is not a claim of verification. This command does not run tests.
-- Run local builds and tests as needed to verify the task. Prefer focused checks and use the offline/non-e2e test paths below; authorization for local work is not a reason to run unrelated or live-provider suites.
+- Run local builds and tests as needed to verify the task. Run `npm run build` when tests or benchmarks need built `dist/` output; never substitute it for the preferred typecheck and lint command, `npm run check`. Prefer focused checks and use the offline/non-e2e test paths below; authorization for local work is not a reason to run unrelated or live-provider suites.
 - Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For the full inherited monorepo suite, run `./test.sh` from the repo root. The fork's release surface (the local release script and the tag publish workflow) uses `npm run test:published`, which covers scripts and the seven packages published under `@fractaal`. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
