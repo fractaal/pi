@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed `ProcessTerminal.setTitle()` writing control characters from the title, which could end the title sequence and send the rest to the terminal as escape sequences
+- Fixed display math wider than the content width being wrapped row by row, which split fractions and sums apart. It now falls back to the raw LaTeX source ([#11483](https://github.com/earendil-works/pi/issues/11483))
 
 ## [1.4.1] - 2026-10-24
 
