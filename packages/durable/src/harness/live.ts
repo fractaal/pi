@@ -33,11 +33,10 @@ type SlotProgress = {
 
 /** Presentation of one tool call of the current round. */
 export type ToolSlot = SlotProgress & {
-	/**
-	 * Absent for a call not started yet (sequential round) and for a call its request did not offer, which starts `done`
-	 * with the `entry` generation wrote.
-	 */
+	/** Absent for a call not started yet (sequential round). */
 	taskId?: TaskId;
+	/** A call to a tool its request did not offer: its task settles `tool_unavailable` without running anything. */
+	unoffered?: true;
 	/** Result entry once done; absent when the tool task faulted or was orphaned. */
 	entry?: EntryId;
 };
@@ -101,7 +100,10 @@ export type CompactionFailure = {
  * - `orphaned`: the run's task was aborted while no registered definition could take it;
  * - `interrupted`: the host stopped while the model was answering, more often than `settings.retry` retries;
  * - `restart_limit`: the run's generation was cut off `settings.restartLimit` times in a row; a request or poll it was
- *   cut off during counts as a failed attempt first, so this ends one whose charge itself keeps failing.
+ *   cut off during counts as a failed attempt first, so this ends one whose charge itself keeps failing;
+ * - `nothing_to_answer`: the context did not end in a user message or tool results (empty, or ending in an answer), so
+ *   no request was sent, as for a continue after an answer;
+ * - `turn_limit`: a tool round reached the conversation's `maxTurns`; a continue resumes on its results.
  */
 export type RunFailureReason =
 	| "model_error"
@@ -111,7 +113,9 @@ export type RunFailureReason =
 	| "faulted"
 	| "orphaned"
 	| "interrupted"
-	| "restart_limit";
+	| "restart_limit"
+	| "nothing_to_answer"
+	| "turn_limit";
 
 /** The newest run that ended without an answer (spec §8.2). */
 export type RunFailure = {
@@ -123,15 +127,38 @@ export type RunFailure = {
 	/**
 	 * `model_error`: the error text; `no_model`: which model is missing; `faulted`: the error message; `orphaned`: why
 	 * the task could not run (`missing_task`, `task_too_old`, `migration_failed`); `interrupted` and `restart_limit`: what
-	 * was cut off, and how often.
+	 * was cut off, and how often; `turn_limit`: the tool rounds the run took, `"1 turn"` or `"N turns"`.
 	 */
 	detail?: string;
+	/** The failed run's `run.first`, so a continue's `afterRun` hooks see its history too. */
+	first?: EntryId;
+};
+
+/** Run control (spec §8.2). */
+export type LiveRun = {
+	/** The task that settles the run's inputs: its generation, handed from one to the next. */
+	taskId: TaskId;
+	/** The run's placed inputs, settled when it ends; `[]` once it answered and runs only its `afterRun` tasks. */
+	inputs: SubmissionId[];
+	/** Tool rounds so far, which `AgentState.maxTurns` bounds; an `onYield` continuation starts the count over. */
+	turns: number;
+	/**
+	 * The run's first entry: the first one the boundary that started it placed, a continue's the failed run's it
+	 * continues; otherwise its first tool-calling answer. A run started before it was recorded may lack it; `afterRun`
+	 * hooks then get the answer as the first entry.
+	 */
+	first?: EntryId;
+	/**
+	 * Present once the run answered and its generation waits for the tasks `afterRun` hooks asked for, listed once
+	 * created: queued items stay queued until they are terminal, and the run then ends without a failure.
+	 */
+	afterRun?: { tasks?: TaskId[] };
 };
 
 /** Built-in live conversation state: run control and presentation of the current generation and tool round. */
 export type LiveState = {
-	/** Run control: the task that settles the run's inputs, and those inputs; present exactly while busy. */
-	run?: { taskId: TaskId; inputs: SubmissionId[] };
+	/** Run control; present exactly while busy, also while a run that answered runs its `afterRun` tasks. */
+	run?: LiveRun;
 	/** Presentation of the current generation attempt. */
 	generation?: {
 		attempt: number;
@@ -166,17 +193,20 @@ export type LiveState = {
 
 export const LiveDoc = defineDoc<LiveState>({
 	kind: "pi.live",
-	version: 2,
+	version: 3,
 	scope: "conversation",
 	history: "latest",
 	fork: "initial",
 	initial: () => ({}),
-	// Version 1 named a compaction's trigger `reason`, in `compactions` and `compactionFailure`.
+	// Version 1 named a compaction's trigger `reason`, in `compactions` and `compactionFailure`. Versions 1 and 2 (as
+	// builds before `run.turns` stored it) may lack `run.turns`: a run in flight across the upgrade counts its turns
+	// from 0. Version 2 already names the trigger `trigger`, so renaming leaves it alone.
 	migrate: (value) => {
-		const live = value as { compactions?: JsonObject[]; compactionFailure?: JsonObject };
-		const { compactions, compactionFailure } = live;
+		const live = value as { run?: JsonObject; compactions?: JsonObject[]; compactionFailure?: JsonObject };
+		const { run, compactions, compactionFailure } = live;
 		return {
 			...value,
+			...(run === undefined ? {} : { run: { ...run, turns: typeof run.turns === "number" ? run.turns : 0 } }),
 			...(compactions === undefined ? {} : { compactions: compactions.map(renameReason) }),
 			...(compactionFailure === undefined ? {} : { compactionFailure: renameReason(compactionFailure) }),
 		} as LiveState;
@@ -254,14 +284,16 @@ export type RunEnd =
 
 /**
  * End the run owned by `taskId`: settle each of its inputs, remove `run`, and, without an answer, record
- * `runFailure`. Always removes `generation`, `tools`, and `nestedTools`, whose presentation belongs to the ending run.
+ * `runFailure`. A run that answered already, and runs only its `afterRun` tasks, records no failure, however it ends.
+ * Always removes `generation`, `tools`, and `nestedTools`, whose presentation belongs to the ending run.
  */
 export function endRun(tx: Tx, live: Draft<LiveState>, taskId: TaskId, end: RunEnd): void {
 	if (live.run?.taskId === taskId) {
 		const inputs = [...live.run.inputs];
+		const { first } = live.run;
 		if (end.status === "done") {
 			for (const id of inputs) tx.settleSubmission(id, { status: "done", answer: end.answer });
-		} else {
+		} else if (live.run.afterRun === undefined) {
 			const { reason, detail } = end;
 			const settlement = end.settlement ?? {
 				status: "unanswered",
@@ -269,7 +301,13 @@ export function endRun(tx: Tx, live: Draft<LiveState>, taskId: TaskId, end: RunE
 				...(detail === undefined ? {} : { detail }),
 			};
 			for (const id of inputs) tx.settleSubmission(id, settlement);
-			live.runFailure = { taskId, inputs, reason, ...(detail === undefined ? {} : { detail }) };
+			live.runFailure = {
+				taskId,
+				inputs,
+				reason,
+				...(detail === undefined ? {} : { detail }),
+				...(first === undefined ? {} : { first }),
+			};
 		}
 		delete live.run;
 	}

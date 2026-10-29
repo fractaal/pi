@@ -1,16 +1,10 @@
-import {
-	type Context,
-	type JsonValue,
-	Watch,
-	type WatchCall,
-	type WatchEnd,
-	type WatchHandle,
-} from "@earendil-works/chord";
+import { type Context, type JsonValue, Watch, type WatchCall, type WatchHandle } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withoutAbortSignal } from "@earendil-works/chord/context";
 import { applyImmutable, type Op } from "@earendil-works/chord/delta";
 import {
+	closeEndOf,
+	closeEnds,
 	contained,
-	ENDED,
 	guardObserver,
 	type ObservedCommit,
 	observation,
@@ -110,11 +104,10 @@ export class TaskGraphView {
 		blocking.subscribeBlocked(() => this.#refreshBlocked());
 		session.subscribeClose(() => {
 			this.#closed = true;
-			const failure = this.#session.failure;
-			const end: WatchEnd = failure === undefined ? ENDED : { kind: "failed", error: failure.error };
+			const ends = closeEnds(this.#session.failure);
 			for (const observer of [...(this.#mount?.observers ?? [])]) {
 				contained(
-					() => observer.end(end),
+					() => observer.end(closeEndOf(observer, ends)),
 					(error) => session.report(error),
 				);
 			}

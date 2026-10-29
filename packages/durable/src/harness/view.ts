@@ -10,8 +10,9 @@ import { withoutAbortSignal } from "@earendil-works/chord/context";
 import { applyImmutable, type NonEmptyPath, type Op, type Path } from "@earendil-works/chord/delta";
 import { idFromNumber } from "../ids.ts";
 import {
+	closeEndOf,
+	closeEnds,
 	contained,
-	ENDED,
 	guardObserver,
 	type ObservedCommit,
 	observation,
@@ -158,12 +159,11 @@ export class ConversationViews {
 		});
 		session.subscribeClose(() => {
 			this.#closed = true;
-			const failure = this.#session.failure;
-			const end: WatchEnd = failure === undefined ? ENDED : { kind: "failed", error: failure.error };
+			const ends = closeEnds(this.#session.failure);
 			for (const mount of this.#mounts.values())
 				for (const windowed of [...mount.observers]) {
 					contained(
-						() => windowed.observer.end(end),
+						() => windowed.observer.end(closeEndOf(windowed.observer, ends)),
 						(error) => this.report(error),
 					);
 				}

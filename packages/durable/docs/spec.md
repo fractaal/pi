@@ -241,6 +241,32 @@ type SubmissionRecord =
           readonly reason: string;
           readonly detail?: JsonValue;
         }
+    ))
+  /** A run without a user message (section 6): no entry, never queued. */
+  | (SubmissionRecordBase & {
+      readonly type: "continue";
+    } & (
+      | {
+          readonly status: "placed";
+          readonly entry?: never;
+          readonly answer?: never;
+          readonly reason?: never;
+          readonly detail?: never;
+        }
+      | {
+          readonly status: "done";
+          readonly entry?: never;
+          readonly answer: EntryId;
+          readonly reason?: never;
+          readonly detail?: never;
+        }
+      | {
+          readonly status: "unanswered";
+          readonly entry?: never;
+          readonly answer?: never;
+          readonly reason: string;
+          readonly detail?: JsonValue;
+        }
     ));
 
 type SubmissionSettlement =
@@ -341,6 +367,8 @@ type SubmissionDraft = {
       readonly type: "input";
       readonly content: UserInput;
       readonly whenBusy?: "steer" | "followUp" | "reject";
+      /** `reject`: an idle conversation rejects the input with `ConversationIdle` (section 6). */
+      readonly whenIdle?: "reject";
       readonly entry?: never;
     }
   | {
@@ -348,6 +376,15 @@ type SubmissionDraft = {
       readonly entry: EntryDraft;
       readonly content?: never;
       readonly whenBusy?: never;
+      readonly whenIdle?: never;
+    }
+  /** Start a run on the context as it is, without a user message; idle only (section 6). */
+  | {
+      readonly type: "continue";
+      readonly content?: never;
+      readonly entry?: never;
+      readonly whenBusy?: never;
+      readonly whenIdle?: never;
     }
 );
 
@@ -515,6 +552,8 @@ type AgentState = {
   instructions?: string;
   /** Directory within the environment's file system, passed to `HarnessOptions.env`. */
   cwd?: string;
+  /** Tool rounds one run takes at most (section 8.5); an integer, `1` or more; unset, no limit. */
+  maxTurns?: number;
 };
 
 /** Built-in rewindable agent document; see below. */
@@ -535,6 +574,8 @@ type AgentChange = {
     | null;
   readonly instructions?: string | null;
   readonly cwd?: string | null;
+  /** `configure()` throws a `RangeError` unless it is an integer `1` or more, or `null`. */
+  readonly maxTurns?: number | null;
 };
 
 /** One change in any commit. A given field replaces the stored one; `null` clears it; `undefined` changes nothing. */
@@ -555,6 +596,7 @@ type Agent<Tool extends ToolRegistration = ToolRegistration> = {
   readonly sections: readonly PromptSection<Tool>[];
   readonly instructions?: string;
   readonly cwd?: string;
+  readonly maxTurns?: number;
 };
 
 /** Entry whose `data` has type `D`; `never` means the kind carries no data. */
@@ -586,6 +628,10 @@ type SettledSubmissionRecord = SubmissionRecord & {
 interface Submission {
   readonly id: SubmissionId;
   status(context: Context): Promise<SubmissionRecord>;
+  /**
+   * Resolves once the input is answered or unanswered: at the answer, also while the run still waits for its after-run
+   * tasks (section 8.3), so the conversation may still be busy.
+   */
   wait(context: Context): Promise<SettledSubmissionRecord>;
   abort(context: Context): Promise<"aborted" | "already_placed" | "settled">;
 }
@@ -667,6 +713,8 @@ type HooksOf<K> = K extends Task<infer _I, infer _S, infer _R, infer H>
 interface Conversation {
   readonly id: ConversationId;
   submit(submission: SubmissionDraft, context: Context): Promise<Submission>;
+  /** Admit inside the caller's commit, with the same rules; stored with that commit (section 6). */
+  submit(tx: Tx, submission: SubmissionDraft): Promise<SubmissionId>;
   /** Resolved with the current registry snapshot and settings. */
   agent(context: Context): Promise<Agent>;
   /** `configure()` in its own commit. */
@@ -1410,7 +1458,7 @@ interface Tx {
   ): Promise<TaskId<R>>;
   /** Raw submission record; no admission rules (busy check, inbox, placement). Hosts use `Conversation.submit()`. */
   createSubmission(create: SubmissionCreate): Promise<SubmissionRecord>;
-  /** Settle a queued or placed submission; only a placed input can be answered. A settled one stays unchanged. */
+  /** Settle a queued or placed submission; only a placed input or continue can be answered. A settled one stays unchanged. */
   settleSubmission(id: SubmissionId, settlement: SubmissionSettlement): void;
   /** Newest visible entry of the conversation that carries a `head`. */
   latestHeadMarker(conversationId: ConversationId): Promise<(EntryRecord & { readonly head: EntryId }) | undefined>;
@@ -1879,6 +1927,10 @@ Table rules:
 - Any table read after the first table write throws `ReadAfterWrite`.
 - Document access and read-your-writes remain available after table writes.
 - Creation methods return their created ID/record; callers do not read it back.
+- `Conversation.submit(tx, draft)` and `ConversationHandle.submit(tx, draft)`
+  come before the commit's first table write, another admission's included;
+  otherwise they throw `ReadAfterWrite`, whether or not the admission would read
+  a table (section 6).
 
 Storage ownership:
 
@@ -2096,6 +2148,13 @@ interface TaskRuntime<I, S, R, H extends object> extends DocumentObserver, Docum
   /** Committed entry visible from the task's conversation. */
   entry(id: EntryId, context: Context): Promise<EntryRecord | undefined>;
   entry<D extends JsonValue>(token: Entry<D>, id: EntryId, context: Context): Promise<TypedEntry<D> | undefined>;
+  /** Committed raw history of the task's conversation, fork-aware, as `Conversation.entries()`. */
+  entries(
+    query: Omit<EntryQuery, "conversationId">,
+    limit: number,
+    cursor: Cursor | undefined,
+    context: Context,
+  ): Promise<Page<EntryRecord, Cursor>>;
   /** Committed raw active transcript and model context, optionally cut off at `at`. */
   context(conversationId: ConversationId, context: Context, options?: { readonly at?: EntryId }): Promise<ContextView>;
   /** The Harness clock. */
@@ -2433,7 +2492,7 @@ task for it), the task ends visibly instead of running again:
 |---|---|
 | tool call (`pi.tool`) | ends with an error result, diagnostic code `restart_limit` ("Tool X was interrupted 3 times in a row; it is not run again"), built from its slot like an interrupted call's; its task fails with detail `{ reason: "restart_limit" }` |
 | compaction | fails with that error and detail, recorded in `pi.live.compactionFailure` |
-| generation | ends its run `unanswered` with `pi.live.runFailure` reason `restart_limit`, failing with that detail |
+| generation | ends its run `unanswered` with `pi.live.runFailure` reason `restart_limit`, failing with that detail; a run that answered already, in `finish` or `drain`, ends without a failure and the generation completes (section 8.3) |
 | a kind of an extension | the scheduler ends it `faulted` with detail `{ reason: "restart_limit" }`, reported as `task_faulted` with reason `restart_limit` |
 
 A built-in task that ends itself this way, and a generation whose run ends
@@ -2570,7 +2629,9 @@ The **ordinary owned work** of a task `T` is every task that ordinary traversal
 reaches below `T`: the tasks `T` owns, the tasks in the conversations `T` owns,
 and, transitively, the same for each of those that is not background. A
 background task and everything below it are excluded. A conversation-owned task
-may be background; a child task may not.
+may be background; a child task may not. The tasks a generation creates for its
+`afterRun` hooks (section 8.3) are such children, so Stop and idle waits include
+them, and a cascade from the generation aborts them first.
 
 Two rules follow from the tree.
 
@@ -2788,30 +2849,82 @@ inputs, including while its tool round runs, then the next
 generation. Tool tasks never own the run; the current round's tool tasks are
 listed in `pi.live.tools`. The ID list is mutable state because a
 boundary adds placed steering inputs to an active run; every terminal path
-settles exactly the listed inputs.
+settles exactly the listed inputs. A run that answered while `afterRun` hooks
+are selected (section 8.3) settles its inputs `done` at the answer and keeps
+`run`, with an empty ID list and `run.afterRun` set, until the tasks the hooks
+asked for are terminal: the conversation stays busy, and `Submission.wait()`
+has already resolved.
 
 Admission and terminal transitions:
 
 | action | submission state | other writes |
 |---|---|---|
 | input, idle with empty inbox | `placed`, with user entry | create run and generation |
+| continue, idle | `placed`, no entry | place queued items (final boundary); create run and generation with them and itself |
+| continue, busy | none | reject with `ConversationBusy` |
+| input with `whenIdle: "reject"`, idle | none | reject with `ConversationIdle` |
 | display-only write, no queued reset | `done`, with entry | append entry; no run |
 | write, idle with empty inbox | `done`, with entry | append entry; no run |
 | input or other write, busy or non-empty inbox | `queued` | append inbox item |
 | boundary places user item | `placed`, with entry | add ID to current or successor run |
 | boundary places write | `done`, with entry | append entry |
-| run answers | input `done`, with required answer entry | remove `run`, or hand it to a successor |
+| run answers | input or continue `done`, with required answer entry | remove `run`, or hand it to a successor; with `afterRun` hooks selected, keep `run` until the tasks they ask for are terminal |
 | run fails or its task aborts | input `unanswered`, with reason | remove `run`; inbox per `afterFailedRun` below |
+| tool round reaches `maxTurns` | input `unanswered`, reason `turn_limit` | as a failed run |
 | withdraw queued item | `unanswered`, reason `aborted` | remove inbox item |
 | stale head write | `unanswered`, reason `stale` | remove inbox item |
 
 `requestId` deduplicates within one conversation before any write; reusing one
 for the other submission type rejects. A busy input with `whenBusy: "reject"`
-writes no record and reports `ConversationBusy`. An idle input queues with mode
-`steer` when `whenBusy` is `steer` and `followUp` otherwise.
+writes no record and reports `ConversationBusy`. An idle input with
+`whenIdle: "reject"` writes no record and reports `ConversationIdle`, also when
+the inbox holds queued items, so the input never starts a run of its own: with
+`whenBusy: "steer"` it steers the current run or is refused, except as below. Idle means
+`run === undefined`, the inverse of `busy` above. A run that answered and waits
+for its after-run tasks is busy, so such an input queues there; it starts the
+next run when that run ends, as every item queued behind a final answer does. An idle input queues with
+mode `steer` when `whenBusy` is `steer` and `followUp` otherwise.
+
+`Conversation.submit(tx, draft)` runs the same admission inside the caller's
+commit instead of one of its own and returns the submission's ID; a task or tool
+does so through `ConversationHandle.submit(tx, draft)` in its own commit. The
+Harness supplies the clock, queue modes, the `pi.durable.submit` span (same
+parent, links, and trace carrier as `submit(draft, context)`), and the request
+for progress a started run needs. The admission's writes, a started run
+included, are stored with the caller's other writes in that commit, or not at
+all: a host can check its own documents and `pi.live`, admit, and record the
+submission in one commit. A rejection throws before any write. Admission must
+precede the commit's first table write, another admission's included: it throws
+`ReadAfterWrite` otherwise, on every path, also where it would read no table (a
+busy input without request ID or trace). Entries it appends inside a task's or
+tool's commit carry that task's `byTaskId`, as the commit's own appends do. The
+span covers the admission only: it ends before the caller's commit is stored,
+its `result` is provisional (a later throw in the callback or a storage failure
+leaves no submission), and the commit's events (`pi.durable.entry`,
+`pi.durable.submission`) go to the caller's commit context. A first argument
+that is not a draft is taken as a transaction; one of another Session throws.
+
+A continue starts a run on the context as it is, without a user message, for
+example after a run that ended without an answer. It is admitted only while the
+conversation is idle and never queues: whether a run can continue depends on how
+the current one ends, so a busy conversation rejects it with `ConversationBusy`
+before any write. Its record is `placed` without an entry; an idle conversation's
+queued items are placed first by a final boundary in the same commit, and its
+selected user items join the run, ahead of the continue. Whether the context has
+anything to answer is checked when the run's generation prepares (section 8.3),
+not at admission: a context that does not end in a user message or tool results,
+system messages aside, ends the run without a request, `unanswered` with
+`nothing_to_answer`. An answer cut off at its output limit (`length`) is an
+answer, so a text answer is not continued; one with tool calls is, because its
+calls never ran and the context ends in their synthesized `missing_result`
+error results (section 2.1). A host offers continue while the conversation is
+idle and `pi.live.runFailure` is set (section 8.2); a stale failure (one a later
+run started in its commit kept) settles `nothing_to_answer`. Each continue starts
+a run with its own turn budget.
 
 `settings.afterFailedRun` decides what a run that fails with `model_error`,
-`no_model`, `interrupted`, or `restart_limit` does with the inputs queued behind it, in the commit that settles its
+`no_model`, `interrupted`, `restart_limit`, `nothing_to_answer`, or
+`turn_limit` does with the inputs queued behind it, in the commit that settles its
 own inputs: `keep` (the default) leaves them queued; `continue` applies the
 final boundary, so the next run starts with them, as after an answer;
 `withdraw` settles them `unanswered` with reason `run_failed`, keeping queued
@@ -2884,8 +2997,15 @@ except for an `onYield` continuation (section 8.3), which applies only when the
 boundary selected no user item and no reset.
 
 Only successful run ends apply the final boundary: an answer or `terminate`.
+With `afterRun` hooks selected, it applies when the run ends after its
+after-run tasks, not with the answer, so whether items queued before the answer
+land right after it depends on the conversation's extension selection. Items
+queued meanwhile wait as well, steers included: there is no next model request
+in the run for them to join. A run whose after-run phase was cut off
+`settings.restartLimit` times ends without this boundary, as a failed run does.
 Failure, a run task's abort handler, fault, and orphan settle the run's inputs
-`unanswered` and leave the inbox alone (`Conversation.abort()` separately withdraws queued user items); the queued items stay visible in
+`unanswered`, unless the run answered already and waits for its after-run tasks
+(its inputs are `done`), and leave the inbox alone (`Conversation.abort()` separately withdraws queued user items); the queued items stay visible in
 `pi.inbox` until the next input or queued write runs a boundary, or their withdrawal.
 
 Selected and stale items are removed positionally while retained item order is
@@ -3140,7 +3260,7 @@ await conversation.configure({ extensions: { add: [Venv] } }, context);
 |---|---|---|
 | generation `prepare` | agent (tools, sections, model, thinking level), stream options, compaction thresholds for that model | once per request; model, stream options, and offered tools are fixed in the request checkpoint (section 8.3) |
 | every task phase | extension selection for hooks; `runtime.agent()` | at most once per phase handler, at its first hook dispatch or `agent()` call, from that phase's snapshot and the committed `pi.agent`, off the Session line, with the invocation's context; fixed for the rest of the phase |
-| tool task | the implementation of an accepted call | at `call` and `execute`: the name among the phase agent's `tools`, the current selection after the tools filter; no such tool, for example one removed after preparation: `tool_unavailable`. Replay policy on reopen uses the same lookup (section 7.3) |
+| tool task | the implementation of an accepted call | at `call` and `execute`: the name among the phase agent's `tools`, the current selection after the tools filter; no such tool, for example one removed after preparation, or a call flagged `unoffered` (section 8.3): `tool_unavailable`. Replay policy on reopen uses the same lookup (section 7.3) |
 | generation, when a tool round starts | tool execution mode | once per round (section 8.3) |
 | generation, compaction | retry policy | at each attempt's classification |
 | generation, on a context overflow | compaction policy for the request's model | at classification |
@@ -3173,6 +3293,7 @@ consuming commit may rerun them. Abort errors always propagate.
 | `beforeTool` | argument replacement chain; first block wins | block tool with error text |
 | `afterTool` | result replacement chain | report, continue |
 | `afterTools` | all observers | report, continue |
+| `afterRun` | all observers; requested tasks concatenated in extension order | report, continue |
 | `beforeCompact` | first decision wins | report, continue |
 
 Hooks use task memos for durable first-writer-wins decisions. There is no public
@@ -3185,11 +3306,20 @@ type HookResult<T> = T | undefined | Promise<T | undefined>;
 interface HookApi extends DocumentReader {
   readonly taskId: TaskId;
   readonly conversationId: ConversationId;
-  /** `HarnessOptions.models`. */
   /** The current `HarnessOptions.models`, read at each access. */
   readonly models: Models;
   memo<T extends JsonValue>(name: string, context: Context): Promise<T | undefined>;
   memo<T extends JsonValue>(name: string, candidate: T, context: Context): Promise<T>;
+  /** As `TaskRuntime.entry()` (section 5.1). */
+  entry(id: EntryId, context: Context): Promise<EntryRecord | undefined>;
+  entry<D extends JsonValue>(token: Entry<D>, id: EntryId, context: Context): Promise<TypedEntry<D> | undefined>;
+  /** As `TaskRuntime.entries()` (section 5.1). */
+  entries(
+    query: Omit<EntryQuery, "conversationId">,
+    limit: number,
+    cursor: Cursor | undefined,
+    context: Context,
+  ): Promise<Page<EntryRecord, Cursor>>;
 }
 
 interface GenerationHooks {
@@ -3205,7 +3335,24 @@ interface GenerationHooks {
   onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<{ readonly continue: UserInput }>;
   /** After every tool of the round is terminal; `results` are the round's result entries in call order. */
   afterTools(assistant: EntryId, results: readonly EntryId[], api: HookApi, context: Context): void | Promise<void>;
+  /** After a run answered: the tasks to run before it ends (section 8.3). */
+  afterRun(run: RunSummary, api: HookApi, context: Context): HookResult<{ readonly tasks: readonly RunEndTask[] }>;
 }
+
+/** How a run ended, for `afterRun`. */
+type RunSummary = {
+  /** A final answer, or a tool round whose every call asked to `terminate`. */
+  readonly reason: "answer" | "terminate";
+  /** The run's first entry (`pi.live.run.first`, section 8.2), or the answer for a run without one. */
+  readonly first: EntryId;
+  /** The answer, or the terminating round's tool-calling answer. */
+  readonly answer: EntryId;
+  /** The run's last entry: the answer; for a `terminate` round its newest result, or the reset of its handoff. */
+  readonly last: EntryId;
+};
+
+/** Built by `runEndTask(task, input)`, which types `input` by the task. */
+type RunEndTask = { readonly task: AnyTask; readonly input: JsonValue };
 
 /** `parent` is set for a nested call (section 7.3). */
 type ToolHookCall = ToolCall & { readonly parent?: { readonly taskId: TaskId; readonly callId: string } };
@@ -3217,7 +3364,10 @@ interface ToolHooks {
     api: HookApi,
     context: Context,
   ): HookResult<{ readonly arguments?: JsonObject; readonly block?: string }>;
-  /** After execution, before the result is committed; replaces the result. */
+  /**
+   * Before the result is committed; replaces the result. Runs on every result the tool task writes, also the error
+   * results the Harness writes itself (section 8.4), except past the restart limit.
+   */
   afterTool(
     call: ToolHookCall,
     result: ToolExecutionResult,
@@ -3258,6 +3408,16 @@ after a first decision, does so inside its own `invoke`. Hooks receive the task'
 runtime as their `HookApi`; hook memos and the task's own memos share one
 namespace, so hook authors prefix their memo names.
 
+Hooks read committed state as it is when they run, off the line, so a hook a
+crash reruns may see more. Entries never change and compaction never removes
+them (section 8.7): a range bounded by entry IDs, such as an `afterRun` hook's
+`entries({ minEntryId: run.first, maxEntryId: run.last })`, reads the same
+before and after a compaction and in a rerun. `HookApi` has no `context()`:
+the active transcript changes in the middle of a run, when a compaction summary
+or a handoff's reset lands, so a hook asking what a run did reads its history
+instead. A range also holds entries of others, such as display-only writes,
+compaction summaries, and entries of other tasks; hooks filter by `kind`.
+
 Selection decides which behavior a conversation has; the extension's own
 document holds that behavior's state:
 
@@ -3282,6 +3442,53 @@ await root.commit(async (tx) => {
   (await tx.doc(PlanModeDoc, root.id)).enabled = true;
 }, context);
 ```
+
+An `afterRun` hook starts durable work at the end of a run, without a tool
+call, and the run waits for it (section 8.3). Here the project's tests run after
+every run that edited files, and a failure starts a fix run:
+
+```ts
+const RunTests = defineTask<{ command: string }, { phase: "run" }, string>({
+  name: "app.run-tests", version: 1,
+  initial: () => ({ phase: "run" }),
+  phases: {
+    run: async (task, runtime, context) => {
+      // The app's helper over `ExecutionEnv.exec()`: { passed: boolean; output: string }. A rerun after a crash runs it again.
+      const result = await runTests(await runtime.env(context), task.input.command, context);
+      const handle = (await runtime.conversation(runtime.conversationId, context))!;
+      await runtime.commit(async (tx) => {
+        // Admitted in this commit, before its table writes; placed when the run ends, in queue order with other input.
+        if (!result.passed) {
+          await handle.submit(tx, { type: "input", content: `Tests failed:\n${result.output}`, whenBusy: "followUp" });
+        }
+        await tx.appendEntry(runtime.conversationId, { kind: "app.tests", data: { passed: result.passed } });
+        return { status: "terminal", outcome: { status: "completed", result: result.output } };
+      }, context);
+    },
+  },
+  abort: async (_task, runtime, context) =>
+    runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context),
+});
+export const TestsAfterEdits = defineExtension({
+  name: "tests-after-edits",
+  tasks: [RunTests],
+  hooks: [hook(GenerationTask, {
+    afterRun: async (run, api, context) => {
+      const range = { minEntryId: run.first, maxEntryId: run.last, order: "ascending" } as const;
+      const { items } = await api.entries(range, 1000, undefined, context);
+      const edited = items.some((entry) => {
+        const message = entry.model?.[0];
+        return ToolResultEntry.is(entry) && message?.role === "toolResult" && ["edit", "write"].includes(message.toolName);
+      });
+      return edited ? { tasks: [runEndTask(RunTests, { command: "npm test" })] } : undefined;
+    },
+  })],
+});
+```
+
+A fix run starts another run, which asks `afterRun` again, with a fresh turn
+budget (`AgentState.maxTurns`); the extension caps such a loop itself, for
+example with a counter in its own document.
 
 ### 7.3 Tools
 
@@ -3313,7 +3520,13 @@ type ToolExecutionResult<TDetails extends JsonValue = JsonValue> = {
 
 interface ConversationHandle {
   readonly id: ConversationId;
-  submit(submission: InputSubmissionDraft, context: Context): Promise<Submission>;
+  /** Any submission, as `Conversation.submit()` takes: a task may also continue a conversation it owns. */
+  submit(submission: SubmissionDraft, context: Context): Promise<Submission>;
+  /**
+   * Inside the invocation's commit (`runtime.commit()`, a tool's `api.commit()`), as `Conversation.submit(tx, ...)`;
+   * appended entries carry the task's `byTaskId`. Rejects once the invocation is aborted or ended.
+   */
+  submit(tx: Tx, submission: SubmissionDraft): Promise<SubmissionId>;
   abort(context: Context): Promise<void>;
   waitForIdle(context: Context): Promise<void>;
 }
@@ -3503,7 +3716,10 @@ what programs get. An
 error result the Harness writes itself (unavailable, invalid arguments,
 blocked, interrupted, aborted, abandoned, ended at the restart limit, or a
 scheduler fault) has no
-`structuredOutput`; its diagnostics say what went wrong. A thrown error
+`structuredOutput`; its diagnostics say what went wrong. When an `afterTool`
+hook turns such a result into a success, programs get its bounded output for a
+schema-less tool, or one that did not resolve, and no value for a schema tool;
+the hook's own `structuredOutput` is dropped. A thrown error
 becomes a `tool_error` diagnostic with its message. A nested call whose result breaks this gets an error result
 with an `invalid_structured_output` diagnostic, without the broken value: a
 schema tool's then has no `structuredOutput`, a schema-less tool's its output;
@@ -3697,7 +3913,10 @@ A tool call is accepted only if its request offered the tool. Generation checks
 this against the tool set replayed from the committed model context through the
 request's `cutoff`; `beforeRequest` replacements do not change it. It answers a
 call to a tool it did not offer with the `tool_unavailable` result described in
-section 2.2, without a tool task. An agent change after preparation does not
+section 2.2, through a tool task whose input is flagged `unoffered`: the task
+resolves nothing, so even a tool the agent has (a deferred one not loaded yet)
+never runs, and `afterTool` and `control` apply to the result as to any call's.
+An agent change after preparation does not
 affect this check (section 2.2). The tool task resolves the called name among
 the `tools` of the phase's agent resolution, the tools filter applied. It uses
 that implementation
@@ -4250,7 +4469,7 @@ is exported as an `Entry` token.
 | `pi.user` | `[UserMessage]`, timestamp from the Harness clock at admission or placement | submissions, `onYield` continuations |
 | `pi.assistant` | `[AssistantMessage]` with any stop reason | generation |
 | `pi.system` | `[SystemMessage]` with `content: ""` (section 7.4) | generation preparation |
-| `pi.tool-result` | `[ToolResultMessage]` | tool tasks; generation for calls to tools its request did not offer |
+| `pi.tool-result` | `[ToolResultMessage]` | tool tasks; generation for calls an aborted round never started |
 | `pi.reset` | absent, or `[UserMessage]` with the handoff text; always `head: "self"` | `reset()`, generation `tools` phase for `handoff` |
 | `pi.compaction` | `[UserMessage]` with the wrapped summary; `head` is the first kept entry | compaction tasks (section 8.7) |
 
@@ -4263,8 +4482,24 @@ messages out of later requests, so no separate usage or notice kind exists.
 
 ```ts
 type LiveState = {
-  /** Run control (section 6); present exactly while the conversation is busy. */
-  run?: { taskId: TaskId; inputs: SubmissionId[] };
+  /**
+   * Run control (section 6); present exactly while the conversation is busy. `turns` counts the run's tool rounds,
+   * which `AgentState.maxTurns` bounds (section 8.5); an `onYield` continuation starts it over (section 8.3).
+   */
+  run?: {
+    taskId: TaskId;
+    /** Placed inputs, settled when the run ends; `[]` once it answered and waits for its after-run tasks. */
+    inputs: SubmissionId[];
+    turns: number;
+    /**
+     * The run's first entry, where `afterRun` hooks start reading (section 8.3): the first one the boundary that
+     * started it placed, a write's or an input's; a continue's `runFailure.first`; otherwise the run's first
+     * tool-calling answer. A run started before it was recorded may lack it and gets its answer instead.
+     */
+    first?: EntryId;
+    /** The run answered and waits for the tasks its `afterRun` hooks asked for, listed once created (section 8.3). */
+    afterRun?: { tasks?: TaskId[] };
+  };
   /** Presentation of the current generation attempt. */
   generation?: {
     attempt: number;
@@ -4302,11 +4537,10 @@ type LiveState = {
   tools?: {
     callId: string;
     name: string;
-    /**
-     * Absent for a call not started yet (sequential round, `pending`) and for a call its request did not offer,
-     * which starts `done` with the `entry` generation wrote.
-     */
+    /** Absent for a call not started yet (sequential round, `pending`). */
     taskId?: TaskId;
+    /** A call to a tool its request did not offer: its task settles `tool_unavailable` without running anything. */
+    unoffered?: true;
     status: "pending" | "running" | "done";
     /** Retained running output and what the bounds dropped. */
     output?: string;
@@ -4339,12 +4573,25 @@ type RunFailure = {
   taskId: TaskId;
   /** The run's inputs, settled `unanswered`. */
   inputs: SubmissionId[];
-  reason: "model_error" | "no_model" | "aborted" | "reset" | "faulted" | "orphaned" | "interrupted" | "restart_limit";
+  reason:
+    | "model_error"
+    | "no_model"
+    | "aborted"
+    | "reset"
+    | "faulted"
+    | "orphaned"
+    | "interrupted"
+    | "restart_limit"
+    | "nothing_to_answer"
+    | "turn_limit";
   /**
    * `model_error`: the error text; `no_model`: which model is missing; `faulted`: the error message; `orphaned`: why
-   * the task could not run (`missing_task`, `task_too_old`, `migration_failed`).
+   * the task could not run (`missing_task`, `task_too_old`, `migration_failed`); `interrupted` and `restart_limit`:
+   * what was cut off, and how often; `turn_limit`: the tool rounds the run took, `"1 turn"` or `"N turns"`.
    */
   detail?: string;
+  /** The failed run's `run.first`, which a continue takes over. */
+  first?: EntryId;
 };
 
 type CompactionFailure = {
@@ -4370,10 +4617,10 @@ type CompactionStatus = {
 | field | value |
 |---|---|
 | kind | `pi.live` |
-| version | `2` |
+| version | `3` |
 | scope/history/fork | conversation, `latest`, `initial` |
 | `initial()` | `{}` |
-| `migrate()` | from version 1: `reason` of each `compactions` status and of `compactionFailure` renamed `trigger` (section 3.6) |
+| `migrate()` | from version 1: `reason` of each `compactions` status and of `compactionFailure` renamed `trigger`; from versions 1 and 2: `run.turns` set to `0` where it is missing (section 3.6); `run.first`, `run.afterRun`, and `runFailure.first` are optional and need no step |
 | checkpoint | complete base whenever nothing runs: `generation` absent and no `running` tool or nested slot |
 | view mount | `docs["pi.live"]` |
 | created | with every Harness conversation (section 2.2) |
@@ -4390,8 +4637,8 @@ its 64 KiB scan, the commit writes the retained window as one set. Either way
 each commit writes at most one window, and the throttle bounds the rate.
 
 Generation creates `tools` with one `pending` slot per call in the commit that
-appends the tool-calling answer; a call its request did not offer starts `done`
-with its result entry. A tool task sets its slot `running` in its intent commit,
+appends the tool-calling answer; a call its request did not offer is flagged
+`unoffered`. A tool task sets its slot `running` in its intent commit,
 publishes throttled output and details into it with deferred commits (section
 4.1), and in its terminal commit sets
 `done` and `entry` and removes `output`, `droppedBytes`, `droppedLines`,
@@ -4417,7 +4664,10 @@ that outcome holds as `completing` (section 5.5), or the scheduler's cleanup
 It stays small: the summary text lives in the task's placement, never here. Partials are
 normalized to strict JSON before assignment. Every terminal path of a run task
 removes `run`, `generation`, and `tools` in the commit that settles the run's
-inputs.
+inputs. A run that answered while `afterRun` hooks are selected is the one
+exception: the answer's commit settles its inputs and removes `generation` and
+`tools`, and `run` stays, with `run.afterRun` set, until the run ends after its
+after-run tasks (section 8.3).
 
 A run that ends without an answer records why in `runFailure`, in the commit
 that settles its inputs `unanswered`:
@@ -4432,12 +4682,17 @@ that settles its inputs `unanswered`:
 | `orphaned` | its task was aborted while no definition could take it; `detail` is the reason | the reason |
 | `interrupted` | the host stopped while the model was answering, with no retry left (section 8.3); `detail` names the attempt | `interrupted` with the text |
 | `restart_limit` | its generation was cut off `restartLimit` times in a row (section 5.4), also while an interrupted request was charged; `detail` says in which phase | `restart_limit` with the text |
+| `nothing_to_answer` | its generation found a context that does not end in a user message or tool results, system messages aside, such as a continue after an answer (section 8.3); no `detail` | `nothing_to_answer` |
+| `turn_limit` | a tool round reached the conversation's `maxTurns` and ran its tools (section 8.5); `detail` is the run's count, `"1 turn"` or `"N turns"` | `turn_limit` with the count |
 
 The next commit that starts a run removes it. A run started in the same commit,
 the queue's next run under `afterFailedRun: "continue"` (section 6) or after a
 reset, keeps it, so the failure is shown until a later run starts. A run that
 ends with an answer, including a round whose tools all ask to terminate, leaves
-it alone. Inputs settled without a run (withdrawn, stale, aborted while
+it alone; so does one that answered and then ends without its after-run tasks
+(aborted, orphaned, or cut off): it answered. A run that fails copies its
+`first` into `runFailure.first`, so a continue reads the failed run's history
+too. Inputs settled without a run (withdrawn, stale, aborted while
 queued, `run_failed`) are not run failures; their submission records say why. `tx.settleSubmission()` stages each input's new status
 and resolves the transaction's latest candidate submission record, falling back
 to committed state, during assembly, like task-document validation (section 3.3),
@@ -4496,18 +4751,40 @@ type GenerationCheckpoint =
       tools: TaskId<ToolTaskResult>[];
       /** Calls of a sequential round not started yet, in call order. */
       pending: string[];
+    }
+  | {
+      /** The run answered; its `afterRun` hooks are asked for tasks, again after a crash. */
+      phase: "finish";
+      run: RunSummary;
+    }
+  | {
+      /** Waiting on the tasks the hooks asked for, which the generation owns; `waiting` holds this checkpoint. */
+      phase: "drain";
+      answer: EntryId;
+      tasks: TaskId[];
     };
 type GenerationResult = { entryId: EntryId };
 ```
 
-`pi.generation` is version 1 and starts at `{ phase: "prepare", attempt: 1 }`.
+`pi.generation` is version 2 and starts at `{ phase: "prepare", attempt: 1 }`;
+`migrate` keeps a version 1 record. Version 2 keeps calls to tools not offered
+in a sequential round's `pending`, flagged `unoffered` in their slots (section
+8.5), which a version 1 Harness would start as tool tasks without the flag, so
+it leaves version 2 blocked (`task_too_old`); the `finish` and `drain` phases
+below are version 2 as well.
 The run's inputs live in `pi.live.run`, not in the task input.
 
 - `prepare` runs section 7.4 with the phase's agent resolution and resolves
   the settings once. When the agent has no model or `models.getModel()` does
   not know it, the task fails with `no_model`. When it resumes with `overflow`
   and its compaction did not complete with an `entryId`, the run fails with
-  `model_error` and the overflow text as detail. Otherwise one commit appends
+  `model_error` and the overflow text as detail. When the committed model
+  context does not end in a user message or tool results, system messages
+  aside (it is empty, or ends in an answer, as for a continue after one), the
+  run fails with `nothing_to_answer` before any section is rendered or request
+  sent. Only roles count: a `length` answer with only text ends the context,
+  while one with tool calls is followed by the error results synthesized for
+  its calls (section 2.1), so a continue answers those. Otherwise one commit appends
   the planned `pi.system` entries and moves to `request` with the new tail as
   `cutoff`, the agent's model and thinking level, and the settings' stream
   options. These stay fixed for this request attempt; a retry prepares again. `compacted` carries over to
@@ -4582,11 +4859,23 @@ The run's inputs live in `pi.live.run`, not in the task input.
     `{ continue }` wins. The commit appends the answer and applies the final
     boundary (section 6). With a continuation and no selected user item or
     reset, it appends a `pi.user` entry with the continuation content, creates a
-    successor generation, and hands it `pi.live.run`, keeping the inputs open.
+    successor generation, and hands it `pi.live.run`, keeping the inputs open and
+    setting its `turns` to `0`: each stretch a continuation starts gets the whole
+    turn budget, and bounding `onYield` loops is the extension's job (it reads
+    `pi.live.run.turns` and `pi.agent.maxTurns` with `api.snapshot`). The chain runs
+    whatever the count.
     Otherwise it settles the run's inputs `done`, removes `run` and
     `generation`, and starts a successor run for the selected user items, if
     any; a dropped continuation is not retried. Both complete with
-    `{ entryId }`.
+    `{ entryId }`. Whether a continuation applies is decided from the inbox
+    before the boundary places anything: it applies when the inbox holds no
+    steer, no follow-up, and no reset.
+    When the phase's agent selects an `afterRun` hook and no continuation
+    applies, the commit instead appends the answer, settles the run's inputs
+    `done`, keeps `run` with `inputs: []` and `afterRun: {}`, removes
+    `generation`, applies no boundary, and moves to `finish` with
+    `{ reason: "answer", first, answer, last }`: `first` is `run.first`, or the
+    answer when the run has none, and `answer` and `last` are the answer.
   - `toolUse` with at least one tool call: the commit appends the assistant
     entry and starts the tool round described below, moving to `waiting` in the
     `tools` phase. A `toolUse` message without calls is classified like `stop`.
@@ -4616,19 +4905,45 @@ The run's inputs live in `pi.live.run`, not in the task input.
   it sleeps again. A still deferred result sleeps until a strictly later
   `pollAt`; any other result is classified as above. A model gone after reopen
   fails `no_model` once the poll is due.
+- `finish` asks the `afterRun` hooks with its `run` (section 7.2) and checks
+  each requested task off the line: its kind must be an installed task that is
+  not built-in (`pi.*`), its input JSON, and the installed definition's
+  `initial()` must return a JSON checkpoint of one of its phases. A request
+  that fails a check is skipped and reported as an `extension_error` of the
+  hook that asked for it; the run never fails for one. The task is
+  created from the installed definition, not the hook's token, with the
+  checkpoint `initial()` returned, so `initial()` runs once. One commit creates
+  the tasks as children of the generation, lists them in `run.afterRun.tasks`,
+  and commits `waiting` on them with `allSettled` at `{ phase: "drain", answer,
+  tasks }`. Without tasks it ends the run at once, as `drain` does. A crash in
+  `finish` runs it again and asks the hooks again; nothing was created. Once the
+  tasks exist, the hooks are not asked again for this run, and a crash leaves
+  the wait and the tasks to resume.
+- `drain` runs once every after-run task is terminal, whatever its outcome. One
+  commit applies the final boundary (section 6), removes `run`, starts a
+  successor run for the selected user items, and completes with
+  `{ entryId: answer }`.
+- `finish` and `drain` check the restart count like every phase (section 5.4).
+  At the limit the run ends `completed` with the answer, without its tasks,
+  without a `runFailure`, and without the final boundary, so queued items stay
+  queued as after a failed run; the scheduler reports it `task_interrupted`.
 - The abort handler calls `models.cancelDeferred()` in `poll` when the model is
   known (a failure is reported), converts a committed partial, settles the inputs `unanswered` with
-  `aborted`, removes `run` and `generation`, and ends `aborted`.
+  `aborted`, removes `run` and `generation`, and ends `aborted`. In `finish` and
+  `drain` the run answered already: the handler runs after the after-run tasks
+  are terminal (section 5.5), removes `run`, and records no `runFailure`; the
+  inputs stay `done`.
 
 A tool round starts in the commit that appends the tool-calling answer:
 
 1. The offered tools are replayed with pi-ai `getCurrentTools()` from the
    committed model context through `cutoff`: `request` already holds it, and
-   `poll` derives it again. A call to a tool not offered gets its
-   `tool_unavailable` result entry here, without a task.
-2. Every other call gets a `pi.tool` task owned by the generation, with input
-   `{ assistant, callId }`. The round is sequential when the settings'
-   `toolExecution`, read as the round starts, is `sequential` or any called
+   `poll` derives it again.
+2. Every call gets a `pi.tool` task owned by the generation, in call order, with
+   input `{ assistant, callId }`, plus `unoffered: true` (also on its slot) for a
+   call to a tool not offered, which settles `tool_unavailable` without resolving
+   the name (section 8.4). The round is sequential when the settings'
+   `toolExecution`, read as the round starts, is `sequential` or any offered called
    tool, resolved from the phase's agent as the tool task resolves it (section
    7.3), has `executionMode: "sequential"`: then only the first call gets its
    task now and the rest wait in `pending`. Otherwise every call gets its task at
@@ -4637,12 +4952,14 @@ A tool round starts in the commit that appends the tool-calling answer:
    `pending` shrinks.
 3. The generation commits `waiting` on its tool tasks with `allSettled` and the
    `tools` checkpoint (section 8.5); `pi.live.run` stays with it.
-4. `pi.live.tools` receives the round's slots (section 8.2), and `generation` is
-   removed.
+4. `pi.live.tools` receives the round's slots (section 8.2), `generation` is
+   removed, and `pi.live.run.turns` grows by one; a run without `first` gets the
+   tool-calling answer as its first entry.
 
-Input submissions settle `unanswered` with one of these reasons: `no_model`,
-`model_error` (detail: provider error text), `aborted`, `faulted` (detail: error
-message), or an orphaning blocked reason (section 5.4). Fault and orphan
+Input and continue submissions settle `unanswered` with one of these reasons:
+`no_model`, `model_error` (detail: provider error text), `nothing_to_answer`,
+`turn_limit` (detail: the turn count, section 8.5), `aborted`, `faulted` (detail: error message), or an orphaning blocked reason
+(section 5.4). Fault and orphan
 settlement convert a committed partial into an aborted `pi.assistant` entry,
 like the abort handler.
 
@@ -4658,9 +4975,11 @@ type ToolTaskCheckpoint =
 type ToolTaskResult = { kind: "model"; entryId: EntryId; control?: ToolControl } | { kind: "nested" };
 ```
 
-`pi.tool` is version 2 and starts at `{ phase: "call" }`; `migrate` gives a
-version 1 input `kind: "model"`, and readers treat a terminal result without
-`kind` as a model-issued call's. A model-issued call's input stays small
+`pi.tool` is version 3 and starts at `{ phase: "call" }`; `migrate` gives a
+version 1 input `kind: "model"` and keeps a version 2 input (version 3 added
+`unoffered`), and readers treat a terminal result without `kind` as a
+model-issued call's. A call flagged `unoffered` resolves no tool: `call` settles
+it `tool_unavailable` and the abort handler does too. A model-issued call's input stays small
 because the terminal record keeps it; the call is read from the assistant
 entry. A nested call (section 7.3) carries its call, since no entry holds it,
 and settles differently: its result commit records the result's `usage`
@@ -4679,12 +4998,15 @@ Below, `{ entryId }` is a model-issued call's result.
   same handler executes the tool, runs the `afterTool` chain, and commits the
   result; it builds `api.env` with `HarnessOptions.env` right before executing
   (section 2.2). A tool that does not resolve, invalid arguments, or a block
-  commits the corresponding error result instead, without intent.
+  runs the `afterTool` chain on the corresponding error result and commits it
+  instead, without intent.
 - `execute` is reached only by recovery. When both the stored and the current
   policy, resolved as in `call`, are `safe`, it executes again with the stored arguments,
   without `beforeTool`, and settles like `call`. Otherwise it commits an
   `interrupted` error result from the slot's durable partial output, details, and
-  diagnostics, and ends `failed` with `{ entryId }`.
+  diagnostics, after the `afterTool` chain, and ends `failed` with `{ entryId }`.
+  Either way, a task cut off `settings.restartLimit` times ends with a
+  `restart_limit` result instead (section 5.4), also after the chain.
 - The result commit bounds the content, appends the diagnostics block (section
   7.3), appends one `pi.tool-result` entry with `model: [{ role: "toolResult",
   toolCallId, toolName, content, details, isError, durationMs, timestamp }]` and
@@ -4704,7 +5026,25 @@ Below, `{ entryId }` is a model-issued call's result.
   `completing` with the result entry already written (section 5.5); the
   generation resumes only when the tool task is terminal.
 - The abort handler commits an `aborted` error result from the slot's durable
-  partial output, details, and diagnostics and ends `aborted` with `{ entryId }`.
+  partial output, details, and diagnostics, after the `afterTool` chain, and ends
+  `aborted` with `{ entryId }`. The scheduler faults a task whose abort handler
+  was cut off `restartLimit` times, without a result (section 5.4), so the last
+  attempt it runs, at `restartLimit - 1` restarts, skips the chain.
+- Every result the task writes passes the `afterTool` chain: the slot is read
+  before the result commit, since hooks run outside commits, and does not change
+  while the tool does not run. A result the Harness wrote itself is then bounded
+  with the tool's output limits (the defaults when it did not resolve), gets a
+  truncation diagnostic when that dropped content (a slot's truncation
+  diagnostic stays only while the hooks keep its output), and loses any
+  `structuredOutput`, except that a nested call the chain turns into a success
+  gets its bounded output as value, as a schema-less tool's success does
+  (unless the tool declares a schema, section 7.3); `control` applies only when
+  the task completes. Once the
+  task's restarts exceed `settings.restartLimit`, the chain no longer runs,
+  since it may be what keeps cutting the task off. Results that no tool task
+  writes never pass it: the generation's `aborted` results for calls a
+  sequential round never started (section 8.5), a nested call's fallback result
+  (section 7.3), and a missing result synthesized in context (section 2.1).
 
 ### 8.5 Tool rounds
 
@@ -4729,7 +5069,17 @@ and then commits once:
   text, and a queued head write targeting an entry before it is stale.
 - When every result of the round requests `terminate`, it settles the run's
   inputs `done` with the tool-calling answer, removes `run` and `tools`, and
-  applies the final boundary.
+  applies the final boundary. When the phase's agent selects an `afterRun`
+  hook, it keeps `run` instead and moves to `finish` (section 8.3) with
+  `{ reason: "terminate", first, answer, last }`: `answer` is the tool-calling
+  answer and `last` the newest of the round's result entries and the handoff's
+  reset; the final boundary waits for the run's end.
+- Otherwise, when the run's `turns`, counted in the commit that started the
+  round, reached the phase agent's `maxTurns`, the run ends as a failed run
+  (section 6): its inputs settle `unanswered` with `turn_limit` (detail: the
+  count), `runFailure` records it, `afterFailedRun` decides the queued items, and
+  the generation still completes with `{ entryId }`. A continue resumes it on the
+  round's results (section 6).
 - Otherwise it removes `tools` and applies the `postTools` boundary. When that
   boundary placed a queued reset, which wins over a handoff written before it,
   the run's inputs settle `unanswered` with `reset` and selected user items
@@ -4740,7 +5090,8 @@ and then commits once:
 
 It completes with `{ entryId }` of the tool-calling answer. Its abort handler
 runs only after its tool tasks are terminal (section 5.5). For every call still
-in `pending`, which never started, it appends an `aborted` error result; a
+in `pending`, which never started, it appends an `aborted` error result
+(`tool_unavailable` for an `unoffered` one), without `afterTool`; a
 started call whose task faulted or was orphaned keeps
 its `done` slot without an entry (section 8.2). It then settles the inputs
 `unanswered` with `aborted`, removes `run`, `generation`, and `tools`, and ends
@@ -4821,9 +5172,10 @@ ways to start one; the task is the same, only ownership and placement differ:
 
 Only a blocking compaction runs while the conversation's run waits for it. The
 others never take run control: the conversation keeps working while they
-summarize, and their summary is placed like any passive write. Compactions do
-not coordinate with each other; several may run at once, and section 6 decides
-between their summaries.
+summarize, and their summary is placed like any passive write: while a run
+that answered waits for its after-run tasks (section 8.3), at the boundary that
+ends it. Compactions do not coordinate with each other; several may run at
+once, and section 6 decides between their summaries.
 
 **Range selection** is a pure function of a `ContextView`, whose
 `contributions` give each active entry's model messages after every edit in the
@@ -5079,9 +5431,11 @@ advances without a commit, when a registry change or a failed migration changes
 a task's `blocked` reason (section 9.4): that call runs on the Session line,
 outside any `adopt`, with a context of its own. A document observer follows its
 address as a document watch does, and `observeDoc()` gives `undefined` for an
-absent one. `end` comes once: when the Session closes (`ended`) or fails
-(`failed` with the error), or, for a task document, right after the retirement change of
-the commit that makes its task terminal, inside that commit's `adopt` (`ended`).
+absent one. `end` comes once: when the Session closes (`failed` with the error
+"session closed": an adapter following the Session, such as Chord's `self.follow`,
+fails and follows the next Session; watches end `ended`) or fails (`failed` with
+the error), or, for a task document, right after the retirement change of the
+commit that makes its task terminal, inside that commit's `adopt` (`ended`).
 `detach()` is idempotent, and nothing follows it, not even the rest of the
 commit underway; a detached observer is referenced by nothing of the Session.
 `context` governs only the attachment: cancelling it while attaching rejects
@@ -5217,8 +5571,10 @@ exposed through their own Chord objects, not mounted. Everything a renderer
 draws is state in this value: the transcript in `entries`, the run and its
 presentation in `pi.live` (`run`, `generation`, `tools`, `nestedTools`,
 `compactions`, `compactionFailure`, `runFailure`, section 8.2), the queue in
-`pi.inbox`, the agent in `pi.agent`, spend in `pi.usage`. A renderer renders
-the newest value; it never assembles state from a stream of events.
+`pi.inbox`, the agent in `pi.agent`, spend in `pi.usage`. A run that answered
+and waits for its after-run tasks shows as `run` with `run.afterRun` and no
+`generation`. A renderer renders the newest value; it never assembles state
+from a stream of events.
 
 **The window.** Each watch and observer has its own window. It starts with the
 newest `min` entries and the ID of the entry before them in `before`. With
@@ -5867,6 +6223,12 @@ These are contracts, not invitations to add defensive machinery:
   unsupported.
 - **Read after write:** read every required table row before the first table
   write. Document drafts remain usable afterward; table reads do not.
+- **Admission inside a commit:** `submit(tx, draft)` throws `ReadAfterWrite`
+  after the commit's first table write: one admission per commit, before the
+  commit's own `appendEntry()`, `createTask()`, or `createSubmission()`. The
+  admission is provisional until the commit is stored: a later throw in the
+  callback, or a storage failure, discards it with the rest of the commit,
+  though its `pi.durable.submit` span already ended with a `result`.
 - **Writing to a busy conversation:** only the Harness appends to a conversation
   with an active run. Raw entries appended by `Harness.commit()` or a custom
   task while a generation prepares its request can misplace its system prompt entries;
@@ -5916,6 +6278,29 @@ These are contracts, not invitations to add defensive machinery:
   background conversation-owned tasks awaited with `waitForTask()`; a
   non-background one would be aborted by any cascade that reaches its
   conversation.
+- **Hooks in abort handlers:** a tool task's abort handler runs the `afterTool`
+  chain on its `aborted` result, and abort invocations cannot be aborted. A
+  slow hook delays the result, and with it `Conversation.abort()` and
+  `waitForIdle()`; a hanging one holds them until the host restarts, and the
+  handler's last attempt before the restart limit runs without hooks (section
+  8.4).
+- **Busy after the answer:** with `afterRun` hooks selected, `Submission.wait()`
+  resolves at the answer while the conversation stays busy until the after-run
+  tasks end: `whenBusy: "reject"` and a continue throw `ConversationBusy`, and a
+  steer, also with `whenIdle: "reject"`, queues and starts the next run.
+- **After-run tasks waiting on their own run:** an after-run task that awaits
+  `waitForIdle()` of its own conversation, or the settlement of a follow-up it
+  submitted, waits for the run that waits for it, and never resolves. Submit and
+  let the run's end place it.
+- **Missing after-run tasks:** an after-run task whose definition is uninstalled
+  stays blocked, and so does its run: the conversation is busy until Stop
+  orphans the task.
+- **Fix loops:** a follow-up an after-run task submits starts a run with a fresh
+  turn budget, which asks `afterRun` again; `maxTurns` does not bound the loop,
+  the extension does, for example with a counter in its own document.
+- **Submissions from after-run tasks:** admit them in the task's own commit with
+  `submit(tx, draft)`, before its table writes; one submitted outside a commit
+  should carry a stable `requestId`, as a rerun after a crash submits it again.
 - **Hook memo names:** hooks share the asking task's memo namespace with the
   task and other hooks. Prefix memo names.
 - **Long transactions:** an async commit callback holds the Session mutation

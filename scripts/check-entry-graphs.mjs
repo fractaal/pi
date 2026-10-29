@@ -67,8 +67,9 @@ const BUDGETS = {
 			// The Harness's request identity reaches pi-ai's utils/identity.ts and its version constant. Partial commits
 			// parse streamed tool-call arguments with pi-ai's utils/streaming-json.ts (and its json-parse.ts) to append what
 			// argument strings grew by (harness/partial-changes.ts). Chord's watches fold pending ops with Delta's
-			// pending queue (delta/pending.ts).
-			maxFiles: 77,
+			// pending queue (delta/pending.ts). `registryReader` (harness/registry-reader.ts) reads a Chord v2 registry
+			// value through type-only imports.
+			maxFiles: 78,
 			forbid: [
 				"packages/ai/src/index.ts",
 				"packages/ai/src/utils/typebox-helpers.ts",
