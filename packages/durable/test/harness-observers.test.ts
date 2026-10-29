@@ -124,8 +124,11 @@ describe("observeConversation and observeTaskGraph", () => {
 		await root.commit((tx) => tx.appendEntry(root.id, { kind: "note", data: {} }), context);
 		expect(view.calls).toHaveLength(1);
 		await watch.stop();
+		const graphWatch = await harness.watchTaskGraph(context);
 		await harness.close(context);
-		expect(graph.calls).toEqual([{ end: { kind: "ended" } }]);
+		// S1: a Session close fails an observer (it may follow the next Session); a watch ends `ended`.
+		expect(graph.calls).toEqual([{ end: { kind: "failed", error: new Error("session closed") } }]);
+		expect(await graphWatch.closed).toEqual({ kind: "ended" });
 	});
 
 	it("end with the error that failed the Harness", async () => {

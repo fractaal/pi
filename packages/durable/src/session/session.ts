@@ -344,6 +344,11 @@ export class SessionImpl implements Session {
 		return ms;
 	}
 
+	/** Internal: whether `tx` is the transaction of one of this Session's commits. */
+	ownsTransaction(tx: Tx): tx is Transaction {
+		return Transaction.ownedBy(tx, this.#host);
+	}
+
 	/** Internal: run a read-only job on the mutation line so multi-read derivations observe one committed state. */
 	readOnLine<T>(job: () => Promise<T>): Promise<T> {
 		try {
@@ -607,8 +612,8 @@ export class SessionImpl implements Session {
 						const observers = [...this.#commitListeners];
 						this.#commitListeners.clear();
 						// After the last publication: the commits admitted before the seal have settled, held changes are stored.
-						const end: WatchEnd =
-							this.#failure === undefined ? ENDED : { kind: "failed", error: this.#failure.error };
+						// Commit observers are synchronous observers, all of them.
+						const end = closeEnds(this.#failure).observer;
 						for (const observer of observers) observer.end(end);
 						this.#internalListeners.clear();
 						this.#documents.clear();
@@ -1264,7 +1269,7 @@ export class SessionImpl implements Session {
 		});
 		unsubscribeClose = this.subscribeClose(() => {
 			detach();
-			observer.end(this.#failure === undefined ? ENDED : { kind: "failed", error: this.#failure.error });
+			observer.end(closeEndOf(observer, closeEnds(this.#failure)));
 		});
 		return observer;
 	}
@@ -1413,6 +1418,28 @@ function toError(error: unknown): Error {
 
 /** The end of an observer whose source closed. */
 export const ENDED: WatchEnd = { kind: "ended" };
+
+/**
+ * How a Session's close ends what follows it (decision "Slice 8 S1"), made once per close: an app's watch `ended`; a
+ * synchronous observer (an adapter following the Session, which may open it again) `failed` with "session closed", so
+ * it follows the next Session; `ended` stays for an observed owner that ended (a task document's task). A failed
+ * Session ends both `failed` with its error.
+ */
+export function closeEnds(failure: { readonly error: unknown } | undefined): {
+	readonly watch: WatchEnd;
+	readonly observer: WatchEnd;
+} {
+	if (failure !== undefined) {
+		const failed: WatchEnd = { kind: "failed", error: failure.error };
+		return { watch: failed, observer: failed };
+	}
+	return { watch: ENDED, observer: { kind: "failed", error: new Error("session closed") } };
+}
+
+/** The end `ends` give `follower`: a watch's, or an observer's. */
+export function closeEndOf(follower: unknown, ends: ReturnType<typeof closeEnds>): WatchEnd {
+	return follower instanceof Watch ? ends.watch : ends.observer;
+}
 
 /**
  * The `Observation` of a guarded observer attached at `value`. Built outside the attaching closure, so a detached

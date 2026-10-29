@@ -64,8 +64,8 @@ type AnyTaskRecord = TaskRecord<JsonValue, JsonValue, JsonValue>;
 type SubmissionChange = SubmissionSettlement | { readonly status: "placed"; readonly entry: EntryId };
 
 /**
- * Complete record after applying one change. Placement turns a queued input `placed` and a queued write `done`; only a
- * placed input can be answered. A settled record stays.
+ * Complete record after applying one change. Placement turns a queued input `placed` and a queued write `done`; a
+ * continue is never queued, so never placed. Only a placed input or continue can be answered. A settled record stays.
  */
 function applySubmissionChange(current: SubmissionRecord, change: SubmissionChange): SubmissionRecord {
 	if (current.status === "done" || current.status === "unanswered") return current;
@@ -75,7 +75,7 @@ function applySubmissionChange(current: SubmissionRecord, change: SubmissionChan
 		return { ...current, status, entry: change.entry } as SubmissionRecord;
 	}
 	if (change.status === "done" && current.status !== "placed") {
-		throw new Error(`Submission ${current.id} is not a placed input`);
+		throw new Error(`Submission ${current.id} is not a placed input or continue`);
 	}
 	// Queued and placed records carry no answer, reason, or detail; an unanswered input keeps its entry.
 	return { ...current, ...change } as SubmissionRecord;
@@ -252,6 +252,24 @@ export class Transaction implements Tx {
 		this.#host = host;
 		this.#context = context;
 		this.#scope = scope;
+	}
+
+	/** Internal: the context of the commit this transaction belongs to. */
+	get context(): Context {
+		return this.#context;
+	}
+
+	/** Internal: whether a table write was staged, after which table reads throw `ReadAfterWrite`. */
+	get hasTableWrite(): boolean {
+		return this.#hasTableWrite;
+	}
+
+	/**
+	 * Internal: whether `tx` is a transaction of a commit of the Session behind `host`. A brand check, so a proxy or
+	 * another wrapper of a transaction is not one.
+	 */
+	static ownedBy(tx: Tx, host: TransactionHost): tx is Transaction {
+		return #host in tx && tx.#host === host;
 	}
 
 	// ─── Table reads ────────────────────────────────────────────────────────
@@ -1063,7 +1081,7 @@ export class Transaction implements Tx {
 	#read<T>(method: string, read: () => Promise<T>): Promise<T> {
 		try {
 			this.#assertOpen();
-			if (this.#hasTableWrite) throw new ReadAfterWrite(method);
+			if (this.#hasTableWrite) throw new ReadAfterWrite(`Tx.${method}()`);
 			return this.#track(read());
 		} catch (error) {
 			return Promise.reject(error);
