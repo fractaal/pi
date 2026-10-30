@@ -12,6 +12,7 @@ import {
 	PlacedNotes,
 	rejection,
 	relayed,
+	Server,
 	Session,
 	serveNotes,
 	type TestPrincipal,
@@ -101,18 +102,18 @@ forEachCodec(() => {
 			});
 		});
 
-		it("fails a hold broken invalid/placement for an address whose params do not fit the kind", async () => {
+		it("fails a hold broken invalid/host_address for an address whose params do not fit the kind", async () => {
 			const Misplaced = remote("app.misplaced", {
 				version: 1,
 				params: { n: int() },
-				// An address of the right kind with params of the wrong type, as a buggy placement could compute.
-				placement: ({ n }) => ({ kind: "session", params: { id: n }, key: "" }) as never,
+				// An address of the right kind with params of the wrong type, as a buggy `hostAddress` could compute.
+				hostAddress: ({ n }) => ({ kind: "session", params: { id: n }, key: "" }) as never,
 				variants: { v: { state: { n: int() } } },
 			});
 			const { tab, resolves } = await relayed();
 			expect(await rejection(tab.get(Misplaced, { n: 1 }, context))).toMatchObject({
 				code: "invalid",
-				reason: "placement",
+				reason: "host_address",
 			});
 			expect(resolves).toEqual([]);
 		});
@@ -322,11 +323,16 @@ forEachCodec(() => {
 			const Who = remote("app.who", {
 				version: 1,
 				params: {},
+				hostAddress: () => Server(),
 				variants: { v: { methods: { app: method(undefined, str()) } } },
 			});
 			const resolved: (string | undefined)[] = [];
 			let worker: Host<TestPrincipal> | undefined;
-			const server = createHost<TestPrincipal>({ principal: { kind: "server" }, onError: () => {} });
+			const server = createHost<TestPrincipal>({
+				address: Server(),
+				principal: { kind: "server" },
+				onError: () => {},
+			});
 			server.route(
 				Session,
 				{

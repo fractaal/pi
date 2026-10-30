@@ -22,6 +22,7 @@ import {
 	loaded,
 	memoryStore,
 	metered,
+	Server,
 	transported,
 	valuesOf,
 } from "../support.ts";
@@ -324,7 +325,12 @@ describe("re-binding when a new attempt goes live", () => {
 describe("subscribers", () => {
 	it("a hold over a link on a remote object re-exposing a local member gets frames again after the local retry", async () => {
 		const Count = local("app.count", { version: 1, params: {}, members: { n: obj({ n: int() }), add: method() } });
-		const View = remote("app.view", { version: 1, params: {}, variants: { v: { state: { n: obj({ n: int() }) } } } });
+		const View = remote("app.view", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: { v: { state: { n: obj({ n: int() }) } } },
+		});
 		const Counter = defineState("counter", { schema: obj({ n: int() }), version: 1, initial: () => ({ n: 0 }) });
 		const selves: Self[] = [];
 		const { server, client } = await linked((h) => {
@@ -406,10 +412,11 @@ describe("a member the new attempt's variant lacks", () => {
 		const Two = remote("app.two", {
 			version: 1,
 			params: {},
+			hostAddress: () => Server(),
 			variants: { full: { state: { n: int() } }, view: { state: { m: int() } } },
 		});
 		const owner = { kind: "owner" } as const;
-		const host = createHost<typeof owner>({ principal: owner, onError: () => {} });
+		const host = createHost<typeof owner>({ address: Server(), principal: owner, onError: () => {} });
 		const selves: Self[] = [];
 		const facet = defineFacet<typeof owner>((h) =>
 			h.serve(Two, (_, _principal, self) => {

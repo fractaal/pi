@@ -44,9 +44,12 @@ export type RegistryEdge = { readonly from: RegistryRecord; readonly to: Registr
 /** The provider as served: the defining plugin's version, `compose` and adapters. */
 type Provider = { readonly version: number; readonly provider: RegistryProvider<unknown, unknown> };
 
-/** Where a composition stands: never composed, its last good value, and its failure while `compose` throws. */
+/**
+ * Where a composition stands: never composed, its last good value (with the contributions it was built from), and its
+ * failure while `compose` throws.
+ */
 type Composition = {
-	readonly good: { readonly value: unknown } | undefined;
+	readonly good: { readonly value: unknown; readonly from: readonly RegistryContribution[] } | undefined;
 	readonly failure: { readonly error: unknown } | undefined;
 };
 
@@ -59,7 +62,7 @@ export class RegistryRecord {
 	readonly #report: (error: RegistryError) => void;
 	#provider: Provider | undefined;
 	/** The contributions of live contributors, sorted by plugin, then type (a facet's first). */
-	readonly #contributions: RegistryContribution[] = [];
+	#contributions: readonly RegistryContribution[] = [];
 	/** The last table composed, kept so an unchanged table composes nothing. */
 	#table: RegistryTable<unknown> | undefined;
 	#dirty = true;
@@ -128,7 +131,8 @@ export class RegistryRecord {
 	/** Adds a live contributor's contribution, inside a batch: the table changes. */
 	add(contribution: RegistryContribution): void {
 		const at = this.#contributions.findIndex((other) => compareContributors(contribution, other) < 0);
-		this.#contributions.splice(at < 0 ? this.#contributions.length : at, 0, contribution);
+		// A new list per change (contributors come and go rarely): a composition keeps the one it was built from.
+		this.#contributions = this.#contributions.toSpliced(at < 0 ? this.#contributions.length : at, 0, contribution);
 		const { reads } = contribution;
 		if (reads !== undefined) this.#reads.set(reads, (this.#reads.get(reads) ?? 0) + 1);
 		contribution.follow();
@@ -139,7 +143,7 @@ export class RegistryRecord {
 	remove(contribution: RegistryContribution): void {
 		const at = this.#contributions.indexOf(contribution);
 		if (at < 0) return;
-		this.#contributions.splice(at, 1);
+		this.#contributions = this.#contributions.toSpliced(at, 1);
 		const { reads } = contribution;
 		if (reads !== undefined) {
 			const left = this.#reads.get(reads)! - 1;
@@ -176,6 +180,20 @@ export class RegistryRecord {
 		return { kind: "value", value: good!.value };
 	}
 
+	/** The contributions the current good composition was built from; `undefined` while there is none. */
+	get composedFrom(): readonly RegistryContribution[] | undefined {
+		return this.#composition.good?.from;
+	}
+
+	/**
+	 * Whether every contribution of `from` (what a composition, or a mapping of it, was built from) is still in the
+	 * table (decision 5: one that left may have closed the native its entry held).
+	 */
+	inTable(from: readonly RegistryContribution[]): boolean {
+		const current = this.#contributions;
+		return from === current || from.every((each) => current.includes(each));
+	}
+
 	/** The adapter mapping the composed value back for readers of `version`; `undefined` when there is none. */
 	valueAdapter(version: number): ((current: never) => unknown) | undefined {
 		return this.#provider?.provider.accepts?.[version]?.value;
@@ -203,7 +221,7 @@ export class RegistryRecord {
 	 */
 	close(): void {
 		for (const contribution of this.#contributions) contribution.unfollow();
-		this.#contributions.length = 0;
+		this.#contributions = [];
 		this.#reads.clear();
 		this.#table = undefined;
 		this.#dirty = false;
@@ -226,8 +244,9 @@ export class RegistryRecord {
 
 	/**
 	 * Builds the table and composes it, unless it is the last one composed, entry for entry (`compose` is pure). A
-	 * throw is a failure episode: reported once, the last good composition kept; conflicts are reported once per
-	 * episode, as their message and plugins.
+	 * throw is a failure episode: reported once, the last good composition kept while every contribution it was built
+	 * from is still in the table (decision 5: one whose contributor ended may hold a closed native); conflicts are
+	 * reported once per episode, as their message and plugins.
 	 */
 	#recompose({ version, provider }: Provider): void {
 		this.#dirty = false;
@@ -247,10 +266,14 @@ export class RegistryRecord {
 				value = this.#batch.compute(() => provider.compose(table, context));
 			} catch (error) {
 				if (this.#composition.failure === undefined) this.failed(error);
-				this.#composition = { good: this.#composition.good, failure: { error } };
+				const { good } = this.#composition;
+				this.#composition = {
+					good: good !== undefined && this.inTable(good.from) ? good : undefined,
+					failure: { error },
+				};
 				return;
 			}
-			this.#composition = { good: { value }, failure: undefined };
+			this.#composition = { good: { value, from: this.#contributions }, failure: undefined };
 			for (const [key, conflict] of conflicts) {
 				if (this.#conflicts.has(key)) continue;
 				this.#report({ kind: "registry_conflict", registry: this.name, ...conflict });

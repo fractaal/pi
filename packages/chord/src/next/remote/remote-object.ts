@@ -24,7 +24,7 @@ import {
 	LOADING,
 	type PinnedKey,
 	type RefState,
-	settlement,
+	type RetryOperation,
 	type Target,
 } from "../host/internal.ts";
 import {
@@ -78,15 +78,13 @@ export class RemoteObject implements Target {
 	/** The hold on the path's link while one is open: that link's consumer side and this hold's id on it. */
 	#hold: { readonly side: ConsumerSide; readonly id: number } | undefined;
 	#binding: Binding | undefined;
-	/** Pending while loading, resolved while live, rejected while failed: a dependent's activation waits for it (R18). */
-	#settled = settlement();
 	#lastFailure: ChordError | undefined;
 
 	constructor(
 		host: AnyHost,
 		contract: Contract,
 		{ params, key }: CheckedParams,
-		address: WireAddress | undefined,
+		address: WireAddress,
 		caller: Caller,
 		path: Path,
 		dependent: ChordObject | undefined,
@@ -100,7 +98,7 @@ export class RemoteObject implements Target {
 			version,
 			fingerprint,
 			params: jsonPart(params),
-			...(address === undefined ? {} : { address }),
+			address,
 		};
 		this.caller = caller;
 		this.#params = params;
@@ -112,9 +110,14 @@ export class RemoteObject implements Target {
 		return this.#state;
 	}
 
-	/** Pending while loading; resolves when bound, rejects with a failure or the reference's end. */
-	get settled(): Promise<void> {
-		return this.#settled.promise;
+	/** Whether its hold is on a link now (a remote attempt answers for it), not while its path has no link. */
+	get heldOnLink(): boolean {
+		return this.#hold !== undefined;
+	}
+
+	/** An object over a link is no blocker of this host's first pass. */
+	get blocksFirstPass(): false {
+		return false;
 	}
 
 	/** The error of the last `failed`, until `bound`. */
@@ -151,12 +154,15 @@ export class RemoteObject implements Target {
 	attach(link: HostLink): void {
 		const chain = this.#dependent?.activationChain();
 		this.#hold = { side: link.consumer, id: link.consumer.attach(this, chain) };
+		// Held on a link now: a parked dependent checks again (`parked_long` counts a hold on a link only).
+		this.#dependent?.dependencyMoved();
 	}
 
 	/** The link dropped: loading until a new link's hold is bound (`#startOver`). */
 	dropped(_error: ChordError): void {
 		this.#hold = undefined;
 		this.#startOver();
+		this.#dependent?.dependencyMoved();
 	}
 
 	/**
@@ -214,20 +220,21 @@ export class RemoteObject implements Target {
 	}
 
 	/**
-	 * `ref.retry()`: a failed object's provider is asked for an attempt (a hold it refused is started there again). One
-	 * that failed for a part past the link's limits is placed anew and held with a new id, now or on its path's next
-	 * link (a placement that throws fails it broken again).
+	 * `ref.retry()`: a failed object's provider is asked for an attempt (a hold it refused is started there again; a
+	 * parked object there passes it on as an operation of its own host). One that failed for a part past the link's
+	 * limits is placed anew and held with a new id, now or on its path's next link (a `hostAddress` that throws fails it
+	 * broken again).
 	 */
-	retry(): void {
+	retry(operation: RetryOperation): void {
 		if (this.#state.kind !== "failed") return;
 		if (this.#path === this.#host.unplaced) {
 			this.#place();
 			return;
 		}
-		this.#hold?.side.retry(this.#hold.id);
+		this.#hold?.side.retry(this.#hold.id, operation);
 	}
 
-	/** Places a reference whose part was past the limits anew, on its path now (a placement that throws fails it). */
+	/** Places a reference whose part was past the limits anew, on its path now (a throwing `hostAddress` fails it). */
 	#place(): void {
 		let path: Path;
 		try {
@@ -313,17 +320,16 @@ export class RemoteObject implements Target {
 		};
 	}
 
-	/** After a `bound` message's batch: the reference goes live (its parked calls are sent) and R18 retries follow. */
+	/** After a `bound` message's batch: the reference goes live (its parked calls are sent, a parked dependent goes on). */
 	wentLive(): void {
 		this.#lastFailure = undefined;
 		this.#move(LIVE);
-		// R18: a dependent that failed while waiting for this object is retried now.
-		this.#binding?.dependent?.dependencyLive();
 	}
 
 	/**
-	 * `failed`: the provider's object failed and no attempt runs; `retryIn` is the rest of its backoff window. Ignored
-	 * once live (only a pending hold is told).
+	 * `failed`: the provider's object failed and no attempt runs (`retryIn`: the rest of its backoff window), or the hold
+	 * is unbound there or its object parked on a failed dependency (`waiting`), each new cause a new message. Ignored once
+	 * live (only a pending hold is told).
 	 */
 	failed(message: Extract<Message, { readonly kind: "failed" }>): void {
 		if (this.#state.kind === "live") return;
@@ -383,6 +389,17 @@ export class RemoteObject implements Target {
 		};
 	}
 
+	/**
+	 * Its principal was revoked on this host (`host.revoke`): released at its provider if it is held there, then ended
+	 * with `error` as `lost` does; no later link holds it.
+	 */
+	revoke(error: ChordError): void {
+		const hold = this.#hold;
+		this.#hold = undefined;
+		hold?.side.release(hold.id, error);
+		this.lost(error);
+	}
+
 	/** `gone`, or the host closes: the reference ends, its calls reject with `error`. */
 	lost(error: ChordError): void {
 		const binding = this.#binding;
@@ -399,28 +416,23 @@ export class RemoteObject implements Target {
 		this.#dependent = undefined;
 		this.#hold = undefined;
 		this.#bound = undefined;
-		this.#settled.reject(error);
 		this.#path.detach(this);
 		for (const replica of bound?.replicas.values() ?? []) replica.end(error);
 	}
 
 	/**
 	 * Loading again until the next binding; the members keep their last values. A drop while it is loading already
-	 * changes nothing: a dependent's activation waiting for it goes on waiting for the next link's binding, bounded by
-	 * its `readyTimeout` (§6, R18; a drop is not a dependency failure).
+	 * changes nothing: a dependent parked on it goes on waiting for the next link's binding (a drop is not a dependency
+	 * failure).
 	 */
 	#startOver(): void {
 		const { kind } = this.#state;
 		if (kind !== "ended" && kind !== "loading") this.#move(LOADING);
 	}
 
-	/** Moves to `state` and tells the reference; `settled` follows (a new wait each time it is loading again). */
+	/** Moves to `state` and tells the reference. */
 	#move(state: RefState): void {
-		const previous = this.#state;
 		this.#state = state;
-		if (state.kind === "loading" && previous.kind !== "loading") this.#settled = settlement();
-		if (state.kind === "live") this.#settled.resolve();
-		if (state.kind === "failed") this.#settled.reject(state.cause.error);
 		this.#binding?.moved();
 	}
 }

@@ -109,10 +109,10 @@ export class RelayedHold {
 		upstream?.link.send({ kind: "abort", origin: upstream.origin, call: id });
 	}
 
-	/** A downstream `retry`, forwarded. */
-	retry(): void {
+	/** A downstream `retry`, forwarded with its operation and the objects it passed through. */
+	retry(message: Extract<Message, { readonly kind: "retry" }>): void {
 		const upstream = this.#upstream;
-		upstream?.link.send({ kind: "retry", origin: upstream.origin, hold: this.id });
+		upstream?.link.send({ ...message, origin: upstream.origin });
 	}
 
 	/** Released downstream: released upstream (its calls with it) and no later link holds it. */

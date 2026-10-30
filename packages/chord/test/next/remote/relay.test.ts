@@ -21,6 +21,7 @@ import {
 	rawWorkers,
 	rejection,
 	relayed,
+	Server,
 	serveNotes,
 	type TestPrincipal,
 	testCodec,
@@ -379,7 +380,11 @@ forEachCodec(() => {
 
 	describe("a parent link that is down (audit)", () => {
 		it("holds a hold arriving meanwhile on the parent path: it waits loading and binds on the next parent link", async () => {
-			const server = createHost<TestPrincipal>({ principal: { kind: "server" }, onError: () => {} });
+			const server = createHost<TestPrincipal>({
+				address: Server(),
+				principal: { kind: "server" },
+				onError: () => {},
+			});
 			await server.load(
 				[{ name: "@test/app", facet: defineFacet<TestPrincipal>((h) => void serveNotes(h)) }],
 				context,

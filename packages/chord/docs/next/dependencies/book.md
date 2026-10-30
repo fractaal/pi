@@ -166,22 +166,23 @@ and a reload that removes a type sends `gone`. Both go.
 
 A request goes to one place, and the address decides which. For a `local` type, the place is this
 host. For a `remote` type, the consumer computes the address from the params with its own contract's
-placement function (design §3): `Notes { session: "S1" }` is placed on `Session { id: "S1" }`. If that is this host's
+`hostAddress` function (design §3; `placement` until 2026-10-29): `Notes { session: "S1" }` is placed on `Session { id: "S1" }`. If that is this host's
 address, the request goes here; otherwise over the route for that kind, or over the parent link.
 
-Today the code checks something else first: whether the type is registered here. A type placed on this host but not
-registered yet is sent over the parent link, which is wrong twice. Sol's example: the server has address `Server`,
-the catalog type is placed on `Server`, and no facet serves it yet. Today's `Placement.reference` sends the server's
-own request over a parent link the server never had. And when the catalog plugin is installed later, nothing wakes
-that request, because it was never registered as waiting here.
+Until 2026-10-29 the code checked something else first: whether the type is registered here. A type placed on this host but not
+registered yet was sent over the parent link, which is wrong twice. Sol's example: the server has address `Server`,
+the catalog type is placed on `Server`, and no facet serves it yet. That code, `Placement.reference` (`host/placement.ts`, now `host/destination.ts`), sent the server's
+own request over a parent link the server never had, and when the catalog plugin was installed later, nothing woke
+that request, because it was never registered as waiting here. The rename removed the first half; slice 7 builds the
+wait.
 
-:::flow wide | Placement by address. The destination follows from the address alone; only then is the provider found there checked.
+:::flow wide | The destination by address. The destination follows from the address alone; only then is the provider found there checked.
 row "Where" accent
-box addr "the request's address" "from the consumer's own placement function" accent
+box addr "the request's address" "from the consumer's own `hostAddress`" accent
 box here "here" "a local type, or this host's address"
 box away "a route or the parent" "every other address" blue
 row "Then" muted
-box check "check the provider here" "served? fitting version? authorize, own placement"
+box check "check the provider here" "served? fitting version? authorize, own host address"
 box hold "hold over the path" "the provider host checks it the same way" blue
 arrow addr -> here
 arrow addr -> away
@@ -189,23 +190,22 @@ arrow here -> check
 arrow away -> hold
 :::
 
-The rule, from the reviews (Sol B1, Astra F1): placement never looks at what is registered when the type names an
+The rule, from the reviews (Sol B1, Astra F1): the destination never depends on what is registered when the type names an
 address. A request placed here whose provider is missing is **unbound here**, waiting for the name. A version check
 compares the consumer with the provider actually selected, never with a same-name registration on the consumer's own
-host (today `#assertRoute` does that before placement, so worker W1 serving `Notes` v1 rejects a `Notes` v2 request
+host (today `#assertRoute` does that before choosing the destination, so worker W1 serving `Notes` v1 rejects a `Notes` v2 request
 placed on W2, which serves v2).
 
-One case keeps today's rule: a `remote` type declared **without placement** (allowed by `remote()`, used in tests and
-for server types a tab reaches through its parent). It goes here if it is served here, otherwise over the parent. A
-request of that kind made before the host has a parent link (a tab loads before it connects) waits here as not served
-and is placed again when the host's first parent link connects (Opus, Sol); on a host that never connects, the root,
-it stays here. Opus would rather require a placement on every remote type, which is simpler; it removes a supported
-declaration, and the owner asked for no feature to go, so the draft keeps the fallback.
+Every `remote` type declares its `hostAddress` (owner, 2026-10-29, who also renamed `placement` to it). Until then
+`remote()` allowed leaving it out, a
+leftover of slice 3a, which built remote objects over one link before host kinds existed; such a type went "here if
+served, otherwise the parent", which needed its own fallback and a re-placement when a tab that loads before it
+connects gets its first parent link (Opus, Sol). Opus and Fable proposed making it required; the owner agreed.
 
 ## What the check finds
 
 Once placed, the provider found there is checked: served, a fitting version (the current one or an accepted older one,
-with the fingerprint computed from the provider's own history), `authorize`, and the provider's own placement check.
+with the fingerprint computed from the provider's own history), `authorize`, and the provider's own host-address check.
 The request is then **bound** (to an object here, or to a hold over a path), or **unbound** with a reason:
 
 | The check finds | The request | Shows |
@@ -213,7 +213,7 @@ The request is then **bound** (to an object here, or to a hold over a path), or 
 | a fitting provider | bound | its object's state |
 | this host has not published its facets yet | unbound `unpublished` | `loading` |
 | nobody serves the name at its address | unbound `not_served` | `failed { waiting }` |
-| no fitting version, a fingerprint that differs at the same version, a placement the provider computes elsewhere | unbound `version` | `failed { waiting }` |
+| no fitting version, a fingerprint that differs at the same version, a host address the provider computes elsewhere | unbound `version` | `failed { waiting }` |
 | the registry is served, but its first `compose`, or the reader's version mapping, threw | unbound `compose` | `failed { waiting }` |
 | the provider host is installing, and the hold does not fit its current code | unbound `installing`, at the provider | `loading` |
 | the path has no link (a drop, a route resolving) | waits on the path | `loading` |
@@ -352,8 +352,9 @@ bounded by its own `readyTimeout` deadline, as today. Then it goes live.
 The dependency check is the boundary between waiting and working (Astra's F3). Before it, the attempt holds no
 natives; after it, a dependency that leaves `live` is treated as after live (R18): the attempt goes on, and its calls
 through that reference meet the reference's state. So a parked attempt never holds a native, and an attempt that
-opened a native is never parked. This is a deliberate rule, and Astra called it what it is: a weakening of "live
-means every dependency is live". An object can finish opening after a dependency went away. Without that boundary a contributor unloading while the attempt opens its natives
+opened a native is never parked. It is not a rule of its own: it is R18's rule for live objects (a dependency that
+goes away leaves the object live; same-host calls in flight finish, remote ones fail, new calls meet the reference's
+state), applied from the dependency check on. Without that boundary a contributor unloading while the attempt opens its natives
 would leave it half open and parked, or force a seal, a drain and a fresh attempt for a dependency the object may not
 even use at once.
 
@@ -599,9 +600,9 @@ has natives (§21), as for any reload.
 
 ## A type that moved
 
-A plugin can move a type from the worker to the server by changing its placement. A consumer's request carries the
+A plugin can move a type from the worker to the server by changing its `hostAddress`. A consumer's request carries the
 address its own code computed, so the provider appearing on the server cannot wake it: the request is not waiting
-there. The old host answers `not_served`; the consumer's own reload, which brings the new placement, makes a new
+there. The old host answers `not_served`; the consumer's own reload, which brings the new `hostAddress`, makes a new
 request. The model adds no redirect: moving state between hosts is a deliberate migration, not something Chord guesses.
 
 ## Rollouts across hosts
@@ -1076,7 +1077,7 @@ The Rule column cites sections of the working document, reproduced in appendix C
 | # | Scenario | Under the model | Today | Rule |
 | --- | --- | --- | --- | --- |
 | 1 | `self.get(NoteStore)` in `Notes { S1 }`'s factory on W1; `NoteStore` is served and activating. | `Notes` makes its request, it binds to the `NoteStore` object, `Notes` parks `loading`. `NoteStore` goes live: a target state change wakes `Notes`, which opens its natives and goes live. No timer ran. | The same wait, bounded by `readyTimeout`; past it `Notes` fails `transient` and backs off (`attempt.ts` `waitFor`). | §3.1, §3.4, §4 |
-| 2 | `self.get(Catalog)` from W1's `ForwardStore`; the parent link is up, S has published, `Catalog` is served there. | The request goes over the parent (placement `Server()`); S binds the hold; `bound` arrives; `ForwardStore` was `loading`, now goes on and live. | The same, after S's whole barrier (`Hold.start` awaits `pendingLoad`). | §1, §2 |
+| 2 | `self.get(Catalog)` from W1's `ForwardStore`; the parent link is up, S has published, `Catalog` is served there. | The request goes over the parent (`hostAddress: () => Server()`); S binds the hold; `bound` arrives; `ForwardStore` was `loading`, now goes on and live. | The same, after S's whole barrier (`Hold.start` awaits `pendingLoad`). | §1, §2 |
 | 3 | The same, but `Catalog`'s plugin is not installed on S. | S indexes the hold `not_served` under "p2.catalog" and answers `failed { waiting, not_served }`; `ForwardStore`'s reference shows `failed { waiting }`, the object parks `failed { waiting, "waiting for p2.catalog: not served" }`. A reload on S serving `Catalog` re-runs the hold: `loading`, `bound`; the reference goes live, the dependent wakes. No backoff, no new hold. | The hold is refused `broken`; `ForwardStore` fails `transient` and re-holds every 1-60 s, refused each time (`remote/hold.ts` `#refuse`, `object.ts` backoff). | §1, §3.1, §4, §5 |
 | 4 | `self.get(SessionInfo)` on W1 when the core facet is missing (same host, not served). | The request is unbound `not_served` on W1 itself; the dependent parks `failed { waiting }`; a reload serving the type binds it and wakes the dependent. | `#assertRoute` throws in the factory: the object is `broken` until `retry()` or a reload (`host.ts` `reference`). | §1, §3.1, §4 |
 | 5 | A tab's `NotesView` declares `Notes { S1 }`; S routes `Session`, `resolve` forks W1, W1 connects and publishes. | The hold waits at T on its path (`no_link` while S resolves: `loading`), is relayed to W1, waits there `unpublished` until W1's setups, then binds; `bound` comes back through the relay. `NotesView` was `loading` the whole time and goes live. | The same chain of waits, each bounded by `readyTimeout`; a slow worker start past it fails the tab object `transient` and polls. | §1, §6.2 |
@@ -1217,7 +1218,7 @@ scenarios against five drafts; the catalog in the chapters before this one is a 
 | R18, the boundary | "live" means every dependency was live at the end of activation | the dependency check is the boundary: after it, a dependency leaving `live` is treated as after live |
 | `self.get` of a missing `local` type | throws in the factory: `broken` | unbound `not_served`: `failed { waiting }`, woken by the publication that serves it |
 | a remote hold the provider cannot serve | refused `broken`; the dependent polls by backoff | refused and kept at the provider, re-run at its publication; `failed { waiting }` |
-| design §3, placement | "served here" decides "here" | the address decides; a remote type without placement keeps today's rule |
+| design §3, the destination | "served here" decides "here"; `placement` optional on `remote()` | the address decides; every remote type declares its `hostAddress`, renamed from `placement` (owner, 2026-10-29) |
 | the start barrier, `pendingLoad` | holds wait for all of `load` | holds wait only for the publication; the barrier is (a) or (b) |
 | S2, a registry reader newer than its provider | `broken` | `failed { waiting, version }` |
 | S3, a registry without a value | `transient`, woken at the first value only | `failed { waiting }`, woken at every transition to usable |
@@ -1315,17 +1316,14 @@ A needs W's B, B needs S's C; W's hold for C waits for S's whole `load`, which w
   code (`host.get`, `host.hold`, `host.registry`), a link's peer (`hold`). **It ends only when its holder ends it** (the
   attempt ends, the call settles, `release()`, a getter gives up, the peer's link or origin closes, revocation, the
   holding host closes), never because its provider is missing, went away or does not fit.
-- **Placement by address** (round 1): a `local` type goes here; a `remote` type with a placement goes to the address
-  its placement (computed from the consumer's own contract) gives: here if that is this host's address, whether served
-  here or not, else over the route for that kind or the parent (design §3). A `remote` type **without placement** keeps
-  today's rule (round 2: Fable, Opus, Astra; no feature removed): here if served here, otherwise over the parent. A
-  request of that kind made before the host has a parent link waits here `not_served` and is **re-placed when the
-  host's first parent link connects** (round 3: Opus N5, Sol 3: a tab loads before it connects); on a host that never
-  connects (the root), it stays here. Opus would rather require a placement on every `remote()`; that removes a
-  supported declaration, so the draft keeps the fallback. A hold arriving for an address that is not this host's is relayed or
-  refused (`invalid/placement`) as today; a relay never captures a hold because it serves the same name.
+- **The destination by address** (round 1): a `local` type goes here; a `remote` type goes to the address its
+  `hostAddress` (computed from the consumer's own contract) gives: here if that is this host's address, whether served
+  here or not, else over the route for that kind or the parent (design §3). Every `remote` type declares
+  its `hostAddress` (owner, 2026-10-29: the optional `placement` of slice 3a is removed and the field renamed, and with it the fallback "here if
+  served, otherwise the parent" and its re-placement at the first parent link). A hold arriving for an address that is not this host's is relayed or
+  refused (`invalid/host_address`) as today; a relay never captures a hold because it serves the same name.
 - **Then the selected provider is checked** (served, version or accepted version and fingerprint, `authorize`, the
-  provider's own placement check). Version checks never look at a same-name registration elsewhere.
+  provider's own host-address check). Version checks never look at a same-name registration elsewhere.
 - **The publication gate:** a request made on this host, or arriving on its links, before the host's first
   publication (§6) is not placed yet; it shows `loading` and is placed by the publication. The gate lasts only for the
   synchronous setups, never for activation, so it cannot deadlock.
@@ -1336,7 +1334,7 @@ A needs W's B, B needs S's C; W's hold for C waits for S's whole `load`, which w
   | a fitting provider | bound (to the object here, or to the hold over a path) |
   | not published yet | unbound `unpublished`: `loading` |
   | nobody serves the name at its address | unbound `not_served`: `failed { waiting }` |
-  | no fitting version, a fingerprint that differs at the same version, a placement the provider computes elsewhere (code skew) | unbound `version`: `failed { waiting }` |
+  | no fitting version, a fingerprint that differs at the same version, a host address the provider computes elsewhere (code skew) | unbound `version`: `failed { waiting }` |
   | the registry is served, but its first `compose` (or the reader's version mapping) threw | unbound `compose`: `failed { waiting }` |
   | the provider host is installing a revision and the hold does not fit its current code | unbound `installing` at the provider: `loading` |
   | the path has no link (a drop, a route resolving) | on the path: `loading` |
@@ -1399,9 +1397,9 @@ through, or recovers by its own backoff.
 
 2. **The dependency check is the activation boundary:** once every dependency is `live`, the attempt runs its own
    steps (natives in order, follow attaches, member checks, derives), bounded by its own `readyTimeout` deadline, and
-   goes live. A dependency that leaves `live` after the check is treated as after live (R18): the attempt goes on. This
-   is a deliberate rule (Astra: a weakening of "live means every dependency is live"): an object can finish opening
-   after a dependency went away, and its calls through that reference meet its state. So a parked attempt holds no
+   goes live. A dependency that leaves `live` after the check is treated as after live (R18): the attempt goes on. This is
+   R18's rule for live objects applied from the check on, not a rule of its own (owner, 2026-10-29: a dependency can
+   go away at any point of an object's life; the object stays live, its calls through that reference meet its state). So a parked attempt holds no
    natives, and an attempt that opened natives is never parked.
 3. **No timer while parked:** no dependency deadline, no backoff. The attempt's deadline is paused while parked (as
    eager migrations pause it) and resumes with the budget left.
@@ -1432,8 +1430,7 @@ through, or recovers by its own backoff.
 | Event | Re-evaluates |
 | --- | --- |
 | **a target changes state**: a dependency's object goes live, loading, fails, gets a new cause or ends; a hold's `bound`, `loading`, `failed` arrive, also after a re-hold on a new link | the requests bound to it, and their dependents (§3.4) |
-| **a name becomes usable, an install ends, or the first parent link connects, on a host**: a publication (`load`'s setups, a reload's commit, an install's commit) serves a type, a registry, a version; a registry composes or maps a value at a version; an install ends without a commit (rejected) | the unbound requests indexed under those names; the provider's `installing` holds; at the first parent link, the
-no-placement remote requests waiting here; a refused hold re-runs its start and sends `loading`, then `bound` or `failed` |
+| **a name becomes usable, or an install ends, on a host**: a publication (`load`'s setups, a reload's commit, an install's commit) serves a type, a registry, a version; a registry composes or maps a value at a version; an install ends without a commit (rejected) | the unbound requests indexed under those names; the provider's `installing` holds; a refused hold re-runs its start and sends `loading`, then `bound` or `failed` |
 
 No new message kind for wakes: `loading`, `bound`, `failed` and `retry` exist. The wire's `failed` carries the new cause
 kind `waiting`; `loading` and a `waiting` `failed` carry the provider's attempt id for the probe (§7).
@@ -1651,7 +1648,7 @@ ring that never existed, `/tmp/model/sol-probe4.log`).
 
 R18 (dependency failures `waiting`, no backoff, the deadline paused while parked, the dependency check as boundary,
 wakes on every change, an ended dependency breaks), S2 and S3 (`waiting`, woken at every usable value), slice 8's
-last-good rule (dropped when a contribution leaves), §3's placement table (by address; the publication gate), §6 (the
+last-good rule (dropped when a contribution leaves), §3's destination table (by address; the publication gate), §6 (the
 simultaneous-cycle gap: (A) one narrowed deadline or (B) the probe), §7 (`host.hold`, getters, calls), §21 (no `gone` on
 removal; a dropped version unbinds only its requests; installs never await activations; rollout without revision
 fields; the reload handover), the start barrier (R17, W6), `FailureCause` (+ `waiting`), `loading`/`failed` with the

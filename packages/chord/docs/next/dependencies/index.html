@@ -314,28 +314,28 @@ and a reload that removes a type sends <code>gone</code>. Both go.</p>
 <h3 id="the-address-decides-where">The address decides where</h3>
 <p>A request goes to one place, and the address decides which. For a <code>local</code> type, the place is this
 host. For a <code>remote</code> type, the consumer computes the address from the params with its own contract&#39;s
-placement function (design §3): <code>Notes { session: &quot;S1&quot; }</code> is placed on <code>Session { id: &quot;S1&quot; }</code>. If that is this host&#39;s
+<code>hostAddress</code> function (design §3; <code>placement</code> until 2026-10-29): <code>Notes { session: &quot;S1&quot; }</code> is placed on <code>Session { id: &quot;S1&quot; }</code>. If that is this host&#39;s
 address, the request goes here; otherwise over the route for that kind, or over the parent link.</p>
-<p>Today the code checks something else first: whether the type is registered here. A type placed on this host but not
-registered yet is sent over the parent link, which is wrong twice. Sol&#39;s example: the server has address <code>Server</code>,
-the catalog type is placed on <code>Server</code>, and no facet serves it yet. Today&#39;s <code>Placement.reference</code> sends the server&#39;s
-own request over a parent link the server never had. And when the catalog plugin is installed later, nothing wakes
-that request, because it was never registered as waiting here.</p>
-<figure class="fig wide"><svg viewBox="0 0 720 242" width="100%" role="img" aria-label="Placement by address. The destination follows from the address alone; only then is the provider found there checked." xmlns="http://www.w3.org/2000/svg" style="font-family:'Avenir Next','Helvetica Neue',Helvetica,Arial,sans-serif;max-width:760px"><defs><marker id="f2m" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7b7468"/></marker><marker id="f2a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b4472f"/></marker><marker id="f2b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2e6a8a"/></marker></defs><text x="16" y="22" font-size="10" fill="#b4472f" text-anchor="start" font-weight="600" letter-spacing="2">WHERE</text><text x="16" y="155" font-size="10" fill="#7b7468" text-anchor="start" font-weight="600" letter-spacing="2">THEN</text><rect x="19" y="36" width="210" height="55" rx="4" fill="#fff" stroke="#b4472f" stroke-width="1.5"/><text x="124" y="54.5" font-size="11" fill="#2a2723" text-anchor="middle">the request's address</text><text x="124" y="68.5" font-size="9.5" fill="#7b7468" text-anchor="middle">from the consumer's own placement</text><text x="124" y="81" font-size="9.5" fill="#7b7468" text-anchor="middle">function</text><rect x="255" y="36" width="210" height="55" rx="4" fill="#fff" stroke="#c9bfae"/><text x="360" y="60.8" font-size="11" fill="#2a2723" text-anchor="middle">here</text><text x="360" y="74.8" font-size="9.5" fill="#7b7468" text-anchor="middle">a local type, or this host's address</text><rect x="491" y="36" width="210" height="55" rx="4" fill="#fff" stroke="#2e6a8a" stroke-width="1.5"/><text x="596" y="60.8" font-size="11" fill="#2a2723" text-anchor="middle">a route or the parent</text><text x="596" y="74.8" font-size="9.5" fill="#7b7468" text-anchor="middle">every other address</text><rect x="137" y="169" width="210" height="55" rx="4" fill="#fff" stroke="#c9bfae"/><text x="242" y="187.5" font-size="11" fill="#2a2723" text-anchor="middle">check the provider here</text><text x="242" y="201.5" font-size="9.5" fill="#7b7468" text-anchor="middle">served? fitting version? authorize,</text><text x="242" y="214" font-size="9.5" fill="#7b7468" text-anchor="middle">own placement</text><rect x="373" y="169" width="210" height="55" rx="4" fill="#fff" stroke="#2e6a8a" stroke-width="1.5"/><text x="478" y="187.5" font-size="11" fill="#2a2723" text-anchor="middle">hold over the path</text><text x="478" y="201.5" font-size="9.5" fill="#7b7468" text-anchor="middle">the provider host checks it the same</text><text x="478" y="214" font-size="9.5" fill="#7b7468" text-anchor="middle">way</text><path d="M229 63.5 L253 63.5" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/><path d="M124 32 Q360 -12 596 32" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/><path d="M360 91 L242 167" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/><path d="M596 91 L478 167" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/></svg><figcaption><span class="fignum">Figure 2.</span> Placement by address. The destination follows from the address alone; only then is the provider found there checked.</figcaption></figure>
-<p>The rule, from the reviews (Sol B1, Astra F1): placement never looks at what is registered when the type names an
+<p>Until 2026-10-29 the code checked something else first: whether the type is registered here. A type placed on this host but not
+registered yet was sent over the parent link, which is wrong twice. Sol&#39;s example: the server has address <code>Server</code>,
+the catalog type is placed on <code>Server</code>, and no facet serves it yet. That code, <code>Placement.reference</code> (<code>host/placement.ts</code>, now <code>host/destination.ts</code>), sent the server&#39;s
+own request over a parent link the server never had, and when the catalog plugin was installed later, nothing woke
+that request, because it was never registered as waiting here. The rename removed the first half; slice 7 builds the
+wait.</p>
+<figure class="fig wide"><svg viewBox="0 0 720 231" width="100%" role="img" aria-label="The destination by address. The destination follows from the address alone; only then is the provider found there checked." xmlns="http://www.w3.org/2000/svg" style="font-family:'Avenir Next','Helvetica Neue',Helvetica,Arial,sans-serif;max-width:760px"><defs><marker id="f2m" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7b7468"/></marker><marker id="f2a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b4472f"/></marker><marker id="f2b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2e6a8a"/></marker></defs><text x="16" y="22" font-size="10" fill="#b4472f" text-anchor="start" font-weight="600" letter-spacing="2">WHERE</text><text x="16" y="144" font-size="10" fill="#7b7468" text-anchor="start" font-weight="600" letter-spacing="2">THEN</text><rect x="19" y="36" width="210" height="44" rx="4" fill="#fff" stroke="#b4472f" stroke-width="1.5"/><text x="124" y="55.3" font-size="11" fill="#2a2723" text-anchor="middle">the request's address</text><text x="124" y="69.3" font-size="9.5" fill="#7b7468" text-anchor="middle">from the consumer's own `hostAddress`</text><rect x="255" y="36" width="210" height="44" rx="4" fill="#fff" stroke="#c9bfae"/><text x="360" y="55.3" font-size="11" fill="#2a2723" text-anchor="middle">here</text><text x="360" y="69.3" font-size="9.5" fill="#7b7468" text-anchor="middle">a local type, or this host's address</text><rect x="491" y="36" width="210" height="44" rx="4" fill="#fff" stroke="#2e6a8a" stroke-width="1.5"/><text x="596" y="55.3" font-size="11" fill="#2a2723" text-anchor="middle">a route or the parent</text><text x="596" y="69.3" font-size="9.5" fill="#7b7468" text-anchor="middle">every other address</text><rect x="137" y="158" width="210" height="55" rx="4" fill="#fff" stroke="#c9bfae"/><text x="242" y="176.5" font-size="11" fill="#2a2723" text-anchor="middle">check the provider here</text><text x="242" y="190.5" font-size="9.5" fill="#7b7468" text-anchor="middle">served? fitting version? authorize,</text><text x="242" y="203" font-size="9.5" fill="#7b7468" text-anchor="middle">own host address</text><rect x="373" y="158" width="210" height="55" rx="4" fill="#fff" stroke="#2e6a8a" stroke-width="1.5"/><text x="478" y="176.5" font-size="11" fill="#2a2723" text-anchor="middle">hold over the path</text><text x="478" y="190.5" font-size="9.5" fill="#7b7468" text-anchor="middle">the provider host checks it the same</text><text x="478" y="203" font-size="9.5" fill="#7b7468" text-anchor="middle">way</text><path d="M229 58 L253 58" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/><path d="M124 32 Q360 -12 596 32" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/><path d="M360 80 L242 156" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/><path d="M596 80 L478 156" fill="none" stroke="#7b7468" marker-end="url(#f2m)"/></svg><figcaption><span class="fignum">Figure 2.</span> The destination by address. The destination follows from the address alone; only then is the provider found there checked.</figcaption></figure>
+<p>The rule, from the reviews (Sol B1, Astra F1): the destination never depends on what is registered when the type names an
 address. A request placed here whose provider is missing is <strong>unbound here</strong>, waiting for the name. A version check
 compares the consumer with the provider actually selected, never with a same-name registration on the consumer&#39;s own
-host (today <code>#assertRoute</code> does that before placement, so worker W1 serving <code>Notes</code> v1 rejects a <code>Notes</code> v2 request
+host (today <code>#assertRoute</code> does that before choosing the destination, so worker W1 serving <code>Notes</code> v1 rejects a <code>Notes</code> v2 request
 placed on W2, which serves v2).</p>
-<p>One case keeps today&#39;s rule: a <code>remote</code> type declared <strong>without placement</strong> (allowed by <code>remote()</code>, used in tests and
-for server types a tab reaches through its parent). It goes here if it is served here, otherwise over the parent. A
-request of that kind made before the host has a parent link (a tab loads before it connects) waits here as not served
-and is placed again when the host&#39;s first parent link connects (Opus, Sol); on a host that never connects, the root,
-it stays here. Opus would rather require a placement on every remote type, which is simpler; it removes a supported
-declaration, and the owner asked for no feature to go, so the draft keeps the fallback.</p>
+<p>Every <code>remote</code> type declares its <code>hostAddress</code> (owner, 2026-10-29, who also renamed <code>placement</code> to it). Until then
+<code>remote()</code> allowed leaving it out, a
+leftover of slice 3a, which built remote objects over one link before host kinds existed; such a type went &quot;here if
+served, otherwise the parent&quot;, which needed its own fallback and a re-placement when a tab that loads before it
+connects gets its first parent link (Opus, Sol). Opus and Fable proposed making it required; the owner agreed.</p>
 <h3 id="what-the-check-finds">What the check finds</h3>
 <p>Once placed, the provider found there is checked: served, a fitting version (the current one or an accepted older one,
-with the fingerprint computed from the provider&#39;s own history), <code>authorize</code>, and the provider&#39;s own placement check.
+with the fingerprint computed from the provider&#39;s own history), <code>authorize</code>, and the provider&#39;s own host-address check.
 The request is then <strong>bound</strong> (to an object here, or to a hold over a path), or <strong>unbound</strong> with a reason:</p>
 <table>
 <thead>
@@ -361,7 +361,7 @@ The request is then <strong>bound</strong> (to an object here, or to a hold over
 <td><code>failed { waiting }</code></td>
 </tr>
 <tr>
-<td>no fitting version, a fingerprint that differs at the same version, a placement the provider computes elsewhere</td>
+<td>no fitting version, a fingerprint that differs at the same version, a host address the provider computes elsewhere</td>
 <td>unbound <code>version</code></td>
 <td><code>failed { waiting }</code></td>
 </tr>
@@ -538,8 +538,9 @@ bounded by its own <code>readyTimeout</code> deadline, as today. Then it goes li
 <p>The dependency check is the boundary between waiting and working (Astra&#39;s F3). Before it, the attempt holds no
 natives; after it, a dependency that leaves <code>live</code> is treated as after live (R18): the attempt goes on, and its calls
 through that reference meet the reference&#39;s state. So a parked attempt never holds a native, and an attempt that
-opened a native is never parked. This is a deliberate rule, and Astra called it what it is: a weakening of &quot;live
-means every dependency is live&quot;. An object can finish opening after a dependency went away. Without that boundary a contributor unloading while the attempt opens its natives
+opened a native is never parked. It is not a rule of its own: it is R18&#39;s rule for live objects (a dependency that
+goes away leaves the object live; same-host calls in flight finish, remote ones fail, new calls meet the reference&#39;s
+state), applied from the dependency check on. Without that boundary a contributor unloading while the attempt opens its natives
 would leave it half open and parked, or force a seal, a drain and a fresh attempt for a dependency the object may not
 even use at once.</p>
 <figure class="fig anim"><svg viewBox="0 0 720 331" width="100%" role="img" aria-label="Code mode on W parks on the harness and goes on the moment it is live." xmlns="http://www.w3.org/2000/svg" style="font-family:'Avenir Next','Helvetica Neue',Helvetica,Arial,sans-serif;max-width:760px"><defs><marker id="f3m" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7b7468"/></marker><marker id="f3a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b4472f"/></marker><marker id="f3b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2e6a8a"/></marker></defs><line x1="130.7" y1="52" x2="130.7" y2="323" stroke="#c9bfae" stroke-dasharray="3 3"/><rect x="45.7" y="10" width="170" height="42" rx="4" fill="#fff" stroke="#c9bfae"/><text x="130.7" y="27" font-size="11" fill="#2a2723" text-anchor="middle">CodeMode</text><text x="130.7" y="41" font-size="9.5" fill="#7b7468" text-anchor="middle">host-lifetime, local</text><line x1="360" y1="52" x2="360" y2="323" stroke="#c9bfae" stroke-dasharray="3 3"/><rect x="275" y="10" width="170" height="42" rx="4" fill="#fff" stroke="#c9bfae"/><text x="360" y="27" font-size="11" fill="#2a2723" text-anchor="middle">Harness</text><text x="360" y="41" font-size="9.5" fill="#7b7468" text-anchor="middle">host-lifetime, local</text><line x1="589.3" y1="52" x2="589.3" y2="323" stroke="#c9bfae" stroke-dasharray="3 3"/><rect x="504.3" y="10" width="170" height="42" rx="4" fill="#fff" stroke="#c9bfae"/><text x="589.3" y="27" font-size="11" fill="#2a2723" text-anchor="middle">HarnessModels</text><text x="589.3" y="41" font-size="9.5" fill="#7b7468" text-anchor="middle">registry</text><g class="step edge" style="--i:1"><line x1="130.7" y1="78" x2="357" y2="78" stroke="#7b7468" marker-end="url(#f3m)"/><text x="245.3" y="72" font-size="10" fill="#2a2723" text-anchor="middle">self.get(Harness): loading</text></g><g class="step" style="--i:2"><rect x="26" y="96" width="209.3" height="23" rx="3" fill="#f4eee2" stroke="#c2b18c"/><text x="130.7" y="110" font-size="10" fill="#5b5549" text-anchor="middle">parked: shows loading, no timer</text></g><g class="step edge" style="--i:3"><line x1="360" y1="147" x2="586.3" y2="147" stroke="#7b7468" marker-end="url(#f3m)"/><text x="474.7" y="141" font-size="10" fill="#2a2723" text-anchor="middle">self.registry(HarnessModels): usable</text></g><g class="step edge" style="--i:4"><path d="M360 173 h34 v14 h-32" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/><text x="402" y="183" font-size="10" fill="#2a2723" text-anchor="start">own steps: open Durable</text></g><g class="step edge" style="--i:5"><line x1="360" y1="219" x2="133.7" y2="219" stroke="#b4472f" marker-end="url(#f3a)"/><text x="245.3" y="213" font-size="10" fill="#b4472f" text-anchor="middle">Harness live: a state change</text></g><g class="step edge" style="--i:6"><path d="M130.7 245 h34 v14 h-32" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/><text x="172.7" y="255" font-size="10" fill="#2a2723" text-anchor="start">dependency check passes; open the sandbox</text></g><g class="step edge" style="--i:7"><path d="M130.7 285 h34 v14 h-32" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/><text x="172.7" y="295" font-size="10" fill="#2a2723" text-anchor="start">live; contribute tools</text></g></svg><figcaption><button class="replay" type="button">Replay</button><span class="fignum">Figure 3.</span> Code mode on W parks on the harness and goes on the moment it is live.</figcaption></figure>
@@ -722,9 +723,9 @@ object then; Sol and Astra caught it: the object, its documents, its jobs and it
 fine. Only the requests on version 1 become unbound <code>version</code>. The object&#39;s own plugin reload still restarts it if it
 has natives (§21), as for any reload.</p>
 <h3 id="a-type-that-moved">A type that moved</h3>
-<p>A plugin can move a type from the worker to the server by changing its placement. A consumer&#39;s request carries the
+<p>A plugin can move a type from the worker to the server by changing its <code>hostAddress</code>. A consumer&#39;s request carries the
 address its own code computed, so the provider appearing on the server cannot wake it: the request is not waiting
-there. The old host answers <code>not_served</code>; the consumer&#39;s own reload, which brings the new placement, makes a new
+there. The old host answers <code>not_served</code>; the consumer&#39;s own reload, which brings the new <code>hostAddress</code>, makes a new
 request. The model adds no redirect: moving state between hosts is a deliberate migration, not something Chord guesses.</p>
 <h3 id="rollouts-across-hosts">Rollouts across hosts</h3>
 <p>A rollout installs a revision on the server first, then on the workers, then on the tabs (design §21). Between those
@@ -1358,7 +1359,7 @@ does is needed to recover; and an ended holder leaves nothing behind in any inde
 <tr>
 <td>2</td>
 <td><code>self.get(Catalog)</code> from W1&#39;s <code>ForwardStore</code>; the parent link is up, S has published, <code>Catalog</code> is served there.</td>
-<td>The request goes over the parent (placement <code>Server()</code>); S binds the hold; <code>bound</code> arrives; <code>ForwardStore</code> was <code>loading</code>, now goes on and live.</td>
+<td>The request goes over the parent (<code>hostAddress: () =&gt; Server()</code>); S binds the hold; <code>bound</code> arrives; <code>ForwardStore</code> was <code>loading</code>, now goes on and live.</td>
 <td>The same, after S&#39;s whole barrier (<code>Hold.start</code> awaits <code>pendingLoad</code>).</td>
 <td>§1, §2</td>
 </tr>
@@ -1930,9 +1931,9 @@ owner&#39;s decisions.</li>
 <td>refused and kept at the provider, re-run at its publication; <code>failed { waiting }</code></td>
 </tr>
 <tr>
-<td>design §3, placement</td>
-<td>&quot;served here&quot; decides &quot;here&quot;</td>
-<td>the address decides; a remote type without placement keeps today&#39;s rule</td>
+<td>design §3, the destination</td>
+<td>&quot;served here&quot; decides &quot;here&quot;; <code>placement</code> optional on <code>remote()</code></td>
+<td>the address decides; every remote type declares its <code>hostAddress</code>, renamed from <code>placement</code> (owner, 2026-10-29)</td>
 </tr>
 <tr>
 <td>the start barrier, <code>pendingLoad</code></td>
@@ -2100,18 +2101,15 @@ code (<code>host.get</code>, <code>host.hold</code>, <code>host.registry</code>)
 attempt ends, the call settles, <code>release()</code>, a getter gives up, the peer&#39;s link or origin closes, revocation, the
 holding host closes), never because its provider is missing, went away or does not fit.</p>
 </li>
-<li><p><strong>Placement by address</strong> (round 1): a <code>local</code> type goes here; a <code>remote</code> type with a placement goes to the address
-its placement (computed from the consumer&#39;s own contract) gives: here if that is this host&#39;s address, whether served
-here or not, else over the route for that kind or the parent (design §3). A <code>remote</code> type <strong>without placement</strong> keeps
-today&#39;s rule (round 2: Fable, Opus, Astra; no feature removed): here if served here, otherwise over the parent. A
-request of that kind made before the host has a parent link waits here <code>not_served</code> and is <strong>re-placed when the
-host&#39;s first parent link connects</strong> (round 3: Opus N5, Sol 3: a tab loads before it connects); on a host that never
-connects (the root), it stays here. Opus would rather require a placement on every <code>remote()</code>; that removes a
-supported declaration, so the draft keeps the fallback. A hold arriving for an address that is not this host&#39;s is relayed or
-refused (<code>invalid/placement</code>) as today; a relay never captures a hold because it serves the same name.</p>
+<li><p><strong>The destination by address</strong> (round 1): a <code>local</code> type goes here; a <code>remote</code> type goes to the address its
+<code>hostAddress</code> (computed from the consumer&#39;s own contract) gives: here if that is this host&#39;s address, whether served
+here or not, else over the route for that kind or the parent (design §3). Every <code>remote</code> type declares
+its <code>hostAddress</code> (owner, 2026-10-29: the optional <code>placement</code> of slice 3a is removed and the field renamed, and with it the fallback &quot;here if
+served, otherwise the parent&quot; and its re-placement at the first parent link). A hold arriving for an address that is not this host&#39;s is relayed or
+refused (<code>invalid/host_address</code>) as today; a relay never captures a hold because it serves the same name.</p>
 </li>
 <li><p><strong>Then the selected provider is checked</strong> (served, version or accepted version and fingerprint, <code>authorize</code>, the
-provider&#39;s own placement check). Version checks never look at a same-name registration elsewhere.</p>
+provider&#39;s own host-address check). Version checks never look at a same-name registration elsewhere.</p>
 </li>
 <li><p><strong>The publication gate:</strong> a request made on this host, or arriving on its links, before the host&#39;s first
 publication (§6) is not placed yet; it shows <code>loading</code> and is placed by the publication. The gate lasts only for the
@@ -2138,7 +2136,7 @@ synchronous setups, never for activation, so it cannot deadlock.</p>
 <td>unbound <code>not_served</code>: <code>failed { waiting }</code></td>
 </tr>
 <tr>
-<td>no fitting version, a fingerprint that differs at the same version, a placement the provider computes elsewhere (code skew)</td>
+<td>no fitting version, a fingerprint that differs at the same version, a host address the provider computes elsewhere (code skew)</td>
 <td>unbound <code>version</code>: <code>failed { waiting }</code></td>
 </tr>
 <tr>
@@ -2256,9 +2254,9 @@ across attempts); the requests are made. The attempt is <strong>parked</strong> 
 </li>
 <li><p><strong>The dependency check is the activation boundary:</strong> once every dependency is <code>live</code>, the attempt runs its own
 steps (natives in order, follow attaches, member checks, derives), bounded by its own <code>readyTimeout</code> deadline, and
-goes live. A dependency that leaves <code>live</code> after the check is treated as after live (R18): the attempt goes on. This
-is a deliberate rule (Astra: a weakening of &quot;live means every dependency is live&quot;): an object can finish opening
-after a dependency went away, and its calls through that reference meet its state. So a parked attempt holds no
+goes live. A dependency that leaves <code>live</code> after the check is treated as after live (R18): the attempt goes on. This is
+R18&#39;s rule for live objects applied from the check on, not a rule of its own (owner, 2026-10-29: a dependency can
+go away at any point of an object&#39;s life; the object stays live, its calls through that reference meet its state). So a parked attempt holds no
 natives, and an attempt that opened natives is never parked.</p>
 </li>
 <li><p><strong>No timer while parked:</strong> no dependency deadline, no backoff. The attempt&#39;s deadline is paused while parked (as
@@ -2306,12 +2304,8 @@ unchanged dependency held only by this object must not end in between; today&#39
 <td>the requests bound to it, and their dependents (§3.4)</td>
 </tr>
 <tr>
-<td><strong>a name becomes usable, an install ends, or the first parent link connects, on a host</strong>: a publication (<code>load</code>&#39;s setups, a reload&#39;s commit, an install&#39;s commit) serves a type, a registry, a version; a registry composes or maps a value at a version; an install ends without a commit (rejected)</td>
-<td>the unbound requests indexed under those names; the provider&#39;s <code>installing</code> holds; at the first parent link, the</td>
-</tr>
-<tr>
-<td>no-placement remote requests waiting here; a refused hold re-runs its start and sends <code>loading</code>, then <code>bound</code> or <code>failed</code></td>
-<td></td>
+<td><strong>a name becomes usable, or an install ends, on a host</strong>: a publication (<code>load</code>&#39;s setups, a reload&#39;s commit, an install&#39;s commit) serves a type, a registry, a version; a registry composes or maps a value at a version; an install ends without a commit (rejected)</td>
+<td>the unbound requests indexed under those names; the provider&#39;s <code>installing</code> holds; a refused hold re-runs its start and sends <code>loading</code>, then <code>bound</code> or <code>failed</code></td>
 </tr>
 </tbody></table>
 <p>No new message kind for wakes: <code>loading</code>, <code>bound</code>, <code>failed</code> and <code>retry</code> exist. The wire&#39;s <code>failed</code> carries the new cause
@@ -2573,7 +2567,7 @@ once it is live; the run count keeps the object as today.</li>
 <h3 id="12-what-changes-in-the-design">12. What changes in the design</h3>
 <p>R18 (dependency failures <code>waiting</code>, no backoff, the deadline paused while parked, the dependency check as boundary,
 wakes on every change, an ended dependency breaks), S2 and S3 (<code>waiting</code>, woken at every usable value), slice 8&#39;s
-last-good rule (dropped when a contribution leaves), §3&#39;s placement table (by address; the publication gate), §6 (the
+last-good rule (dropped when a contribution leaves), §3&#39;s destination table (by address; the publication gate), §6 (the
 simultaneous-cycle gap: (A) one narrowed deadline or (B) the probe), §7 (<code>host.hold</code>, getters, calls), §21 (no <code>gone</code> on
 removal; a dropped version unbinds only its requests; installs never await activations; rollout without revision
 fields; the reload handover), the start barrier (R17, W6), <code>FailureCause</code> (+ <code>waiting</code>), <code>loading</code>/<code>failed</code> with the

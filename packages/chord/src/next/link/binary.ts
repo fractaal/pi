@@ -6,6 +6,7 @@
 
 import {
 	type BoundEntry,
+	CAUSE_KINDS,
 	type Codec,
 	type FailedMember,
 	type Message,
@@ -49,16 +50,19 @@ const PRESENT = 1;
 
 const SEGMENTS = 2;
 
+/** A retry's optional fields, one bit each: its operation (16 raw bytes), then the ids it passed through (a list). */
+const OPERATION = 1;
+
+const THROUGH = 2;
+
 /** A hold's optional fields, one bit each. */
-const ADDRESS = 1;
+const PRINCIPAL = 1;
 
-const PRINCIPAL = 2;
+const INCARNATION = 2;
 
-const INCARNATION = 4;
+const CHAIN = 4;
 
-const CHAIN = 8;
-
-const LIMIT = 16;
+const LIMIT = 8;
 
 /** A part's length prefix is its length doubled, plus one when the part is deflated. */
 const DEFLATED = 1;
@@ -106,17 +110,14 @@ function encodeFields(message: Message, writer: Writer): void {
 			writer.raw(hex(message.fingerprint, 8));
 			writer.part(message.params);
 			const { address, principal, incarnation, chain, limit } = message;
+			writer.string(address.kind);
+			writer.json(address.params);
 			writer.byte(
-				(address === undefined ? 0 : ADDRESS) |
-					(principal === undefined ? 0 : PRINCIPAL) |
+				(principal === undefined ? 0 : PRINCIPAL) |
 					(incarnation === undefined ? 0 : INCARNATION) |
 					(chain === undefined ? 0 : CHAIN) |
 					(limit === undefined ? 0 : LIMIT),
 			);
-			if (address !== undefined) {
-				writer.string(address.kind);
-				writer.json(address.params);
-			}
 			if (principal !== undefined) writer.json(principal);
 			if (incarnation !== undefined) writer.raw(hex(incarnation.replaceAll("-", ""), 16));
 			if (chain !== undefined) {
@@ -127,10 +128,20 @@ function encodeFields(message: Message, writer: Writer): void {
 			return;
 		}
 		case "release":
-		case "retry":
 		case "loading":
 			writer.varint(message.hold);
 			return;
+		case "retry": {
+			const { operation, through } = message;
+			writer.varint(message.hold);
+			writer.byte((operation === undefined ? 0 : OPERATION) | (through === undefined ? 0 : THROUGH));
+			if (operation !== undefined) writer.raw(hex(operation.replaceAll("-", ""), 16));
+			if (through !== undefined) {
+				writer.varint(through.length);
+				for (const instance of through) writer.raw(hex(instance.replaceAll("-", ""), 16));
+			}
+			return;
+		}
 		case "call":
 			writer.varint(message.call);
 			writer.varint(message.hold);
@@ -167,7 +178,7 @@ function encodeFields(message: Message, writer: Writer): void {
 			return;
 		case "failed":
 			writer.varint(message.hold);
-			writer.byte(message.cause.kind === "transient" ? 0 : 1);
+			writer.byte(CAUSE_KINDS.indexOf(message.cause.kind));
 			writer.json(message.cause.error);
 			// 0 when absent, else one more than the delay.
 			writer.varint(message.retryIn === undefined ? 0 : message.retryIn + 1);
@@ -207,9 +218,9 @@ function decodeFields(kind: (typeof KINDS)[number], reader: Reader): Message {
 			const version = reader.varint();
 			const fingerprint = hexText(reader.raw(8));
 			const params = reader.part();
+			const address = { kind: reader.string(), params: reader.json() };
 			const flags = reader.byte();
-			if (flags > (ADDRESS | PRINCIPAL | INCARNATION | CHAIN | LIMIT)) throw new Error("binary: unknown hold flags");
-			const address = flags & ADDRESS ? { address: { kind: reader.string(), params: reader.json() } } : {};
+			if (flags > (PRINCIPAL | INCARNATION | CHAIN | LIMIT)) throw new Error("binary: unknown hold flags");
 			const principal = flags & PRINCIPAL ? { principal: reader.json() as { kind: string } } : {};
 			const incarnation = flags & INCARNATION ? { incarnation: uuid(reader.raw(16)) } : {};
 			const chain = flags & CHAIN ? { chain: reader.list(() => uuid(reader.raw(16))) } : {};
@@ -221,7 +232,7 @@ function decodeFields(kind: (typeof KINDS)[number], reader: Reader): Message {
 				version,
 				fingerprint,
 				params,
-				...address,
+				address,
 				...principal,
 				...incarnation,
 				...chain,
@@ -229,9 +240,16 @@ function decodeFields(kind: (typeof KINDS)[number], reader: Reader): Message {
 			};
 		}
 		case "release":
-		case "retry":
 		case "loading":
 			return { kind, hold: reader.varint() };
+		case "retry": {
+			const hold = reader.varint();
+			const flags = reader.byte();
+			if (flags > (OPERATION | THROUGH)) throw new Error("binary: an unknown retry flag");
+			const operation = flags & OPERATION ? { operation: uuid(reader.raw(16)) } : {};
+			const through = flags & THROUGH ? { through: reader.list(() => uuid(reader.raw(16))) } : {};
+			return { kind, hold, ...operation, ...through };
+		}
 		case "call": {
 			const [call, hold, method] = [reader.varint(), reader.varint(), reader.varint()];
 			return { kind, call, hold, method, ...reader.payload("args") };
@@ -260,15 +278,15 @@ function decodeFields(kind: (typeof KINDS)[number], reader: Reader): Message {
 		}
 		case "failed": {
 			const hold = reader.varint();
-			const cause = reader.byte();
-			if (cause > 1) throw new Error("binary: an unknown failure kind");
+			const cause = CAUSE_KINDS[reader.byte()];
+			if (cause === undefined) throw new Error("binary: an unknown failure kind");
 			// The schema check after decoding establishes the wire error.
 			const error = reader.json() as Extract<Message, { kind: "error" }>["error"];
 			const retryIn = reader.varint();
 			return {
 				kind,
 				hold,
-				cause: { kind: cause === 0 ? "transient" : "broken", error },
+				cause: { kind: cause, error },
 				...(retryIn === 0 ? {} : { retryIn: retryIn - 1 }),
 			};
 		}

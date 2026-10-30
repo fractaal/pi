@@ -193,9 +193,9 @@ export class HostLink implements ChannelHandler {
 		}
 	}
 
-	/** Ends the holds on this link still waiting for `load` that act for a principal `revoked` names (§4). */
-	revokeWaiting(revoked: (principal: Principal) => boolean, error: ChordError): void {
-		for (const provider of this.#providers.values()) provider.revokeWaiting(revoked, error);
+	/** Ends the holds on this link that hold nothing and act for a principal `revoked` names (§4). */
+	revokeUnbound(revoked: (principal: Principal) => boolean, error: ChordError): void {
+		for (const provider of this.#providers.values()) provider.revokeUnbound(revoked, error);
 	}
 
 	closed(): void {

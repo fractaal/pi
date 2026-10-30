@@ -78,7 +78,7 @@ describe("protocol table", () => {
 		const pinned = {
 			version: 1,
 			reasons: {
-				invalid: ["args", "params", "member", "placement", "reentrant", "read_after_bulk", "cycle"],
+				invalid: ["args", "params", "member", "host_address", "reentrant", "read_after_bulk", "cycle"],
 				contract_mismatch: ["updating"],
 				forbidden: ["revoked"],
 				gone: [],

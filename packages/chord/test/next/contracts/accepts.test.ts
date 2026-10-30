@@ -3,6 +3,7 @@ import {
 	type AcceptsTable,
 	arr,
 	evolve,
+	hostKind,
 	int,
 	local,
 	method,
@@ -13,12 +14,15 @@ import {
 } from "../../../src/next/contracts/index.ts";
 import { checkAccepts } from "../../../src/next/contracts/internal.ts";
 
+const Server = hostKind("server");
+
 const Note = obj({ text: str() });
 const NoteV2 = obj({ text: str(), tag: str() });
 
 const NotesV1 = remote("notes", {
 	version: 1,
 	params: { session: str() },
+	hostAddress: () => Server(),
 	variants: {
 		editor: { state: { notes: arr(Note), count: int() }, methods: { add: method(Note, str()), clear: method() } },
 		reader: { state: { notes: arr(Note) }, methods: { add: method(Note, str()) } },

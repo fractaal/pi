@@ -8,12 +8,14 @@
 import { GCProfiler } from "node:v8";
 import { InMemoryTelemetryContext } from "@earendil-works/pi-telemetry";
 import { BACKGROUND_CONTEXT, type Context, withTelemetry } from "../../../src/context/index.ts";
-import { arr, bytes, int, local, method, obj, remote, str } from "../../../src/next/contracts/index.ts";
+import { arr, bytes, hostKind, int, local, method, obj, remote, str } from "../../../src/next/contracts/index.ts";
 import { defineState } from "../../../src/next/documents/index.ts";
 import { createHost, defineFacet, type Host, type RefState } from "../../../src/next/host/index.ts";
 import { type Codec, type Link, memoryLinkPair } from "../../../src/next/link/index.ts";
 import { binaryCodec, type Message, textCodec } from "../../../src/next/link/internal.ts";
 import type { NativeWatchable } from "../../../src/watch.ts";
+
+const Server = hostKind("server");
 
 type P = { kind: "owner" } | { kind: "server" };
 
@@ -37,6 +39,7 @@ const Store = local("bench.store", {
 const View = remote("bench.view", {
 	version: 1,
 	params: { name: str() },
+	hostAddress: () => Server(),
 	variants: { owner: { state: { doc: Shape } } },
 });
 
@@ -44,6 +47,7 @@ const View = remote("bench.view", {
 const Files = remote("bench.files", {
 	version: 1,
 	params: {},
+	hostAddress: () => Server(),
 	variants: {
 		owner: { methods: { ping: method(obj({ n: int() }), int()), put: method(obj({ data: bytes() }), int()) } },
 	},
@@ -138,6 +142,7 @@ const document = (): Entry[] => Array.from({ length: 500 }, (_, id) => entry(id,
 async function setup(name: string, entries: Entry[], codec: Codec, metered = true) {
 	const context = metered ? counting : BACKGROUND_CONTEXT;
 	const server = createHost<P>({
+		address: Server(),
 		principal: { kind: "server" },
 		telemetry: metered ? telemetry : undefined,
 		onError: console.error,

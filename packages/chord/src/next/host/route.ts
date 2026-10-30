@@ -63,7 +63,7 @@ export class Route {
 
 	/**
 	 * The path to the address with `params`, for a hold acting as `principal`: the params checked against the kind
-	 * (`invalid/placement`), then `authorize` (`forbidden` when it refuses; a throw is the hold's failure).
+	 * (`invalid/host_address`), then `authorize` (`forbidden` when it refuses; a throw is the hold's failure).
 	 */
 	path(params: unknown, principal: Principal | undefined, context: Context): Path {
 		const address = checkAddress(this.kind, this.#params, params, context);
@@ -98,6 +98,11 @@ export class Route {
 	/** The host closes: no address resolves again. Returns every holder of every path, for the host to end. */
 	close(): Upstream[] {
 		this.#backoff.clear();
+		return this.holders();
+	}
+
+	/** Every holder of every path of this route, linked or not (revocation ends a revoked principal's). */
+	holders(): Upstream[] {
 		return [...this.#addresses.values()].flatMap(({ path }) => path.holders());
 	}
 
