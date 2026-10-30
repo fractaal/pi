@@ -29,6 +29,7 @@ import {
 	memoryStore,
 	Notes,
 	rejection,
+	Server,
 	settledHeap,
 } from "../support.ts";
 
@@ -338,12 +339,13 @@ describe("remote references", () => {
 		const Two = remote("app.two", {
 			version: 1,
 			params: {},
+			hostAddress: () => Server(),
 			variants: { full: { state: { n: int() }, methods: { bump: method() } }, view: { state: { m: int() } } },
 		});
 		const Holder = local("app.holder", { version: 1, params: {}, members: { n: int() } });
 		const seen: unknown[] = [];
 		const owner = { kind: "owner" } as const;
-		const host = createHost<typeof owner>({ principal: owner, onError: () => {} });
+		const host = createHost<typeof owner>({ address: Server(), principal: owner, onError: () => {} });
 		const facet = defineFacet<typeof owner>((h) => {
 			h.serve(Two, () => ({ variant: "view", members: { m: constant(1) } }));
 			h.serve(Holder, (_, self) => {
@@ -369,6 +371,7 @@ describe("remote reference types", () => {
 		const Two = remote("app.two", {
 			version: 1,
 			params: {},
+			hostAddress: () => Server(),
 			variants: { full: { state: { n: int() }, methods: { bump: method() } }, view: { state: { m: int() } } },
 		});
 		type Ref = Reference<typeof Two>;
@@ -384,6 +387,7 @@ describe("remote reference types", () => {
 		const Two = remote("app.two", {
 			version: 1,
 			params: {},
+			hostAddress: () => Server(),
 			variants: { full: { state: { n: int() }, methods: { bump: method() } }, view: { state: { m: int() } } },
 		});
 		expectTypeOf<Held<typeof Two>["variant"]>().toEqualTypeOf<"full" | "view" | undefined>();
@@ -609,7 +613,7 @@ describe("keyed state members (slice 6a §12)", () => {
 		await store.close(context);
 	});
 
-	it("a pin load that fails its provider fails the consumer as a dependency failure (transient)", async () => {
+	it("a pin load that fails its provider parks the consumer failed { waiting } on it (a dependency failure)", async () => {
 		const store = await seeded();
 		const { host, errors } = await persistedNotes(store, persistedMemo(2));
 		const provider = await host.get(NoteStore, {}, context);
@@ -617,7 +621,7 @@ describe("keyed state members (slice 6a §12)", () => {
 		await vi.waitFor(() => expect(view.state.value.kind).toBe("failed"));
 		expect(view.state.value).toMatchObject({
 			kind: "failed",
-			cause: { kind: "transient", error: { message: expect.stringContaining("cannot migrate") } },
+			cause: { kind: "waiting", error: { message: expect.stringContaining("cannot migrate") } },
 		});
 		expect(provider.state.value).toMatchObject({ kind: "failed", cause: { kind: "broken" } });
 		expect(errors.map(({ kind }) => kind)).toContain("object_failed");

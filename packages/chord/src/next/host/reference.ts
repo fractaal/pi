@@ -14,7 +14,7 @@ import {
 	takesNoArgs,
 	type VariantImplementation,
 } from "../contracts/internal.ts";
-import { ChordError, type FailureCause } from "../data/index.ts";
+import { ChordError, type FailureCause, type Principal } from "../data/index.ts";
 import { Keyed, type KeyedSlot, type SealToken, Singleton } from "../documents/internal.ts";
 import { type Batch, Constant, type DeriveSource, Source } from "../state/internal.ts";
 import { type Caller, withLinkedAbortSignal } from "./ctx.ts";
@@ -23,6 +23,8 @@ import type { KeyedBinding } from "./members.ts";
 import type { ChordObject, Holder } from "./object.ts";
 import { ParkedCalls } from "./parked.ts";
 import { type Ended, type Failed, LOADING, ReferenceState, type RefState } from "./ref-state.ts";
+import type { UnboundRequest } from "./unbound.ts";
+import { uuidv7 } from "./uuid.ts";
 
 /**
  * A reference: a local contract's members, or for a remote contract the members of the variant its object chose,
@@ -50,7 +52,10 @@ type InVariants<C extends Contract, Unbound> = {
 type Lifecycle = {
 	/** The reference's state: loading, live, failed or released; watches get every change. */
 	readonly state: NativeWatchable<RefState>;
-	/** Asks a failed object for an attempt now (the backoff skipped, a broken one renewed); otherwise nothing. */
+	/**
+	 * Asks a failed object for an attempt now (the backoff skipped, a broken one renewed); an object parked on failed
+	 * dependencies passes it on to them, once; otherwise nothing.
+	 */
 	retry(): void;
 	release(): void;
 };
@@ -68,12 +73,20 @@ export interface Target {
 	readonly hydrated: boolean;
 	/** The variant bound last; `undefined` for a local object and before the first binding. */
 	readonly variant: string | undefined;
-	/** The error of its last failed attempt while none went live since. */
+	/** The error of its last failure (an attempt's, or the dependencies it is parked on) while none went live since. */
 	readonly lastFailure: ChordError | undefined;
 	/** Its instance id while it activates on this host (Q5); `undefined` otherwise and over a link. */
 	readonly activationId: string | undefined;
-	/** The current attempt's outcome, which a dependent's activation waits for (R18). */
-	readonly settled: Promise<void>;
+	/**
+	 * Whether it is held on a link now: a remote attempt answers for it there (`parked_long` counts it while it is
+	 * loading); not while its path has no link, and never for an object here.
+	 */
+	readonly heldOnLink: boolean;
+	/**
+	 * Whether it holds up this host's start barrier: an object here without its first outcome (decision (a)); a remote
+	 * object never does.
+	 */
+	readonly blocksFirstPass: boolean;
 	/** Counts `binding` as a reference; the binding reads `state` itself. */
 	hold(binding: Binding): void;
 	/** `binding` was released. */
@@ -97,8 +110,11 @@ export interface Target {
 	 * attempts once loaded (`keyed-members.ts`); only a live local object takes it.
 	 */
 	pinKey(member: string, key: string, context: Context): Promise<PinnedKey>;
-	/** `ref.retry()`: an attempt now if failed; ignored otherwise. */
-	retry(): void;
+	/**
+	 * `ref.retry()` (`operation` once per retry, deduping diamonds): an attempt now if failed; an object parked on failed
+	 * dependencies passes it on; ignored otherwise.
+	 */
+	retry(operation: RetryOperation): void;
 	/**
 	 * The chain of activation waits from this object to `target`, both included (Q5); `undefined` when there is none.
 	 * `visited` keeps a search over shared dependencies linear in the waits.
@@ -106,14 +122,29 @@ export interface Target {
 	pathTo(target: ChordObject, visited: Set<Target>): ChordObject[] | undefined;
 }
 
+/**
+ * One `ref.retry()` passing on through parked objects, across links too (the `retry` message's `operation` and
+ * `through`): its id (a uuidv7) and the instance ids of the objects it passed through, added hop by hop (at most
+ * `CHAIN`). An object in `through` drops it, so a ring of hosts stops after one lap however many retries run at once;
+ * an object remembers the last few ids it handled too, so a diamond retries it once.
+ */
+export type RetryOperation = { readonly id: string; readonly through: string[] };
+
+/** A new retry operation, through nothing yet (`ref.retry()`, a `retry` message that names none). */
+export function retryOperation(): RetryOperation {
+	return { id: uuidv7(), through: [] };
+}
+
 /** A reference's params as L1 checked them, with their identity key. */
 export type CheckedParams = { readonly params: ParamsOf<Contract>; readonly key: string };
 
 /**
- * Where a binding stands. `unbound`: waiting for `load` (a `host.hold`) or for its object's activation to bind it (a
- * `self.get`); `refused`: a `host.hold` whose type turned out not to be gettable here once `load` resolved; a released
- * binding keeps nothing but its name and its end (`ref.state`'s `ended`). `dependent` is the object whose attempt declared the reference with `self.get`,
- * `undefined` for `host.get`, `host.hold` and `ctx.get`.
+ * Where a binding stands. `unbound`: waiting for its object's activation to bind it (a `self.get`); `waiting`: in the
+ * host's unbound index, `place` checking it again when woken: before the publication (no `failure`: `loading`), or after
+ * a check that found no fitting provider (`failed { waiting }`, `not_served` or `version`); `refused`: a broken refusal
+ * (a `hostAddress` or `authorize` that threw or refused) until `ref.retry()` places it again; a released binding keeps
+ * nothing but its name and its end (`ref.state`'s `ended`). `dependent` is the object whose attempt declared the
+ * reference with `self.get`, `undefined` for `host.get`, `host.hold` and `ctx.get`.
  */
 type BindingState =
 	| { readonly kind: "unbound"; readonly batch: Batch; readonly dependent: ChordObject | undefined }
@@ -123,7 +154,22 @@ type BindingState =
 			readonly dependent: ChordObject | undefined;
 			readonly target: Target;
 	  }
-	| { readonly kind: "refused"; readonly batch: Batch; readonly failure: Failed; readonly bind: () => void }
+	| {
+			readonly kind: "waiting";
+			readonly batch: Batch;
+			readonly dependent: ChordObject | undefined;
+			readonly failure: Failed | undefined;
+			readonly place: () => void;
+			/** Takes it out of the index (it ended). */
+			readonly leave: () => void;
+	  }
+	| {
+			readonly kind: "refused";
+			readonly batch: Batch;
+			readonly dependent: ChordObject | undefined;
+			readonly failure: Failed;
+			readonly bind: () => void;
+	  }
 	| { readonly kind: "released"; readonly state: Ended };
 
 /** What a wait for a state decides at each change. */
@@ -144,7 +190,7 @@ type Waiter = { readonly check: () => void; readonly end: (error: ChordError) =>
  * change of its state. Calls run while live, park while loading (sent in order once live) and reject while failed.
  * Released, or ended with its object, it ends the watches taken through it and rejects the calls made through it.
  */
-export class Binding implements Holder {
+export class Binding implements Holder, UnboundRequest {
 	readonly reference: Reference<Contract>;
 	/** Who calls through this reference: the principal it was got as, and this host's incarnation. */
 	readonly caller: Caller;
@@ -165,8 +211,6 @@ export class Binding implements Holder {
 	readonly #waiters = new Set<Waiter>();
 	/** `ref.state`, made on first access. */
 	#refState: ReferenceState | undefined;
-	/** Resolved when the reference ends; made by the first `ended()`. */
-	#ended: PromiseWithResolvers<void> | undefined;
 	/** The keys its object's factory pinned with `ref.member.at(key)`: pinned once bound, released with it. */
 	readonly #keys: KeyedMemberAt[] = [];
 
@@ -206,15 +250,26 @@ export class Binding implements Holder {
 	/** The object whose attempt declared this reference, until it is released. */
 	get dependent(): ChordObject | undefined {
 		const state = this.#state;
-		return state.kind === "unbound" || state.kind === "bound" ? state.dependent : undefined;
+		return state.kind === "released" ? undefined : state.dependent;
+	}
+
+	/** Whom it acts for (the unbound index's revocation). */
+	get principal(): Principal | undefined {
+		return this.caller.principal;
 	}
 
 	/** The reference's state. */
 	get refState(): RefState {
 		const state = this.#state;
 		if (state.kind === "bound") return state.target.state;
+		if (state.kind === "waiting") return state.failure ?? LOADING;
 		if (state.kind === "refused") return state.failure;
 		return state.kind === "unbound" ? LOADING : state.state;
+	}
+
+	/** The object it is bound to; `undefined` while it is not bound. */
+	get target(): Target | undefined {
+		return this.#state.kind === "bound" ? this.#state.target : undefined;
 	}
 
 	/** The object in errors: its label once bound, else the contract's name. */
@@ -222,10 +277,11 @@ export class Binding implements Holder {
 		return this.#state.kind === "bound" ? this.#state.target.label : this.#name;
 	}
 
-	/** The error of the object's last failed attempt while none went live since. */
+	/** The error of the object's last failure while none went live since, or of the check that left it unbound. */
 	get lastFailure(): ChordError | undefined {
 		const state = this.#state;
 		if (state.kind === "refused") return state.failure.cause.error;
+		if (state.kind === "waiting") return state.failure?.cause.error;
 		return state.kind === "bound" ? state.target.lastFailure : undefined;
 	}
 
@@ -233,26 +289,48 @@ export class Binding implements Holder {
 	bind(target: Target): void {
 		const state = this.#state;
 		if (state.kind !== "unbound") return;
-		this.#state = { ...state, kind: "bound", target };
+		this.#state = { kind: "bound", batch: state.batch, dependent: state.dependent, target };
 		target.hold(this);
 		this.moved();
 	}
 
 	/**
-	 * A `host.hold` that cannot be bound (where it goes refused it): failed with `cause` until `ref.retry()` runs `bind`
-	 * again (a route's `authorize` may admit it later).
+	 * Leaves the reference unbound in the host's unbound index (`leave` takes it out): `loading` before the publication
+	 * (no `cause`), else `failed` with `cause` (`waiting`); `place` checks it again when the index wakes it.
+	 */
+	wait(cause: FailureCause | undefined, place: () => void, leave: () => void): void {
+		const state = this.#state;
+		if (state.kind !== "unbound") return;
+		const failure: Failed | undefined =
+			cause === undefined ? undefined : { kind: "failed", cause, retryAt: undefined };
+		this.#state = { kind: "waiting", batch: state.batch, dependent: state.dependent, failure, place, leave };
+		// Unchanged while loading: nothing to tell.
+		if (failure !== undefined) this.moved();
+	}
+
+	/** Woken by the unbound index (out of it already): checked again where it goes. */
+	wake(): void {
+		const state = this.#state;
+		if (state.kind !== "waiting") return;
+		this.#state = { kind: "unbound", batch: state.batch, dependent: state.dependent };
+		state.place();
+	}
+
+	/**
+	 * A reference that cannot be bound (where it goes refused it): failed broken with `cause` until `ref.retry()` runs
+	 * `bind` again (a route's `authorize` may admit it later).
 	 */
 	refuse(cause: FailureCause, bind: () => void): void {
 		const state = this.#state;
 		if (state.kind !== "unbound") return;
 		const failure: Failed = { kind: "failed", cause, retryAt: undefined };
-		this.#state = { kind: "refused", batch: state.batch, failure, bind };
+		this.#state = { kind: "refused", batch: state.batch, dependent: state.dependent, failure, bind };
 		this.moved();
 	}
 
 	/**
 	 * The state may have changed: `ref.state`'s watches are told; live sends the parked calls in order, failed
-	 * rejects them with the cause; waits for a state decide.
+	 * rejects them with the cause; waits for a state decide; the object whose attempt declared it re-evaluates.
 	 */
 	moved(): void {
 		this.#refState?.moved();
@@ -266,6 +344,7 @@ export class Binding implements Holder {
 			this.#parked?.reject(state.cause.error);
 		}
 		for (const waiter of [...this.#waiters]) waiter.check();
+		this.dependent?.dependencyMoved();
 	}
 
 	/** Resolves when the reference is live; rejects with a broken failure's error, or its end. Getters wait for it. */
@@ -313,6 +392,11 @@ export class Binding implements Holder {
 			}
 			case "unbound":
 				throw new ChordError({ code: "not_ready", message: `${this.#name}: not live yet` });
+			case "waiting":
+				if (state.failure === undefined) {
+					throw new ChordError({ code: "not_ready", message: `${this.#name}: not live yet` });
+				}
+				throw state.failure.cause.error;
 			case "refused":
 				throw state.failure.cause.error;
 			case "released":
@@ -369,6 +453,11 @@ export class Binding implements Holder {
 		return at;
 	}
 
+	/** Whether its object's factory pinned keys on it (`at(key)`). */
+	get pinsKeys(): boolean {
+		return this.#keys.length > 0;
+	}
+
 	/**
 	 * Pins the keys of `at(key)` on the live object's keyed members and loads those not in memory, before the
 	 * dependent goes live (slice 6a §12); `undefined` when there are none. A failed load rejects.
@@ -381,24 +470,18 @@ export class Binding implements Holder {
 	}
 
 	/**
-	 * Resolves when the reference ends (released, or its object ended); never rejects. A wait that must not keep the
-	 * reference races it (a `host.hold` waiting for `load`).
+	 * `ref.retry()`, as `operation` (one per `ref.retry()`, passed on through parked objects): the object is asked for
+	 * an attempt now (ignored unless failed; a parked one passes it on); a refused reference is placed again; one
+	 * waiting in the index is left as it is (an event wakes it).
 	 */
-	ended(): Promise<void> {
-		if (this.#state.kind === "released") return Promise.resolve();
-		this.#ended ??= Promise.withResolvers<void>();
-		return this.#ended.promise;
-	}
-
-	/** `ref.retry()`: the object is asked for an attempt now (ignored unless failed); a refused hold is bound again. */
-	retry(): void {
+	retry(operation: RetryOperation = retryOperation()): void {
 		const state = this.#state;
 		if (state.kind === "bound") {
-			state.target.retry();
+			state.target.retry(operation);
 			return;
 		}
 		if (state.kind !== "refused") return;
-		this.#state = { kind: "unbound", batch: state.batch, dependent: undefined };
+		this.#state = { kind: "unbound", batch: state.batch, dependent: state.dependent };
 		this.moved();
 		state.bind();
 	}
@@ -415,13 +498,15 @@ export class Binding implements Holder {
 
 	/**
 	 * Ends the reference without releasing it from its object (it ended): watches end, calls (running and parked)
-	 * reject with `error`, `ref.state` is `ended` with it.
+	 * reject with `error`, `ref.state` is `ended` with it; the object whose attempt declared it checks again.
 	 */
 	end(error: ChordError): void {
 		// Kept by `ref.state`: its stack is made text now, so the error holds none of the frames' objects.
 		void error.stack;
 		const ended: Ended = { kind: "ended", error };
+		const previous = this.#state;
 		this.#state = { kind: "released", state: ended };
+		if (previous.kind === "waiting") previous.leave();
 		for (const at of this.#keys) at.release();
 		this.#calls?.abort(error);
 		this.#calls = undefined;
@@ -431,8 +516,8 @@ export class Binding implements Holder {
 		this.#refState?.released(ended);
 		// Each removes itself; promise reactions run later.
 		for (const waiter of this.#waiters) waiter.end(error);
-		this.#ended?.resolve();
-		this.#ended = undefined;
+		// An ended dependency breaks a parked dependent (it cannot come back).
+		if (previous.kind !== "released") previous.dependent?.dependencyMoved();
 	}
 
 	#call(method: string, args: unknown, context: Context): Promise<unknown> {

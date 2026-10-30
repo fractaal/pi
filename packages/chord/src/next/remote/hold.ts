@@ -1,7 +1,8 @@
-// A hold arriving on a link and served here (§7, §22, W1): where it goes once `load` resolved, the object it keeps,
-// the notices of its object's failures and new attempts, the snapshot and subscription taken in one synchronous step
-// when a slot of the window is free, and the ops of its members per batch (sent at once, or pending while the window
-// is full), each member with its own Delta encoder.
+// A hold arriving on a link and served here (§7, §22, W1): where it goes once the host published (waiting in the
+// unbound index until then), why it is unbound (refused: kept in the index while it waits for a name, dependency
+// model §1), the object it keeps, the notices of its object's failures and new attempts, the snapshot and subscription
+// taken in one synchronous step when a slot of the window is free, and the ops of its members per batch (sent at
+// once, or pending while the window is full), each member with its own Delta encoder.
 
 import type { Context } from "../../context/index.ts";
 import { type Encoder, encoder, type Op, PendingOps } from "../../delta/index.ts";
@@ -13,9 +14,16 @@ import {
 	variantNames,
 	variantOrder,
 } from "../contracts/internal.ts";
-import { type ChordError, isChordError } from "../data/index.ts";
+import { type ChordError, type FailureCause, isChordError, type Principal } from "../data/index.ts";
 import { asChordError } from "../data/internal.ts";
-import type { Caller, ChordObject, Holder } from "../host/internal.ts";
+import {
+	type Caller,
+	type ChordObject,
+	type Holder,
+	retryOperation,
+	type Serving,
+	type UnboundRequest,
+} from "../host/internal.ts";
 import {
 	type BoundEntry,
 	type FailedMember,
@@ -56,12 +64,13 @@ type Followed = {
 };
 
 /**
- * Where a hold stands: `pending` until its object is live (waiting for `load`, the activation and its retries;
- * `toldFailed` once the consumer was told of a failure, so the next attempt is announced with `loading`); `binding`
- * while its object is live and its `bound` waits for a slot; `bound` with the object's variant and the members it
- * follows.
+ * Where a hold stands: `unplaced` in the unbound index until the host's publication places it; `pending` until its
+ * object is live (the activation, parking and retries; `toldFailed` once the consumer was told of a failure, so the
+ * next attempt is announced with `loading`); `binding` while its object is live and its `bound` waits for a slot;
+ * `bound` with the object's variant and the members it follows.
  */
 type HoldState =
+	| { readonly kind: "unplaced"; readonly request: HoldRequest }
 	| { readonly kind: "pending"; readonly toldFailed: boolean }
 	| { readonly kind: "binding" }
 	| {
@@ -72,8 +81,12 @@ type HoldState =
 			/** The members it follows, in the order they were subscribed. */
 			readonly followed: Followed[];
 	  }
-	/** Refused where it arrived (placement, `authorize`, a mismatch, invalid params, a cycle): `retry` starts it again. */
-	| { readonly kind: "refused"; readonly request: HoldRequest }
+	/**
+	 * Refused where it arrived, with `cause`: `waiting` (not served here, another version, placed elsewhere by the
+	 * provider's code) in the unbound index until a publication wakes it; `broken` (invalid params, a cycle, a route that
+	 * refused, a part past the limits) until a `retry` restarts it.
+	 */
+	| { readonly kind: "refused"; readonly request: HoldRequest; readonly cause: FailureCause }
 	| { readonly kind: "released" };
 
 /** A bound hold's state. */
@@ -86,11 +99,13 @@ const BINDING: HoldState = { kind: "binding" };
 /**
  * One hold served here: a reference to its object acting as its caller (the hold's principal). While pending, each
  * failure of its object is sent as `failed` (with the rest of its backoff window) and the next attempt as `loading`; a
- * hold that cannot be taken (a refused type, a mismatch, invalid params or placement) is a broken `failed` that holds
- * nothing until a `retry` starts it again. Once live it binds when its link's window has a slot, then sends a part per batch that changed its members
- * (or keeps their ops pending while the window is full), and `gone` when its object ends.
+ * hold that cannot be taken holds nothing: `failed { waiting }` (not served, another version) until a publication
+ * re-runs its start, `failed { broken }` (invalid params, a cycle) until a `retry` does. Once live it binds when its
+ * link's window has a slot, then sends a part per batch that changed its members (or keeps their ops pending while the
+ * window is full), and `gone` when its object ends. It counts as one of the host's references from its arrival to its
+ * end, bound or not.
  */
-export class Hold implements Holder {
+export class Hold implements Holder, UnboundRequest {
 	readonly kind = "served";
 	readonly id: number;
 	/** A hold is declared by no object on this host. */
@@ -103,11 +118,6 @@ export class Hold implements Holder {
 	#state: HoldState = PENDING;
 	/** The held object, from its binding until the hold is released. */
 	#object: ChordObject | undefined;
-	/**
-	 * Resolved on release: a pending hold stops waiting for `load`. A plain resolution, not an abort: an aborted wait
-	 * rejects with an error whose stack keeps this hold, and the waited promise keeps that rejection.
-	 */
-	readonly #released = Promise.withResolvers<void>();
 	/** The members the current batch changed, with their ops, in order. */
 	#changes: (readonly [Followed, readonly Op[]])[] = [];
 	/** The members that failed since the last message that carried this hold. */
@@ -115,14 +125,15 @@ export class Hold implements Holder {
 	/** The members whose document was retired since the last message that carried this hold (ORed while it waits). */
 	#retired: readonly number[] = NO_RETIRED;
 	#touched = false;
-	/** Whether the hold counts as one of the host's references (`host.activity`): while it keeps its object. */
-	#counted = false;
+	/** Whether the hold counts as one of the host's references (`host.activity`): from its arrival until it ends. */
+	#counted = true;
 
 	constructor(id: number, provider: ProviderSide, caller: Caller, limits: Limits) {
 		this.id = id;
 		this.#provider = provider;
 		this.caller = caller;
 		this.limits = limits;
+		provider.link.host.count("references", 1);
 	}
 
 	/** Whether the hold is live: calls on it reach its object. */
@@ -130,32 +141,37 @@ export class Hold implements Holder {
 		return this.#state.kind === "bound";
 	}
 
-	/** Whether the hold waits for `load`: admitted, nothing taken yet (revocation ends it, §4). */
-	get waiting(): boolean {
-		return this.#state.kind === "pending" && this.#object === undefined;
+	/** Whom it acts for (the unbound index's revocation). */
+	get principal(): Principal | undefined {
+		return this.caller.principal;
+	}
+
+	/** Whether the hold holds no object: before the publication, or refused (revocation ends it, §4). */
+	get unbound(): boolean {
+		return this.#object === undefined && this.#state.kind !== "released";
 	}
 
 	/**
-	 * Admits the hold once `load` resolved: its params within the link's part limit (`too_large/part`), then relayed
-	 * (it is replaced by a relayed hold), or served here, its params opened and parsed (a malformed part is a protocol
-	 * error), its object taken and followed (`moved`). A hold that cannot go anywhere, a type that does not match,
-	 * invalid params, a wrong placement or a cycle (Q5) is a broken `failed`; the hold is kept, refused, for a `retry`.
+	 * Admits the hold: before the host's publication it waits in the unbound index, placed by the publication.
+	 * Then its params within the link's part limit (`too_large/part`), then relayed (it is replaced by a relayed hold),
+	 * or served here, its params opened and parsed (a malformed part is a protocol error), its object taken and followed
+	 * (`moved`) in the turn it arrived. A hold that cannot be served here waits refused (`#refuse`).
 	 */
-	async start(request: HoldRequest): Promise<void> {
+	start(request: HoldRequest): void {
 		const { link } = this.#provider;
-		// Waits only for a `load` still running (it never rejects): once loaded, the reference is taken in the turn the
-		// hold arrived.
-		const pendingLoad = link.host.pendingLoad;
-		if (pendingLoad !== undefined) await Promise.race([pendingLoad, this.#released.promise]);
-		// Released meanwhile (the wait may have settled first): nothing is taken.
-		if (this.#state.kind !== "pending") return;
-		let object: ChordObject;
+		if (!link.host.published) {
+			this.#state = { kind: "unplaced", request: owned(request) };
+			link.host.index(request.type, this);
+			return;
+		}
+		let served: Serving;
 		try {
 			const oversize = oversized(request.params, link.limits.part);
 			if (oversize !== undefined) throw oversize;
 			const placed = link.host.place(request, link, this.caller, link.context);
 			if (placed.kind === "path") {
-				this.#state = { kind: "released" };
+				// Counted where it is served: a relayed hold is not this host's reference.
+				this.drop();
 				new RelayedHold(this.id, this.#provider, request, this.caller, placed.path).start();
 				return;
 			}
@@ -169,16 +185,33 @@ export class Hold implements Holder {
 				link.close();
 				return;
 			}
-			object = link.host.serving(request, params, this.caller.principal!, link.context);
+			served = link.host.serving(request, params, this.caller.principal!, link.context);
 		} catch (error) {
-			return this.#refuse(request, asChordError(error, request.type));
+			this.#refuse(request, { kind: "broken", error: asChordError(error, request.type) });
+			return;
 		}
-		// Counted before the object lists it in its presence: a derive over that may close this link synchronously.
+		if (served.kind === "waiting") {
+			this.#refuse(request, served.cause);
+			return;
+		}
+		const { object } = served;
 		this.#object = object;
-		this.#counted = true;
-		link.host.count("references", 1);
 		object.hold(this);
 		this.moved();
+	}
+
+	/**
+	 * Woken by the unbound index (out of it already): before the publication, placed now; refused `waiting`, its start
+	 * runs again, announced with `loading` (then `bound` or `failed`).
+	 */
+	wake(): void {
+		const state = this.#state;
+		if (state.kind === "unplaced") {
+			this.#state = PENDING;
+			this.start(state.request);
+		} else if (state.kind === "refused") {
+			this.#restart(state.request);
+		}
 	}
 
 	/**
@@ -194,6 +227,7 @@ export class Hold implements Holder {
 			this.#state = BINDING;
 			this.#provider.bind(this, this.#provider.link.context);
 		} else if (state.kind === "failed") {
+			// Each failure and each new cause (a parked object's blocker changed) is a message of its own.
 			const { cause, retryAt } = state;
 			const retryIn = retryAt === undefined ? {} : { retryIn: Math.max(0, retryAt - Date.now()) };
 			const failed = { kind: cause.kind, error: wireError(cause.error) };
@@ -206,18 +240,26 @@ export class Hold implements Holder {
 	}
 
 	/**
-	 * A `retry` message: the object is asked for an attempt now (it ignores this unless failed); a refused hold is
-	 * started again (a route's `authorize` may admit it now, a type may be served here now).
+	 * A `retry` message, of its retry operation (a new one when it names none) through the objects it names: the object is
+	 * asked for an attempt now (it ignores this unless failed, or when the operation reached it before; parked, it
+	 * passes it on); a refused hold is
+	 * started again (a route's `authorize` may admit it now).
 	 */
-	retry(): void {
+	retry({ operation, through = [] }: Extract<Message, { readonly kind: "retry" }>): void {
 		const state = this.#state;
 		if (state.kind !== "refused") {
-			this.#object?.retry();
+			this.#object?.retry(operation === undefined ? retryOperation() : { id: operation, through });
 			return;
 		}
+		if (state.cause.kind === "waiting") this.#provider.link.host.unindex(state.request.type, this);
+		this.#restart(state.request);
+	}
+
+	/** Starts a refused hold again, announced with `loading`. */
+	#restart(request: HoldRequest): void {
 		this.#state = PENDING;
 		this.#provider.send({ kind: "loading", hold: this.id });
-		void this.start(state.request);
+		this.start(request);
 	}
 
 	/** Calls a method of the held object as the hold's caller. */
@@ -323,18 +365,21 @@ export class Hold implements Holder {
 
 	/** Ends the hold without releasing its object (the host closes and ends its objects itself). */
 	drop(): void {
-		if (this.#state.kind === "bound") {
-			for (const { source, subscriber } of this.#state.followed) source.unsubscribe(subscriber);
+		const state = this.#state;
+		const { host } = this.#provider.link;
+		if (state.kind === "bound") {
+			for (const { source, subscriber } of state.followed) source.unsubscribe(subscriber);
+		} else if (state.kind === "unplaced" || (state.kind === "refused" && state.cause.kind === "waiting")) {
+			host.unindex(state.request.type, this);
 		}
 		this.#state = { kind: "released" };
-		this.#released.resolve();
-		if (this.#counted) this.#provider.link.host.count("references", -1);
+		if (this.#counted) host.count("references", -1);
 		this.#counted = false;
 	}
 
 	/**
-	 * The object ended while held (revocation; a reload, slice 7), or the hold was revoked while it waited for `load`:
-	 * the hold sends `gone` with `error`.
+	 * The object ended while held (revocation; a reload, slice 7b), or the hold was revoked (or its host closed) while it
+	 * held no object: the hold sends `gone` with `error`.
 	 */
 	end(error: ChordError): void {
 		if (this.#state.kind === "released") return;
@@ -425,14 +470,25 @@ export class Hold implements Holder {
 		this.#provider.touched(this);
 	}
 
-	/** Refuses the hold: a broken `failed`; it keeps `request` for a `retry`, holding nothing until then. */
-	#refuse(request: HoldRequest, error: ChordError): void {
-		const { params } = request;
-		// Its params owned, not a view of the message they came in (which the link's buffers may hold).
-		const owned = typeof params === "string" ? params : (params as Uint8Array).slice();
-		this.#state = { kind: "refused", request: { ...request, params: owned } };
-		this.#provider.send({ kind: "failed", hold: this.id, cause: { kind: "broken", error: wireError(error) } });
+	/**
+	 * Refuses the hold with `cause`, holding nothing: it keeps `request`, indexed under its type while `waiting` (a
+	 * publication starts it again), for a `retry` otherwise.
+	 */
+	#refuse(request: HoldRequest, cause: FailureCause): void {
+		this.#state = { kind: "refused", request: owned(request), cause };
+		if (cause.kind === "waiting") this.#provider.link.host.index(request.type, this);
+		this.#provider.send({
+			kind: "failed",
+			hold: this.id,
+			cause: { kind: cause.kind, error: wireError(cause.error) },
+		});
 	}
+}
+
+/** `request` with its params owned, not a view of the message they came in (which the link's buffers may hold). */
+function owned(request: HoldRequest): HoldRequest {
+	const { params } = request;
+	return typeof params === "string" ? request : { ...request, params: (params as Uint8Array).slice() };
 }
 
 /** A `hold` message's fields naming whom it acts for. */

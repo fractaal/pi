@@ -1,20 +1,40 @@
 // Registry values (slice 8 §1 "Reading", S2, S3): a registry's composed value as the readers of one version see it, a
 // native source. The provider's version reads the composition itself; an older one reads it mapped back with
 // `accepts[old].value`, once per composition, kept only while someone reads or follows it; a version the provider
-// cannot serve fails `contract_mismatch`. Readers declared by attempts are woken (R18) when the value gets its first
-// good value.
+// cannot serve fails `contract_mismatch`. Its readers (attempts that declared it) keep the mapping; its waiters
+// (attempts parked on it, a waiting `host.registry`) are woken at every change of whether it is usable, and of its
+// failure while it is not (dependency model §9).
 
-import { ChordError } from "../data/index.ts";
+import { ChordError, isChordError } from "../data/index.ts";
 import { type Batch, FollowedSource, type NativeStart } from "../state/internal.ts";
+import type { RegistryContribution } from "./contribution.ts";
 import type { RegistryRecord } from "./record.ts";
 
-/** An object waiting for a registry's value (`self.registry`): retried at once when its first value arrives (R18). */
+/** Who waits for a registry's value (a parked attempt, a `host.registry`): told when it may have changed. */
 export interface RegistryWaiter {
-	dependencyLive(): void;
+	/** The value may have changed (inside its batch: it only records). */
+	dependencyMoved(): void;
+	/** The value closed with its host: the wait ends with `error` (`released/closed`). */
+	closed(error: ChordError): void;
 }
 
-/** The last good mapping for an older version, and the composition it was made from. */
-type Mapped = { readonly from: unknown; readonly value: unknown };
+const USABLE = { kind: "usable" } as const;
+
+/** Whether two failures say the same: the same error, or ChordErrors alike (a version mismatch is made per read). */
+function sameError(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	return isChordError(a) && isChordError(b) && a.code === b.code && a.reason === b.reason && a.message === b.message;
+}
+
+/**
+ * The last good mapping for an older version, the composition it was made from, and the contributions that composition
+ * was built from (kept only while all are in the table, decision 5).
+ */
+type Mapped = {
+	readonly from: unknown;
+	readonly value: unknown;
+	readonly contributions: readonly RegistryContribution[] | undefined;
+};
 
 /** A failed mapping of composition `from`, until another composition maps. */
 type MapFailure = { readonly from: unknown; readonly error: unknown };
@@ -32,10 +52,15 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 	readonly name: string;
 	readonly version: number;
 	#registered: Registered;
-	/** Readers declared by attempts, each a token of its own (one object may read twice), until released. */
-	readonly #readers = new Set<{ readonly waiter: RegistryWaiter }>();
-	/** Whether it had a good value: the first one wakes the readers. */
-	#valued = false;
+	/** Its readers, each a token of its own (one object may read twice), until released. */
+	readonly #readers = new Set<object>();
+	/** Its waiters, each a token of its own, until released. */
+	readonly #waiters = new Set<{ readonly waiter: RegistryWaiter }>();
+	/**
+	 * What its waiters were last told: usable (a value, or a failure with a last good one), or the error it has none
+	 * for; a change wakes them.
+	 */
+	#told: { readonly kind: "usable" } | { readonly kind: "failed"; readonly error: unknown } | undefined;
 	#mapped: Mapped | undefined;
 	#mapFailure: MapFailure | undefined;
 
@@ -60,16 +85,15 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 		return start.last.value;
 	}
 
-	/** Its composition (mapped for an older version), composed now if its table changed; a first value wakes readers. */
+	/**
+	 * Its composition (mapped for an older version), composed now if its table changed; a change of whether it is
+	 * usable, or of its failure while it is not, wakes its waiters.
+	 */
 	override start(): NativeStart<unknown> {
 		const registered = this.#registered;
 		if (registered.kind === "closed") return registered.last;
 		const start = this.#start(registered.record);
-		if (!this.#valued && (start.kind === "value" || start.last !== undefined)) {
-			this.#valued = true;
-			// Not inside the batch that composed: a retry runs a factory, which may not run in a batch.
-			for (const { waiter } of this.#readers) queueMicrotask(() => waiter.dependencyLive());
-		}
+		if (this.#waiters.size > 0) this.#tell(start);
 		return start;
 	}
 
@@ -80,18 +104,32 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 		return start.value;
 	}
 
-	/** Followed while someone watches or observes it, and while readers wait for its first value. */
+	/** Followed while someone watches or observes it, and while waiters wait on it. */
 	override get watched(): boolean {
-		return super.watched || (this.#readers.size > 0 && !this.#valued);
+		return super.watched || this.#waiters.size > 0;
 	}
 
-	/** Registers `waiter` (an activation's declared dependency) until the returned release. */
-	read(waiter: RegistryWaiter): () => void {
-		const token = { waiter };
+	/** Registers a reader (an attempt that declared it) until the returned release: its mapping is kept meanwhile. */
+	read(): () => void {
+		const token = {};
 		this.#readers.add(token);
 		return () => {
 			this.#readers.delete(token);
 			if (this.#readers.size === 0 && !super.watched) this.#dropMapping();
+		};
+	}
+
+	/**
+	 * Registers `waiter` (a parked attempt's object, a waiting `host.registry`) until the returned release: it is told
+	 * of every change of whether this value is usable (inside the batch that made it: it only records).
+	 */
+	wait(waiter: RegistryWaiter): () => void {
+		const token = { waiter };
+		if (this.#waiters.size === 0) this.#told = undefined;
+		this.#waiters.add(token);
+		return () => {
+			this.#waiters.delete(token);
+			if (this.#waiters.size === 0) this.#told = undefined;
 		};
 	}
 
@@ -119,6 +157,11 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 		}
 		this.#registered = { kind: "closed", last };
 		this.#readers.clear();
+		const waiters = [...this.#waiters];
+		this.#waiters.clear();
+		const error = new ChordError({ code: "released", reason: "closed", message: `registry ${this.name}: closed` });
+		for (const { waiter } of waiters) waiter.closed(error);
+		this.#told = undefined;
 		this.#dropMapping();
 		this.end();
 	}
@@ -126,6 +169,17 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 	/** Nobody follows it: without readers, its mapping goes (computed again on the next read). */
 	protected override unfollowed(): void {
 		if (this.#readers.size === 0) this.#dropMapping();
+	}
+
+	/** Wakes the waiters when `start` says something else than they were told (by usability, then by the error). */
+	#tell(start: NativeStart<unknown>): void {
+		const told = this.#told;
+		const usable = start.kind === "value" || start.last !== undefined;
+		if (usable ? told?.kind === "usable" : told?.kind === "failed" && sameError(told.error, start.error)) return;
+		this.#told = usable ? USABLE : { kind: "failed", error: (start as { readonly error: unknown }).error };
+		// The first start of a wait wakes nobody: the waiter reads it itself.
+		if (told === undefined) return;
+		for (const { waiter } of this.#waiters) waiter.dependencyMoved();
 	}
 
 	#dropMapping(): void {
@@ -156,13 +210,18 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 		if (current.kind === "failed" && current.last === undefined) return current;
 		const from = current.kind === "value" ? current.value : current.last!.value;
 		// `undefined` is a composition too: the records, not their fields, say whether there is one.
+		// A mapping built from a contribution that left is no last good value any more (decision 5).
+		if (this.#mapped?.contributions !== undefined && !record.inTable(this.#mapped.contributions)) {
+			this.#mapped = undefined;
+		}
 		const mapped = this.#mapped;
 		const failure = this.#mapFailure;
 		if (mapped !== undefined && mapped.from === from) {
 			this.#mapFailure = undefined;
 		} else if (failure === undefined || failure.from !== from) {
 			try {
-				this.#mapped = { from, value: record.adapt(() => map(from as never)) };
+				const value = record.adapt(() => map(from as never));
+				this.#mapped = { from, value, contributions: record.composedFrom };
 				this.#mapFailure = undefined;
 			} catch (error) {
 				if (failure === undefined) record.failed(error);

@@ -7,11 +7,13 @@ import type { ChordError, FailureCause } from "../data/index.ts";
 import { type Batch, NativeSource } from "../state/internal.ts";
 
 /**
- * Where a reference stands. `loading`: its object activates or retries, it waits for `load` or a parent link, or its
- * link is down (the reference's coarser view of its object's waiting and activating); `failed`: its object failed and
- * no attempt runs (`retryAt` undefined: broken, no automatic retry); `live`: bound; `ended`: for good, with the error
- * that says why (`released` without a reason: released by its holder; `released/ended`: its object ended;
- * `released/closed`: its host closed; `forbidden/revoked`).
+ * Where a reference stands. `loading`: its object activates, retries or is parked on dependencies still under way, it
+ * waits for its host's publication or a parent link, or its link is down (the reference's coarser view of its object's
+ * waiting and activating); `failed`: its object failed and no attempt runs (`transient`: `retryAt` is when its backoff
+ * retries it; `broken`: no automatic retry), or nothing fits it or its object is parked on a failed dependency
+ * (`waiting`: an event wakes it, `retryAt` undefined); `live`: bound; `ended`: for good, with the error that says why
+ * (`released` without a reason: released by its holder; `released/ended`: its object ended; `released/closed`: its
+ * host closed; `forbidden/revoked`).
  */
 export type RefState =
 	| { readonly kind: "loading" }

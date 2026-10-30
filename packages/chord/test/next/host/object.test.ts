@@ -26,8 +26,11 @@ import {
 	rejection,
 	relayed,
 	restartable,
+	SERVER_ADDRESS,
+	Server,
 	Session,
 	StoreRestartable,
+	statesOf,
 	storeRestartable,
 	testCodec,
 	transported,
@@ -238,7 +241,7 @@ describe("retries", () => {
 	});
 });
 
-describe("dependency recovery (R18)", () => {
+describe("parked on dependencies (dependency model §3)", () => {
 	fakeTimers();
 	const View = local("app.view", { version: 1, params: { id: int() }, members: { n: int() } });
 
@@ -252,7 +255,7 @@ describe("dependency recovery (R18)", () => {
 		return { times, factory };
 	}
 
-	it("fails a dependent transient with the dependency's cause and retries it at once when it goes live", async () => {
+	it("parks a dependent of a failed dependency failed { waiting } naming it, with no timer; it goes on when the dependency is live", async () => {
 		const core = flaky((attempt) => attempt === 1);
 		const viewer = view(Core);
 		const { host, errors } = await loaded((h) => {
@@ -260,26 +263,28 @@ describe("dependency recovery (R18)", () => {
 			h.serve(View, viewer.factory);
 		});
 		await vi.advanceTimersByTimeAsync(500);
+		const held = host.hold(View, { id: 1 }, context);
 		const got = host.get(View, { id: 1 }, context);
 		await flushed();
-		const failed = errors.find((error) => error.kind === "activation_failed" && error.object === "app.view(1)");
-		expect(failed).toMatchObject({
-			failure: {
-				kind: "transient",
-				error: { code: "unavailable", message: "app.view(1): dependency app.core failed" },
+		expect(held.state.value).toEqual({
+			kind: "failed",
+			cause: {
+				kind: "waiting",
+				error: expect.objectContaining({ message: "waiting for app.core: app.core: offline" }),
 			},
+			retryAt: undefined,
 		});
-		expect(failed?.kind === "activation_failed" && failed.failure.error.cause).toMatchObject({
-			message: "app.core: offline",
-		});
-		// The core's retry at 1 s succeeds; the view is retried then, not at the end of its own window (1.5 s).
+		// A parked attempt is no failure of its own: nothing is reported for the view.
+		expect(failures(errors)).toEqual(["app.core: transient"]);
+		// The core's own backoff retries it at 1 s; the view goes on then, its factory not run again.
 		await vi.advanceTimersByTimeAsync(500);
 		expect((await got).n.value).toBe(2);
-		await vi.advanceTimersByTimeAsync(5000);
-		expect(viewer.times).toEqual([500, 1000]);
+		await vi.advanceTimersByTimeAsync(120_000);
+		expect(viewer.times).toEqual([500]);
+		held.release();
 	});
 
-	it("keeps the dependency while failed; releasing the dependent releases it", async () => {
+	it("keeps its references while parked; a getter rejects with the waiting cause at its deadline; releasing ends the wait", async () => {
 		const svc = flaky(() => true);
 		const viewer = view(Svc);
 		const { host } = await loaded((h) => {
@@ -288,81 +293,77 @@ describe("dependency recovery (R18)", () => {
 		});
 		const got = rejection(host.get(View, { id: 1 }, context, { readyTimeout: 1500 }));
 		await vi.advanceTimersByTimeAsync(1500);
-		expect(await got).toEqual({ code: "unavailable", message: "app.view(1): dependency app.svc(1) failed" });
+		expect(await got).toEqual({
+			code: "unavailable",
+			message: "waiting for app.svc(1): app.svc(1): offline",
+		});
 		await vi.advanceTimersByTimeAsync(10_000);
-		// Held by the failed view, the dependency was retried at 1 s; released with it at 1.5 s, it is not any more.
+		// Held by the parked view, the dependency was retried at 1 s; released with it at 1.5 s, it is not any more.
 		expect(svc.times).toEqual([0, 1000]);
+		expect(viewer.times).toEqual([0]);
 	});
 
-	it("binds a retry's references before releasing the previous attempt's", async () => {
-		const svc = flaky((attempt) => attempt === 1);
-		const viewer = view(Svc);
+	it("shows every change of a dependency: loading, failed, a new cause, loading again, live", async () => {
+		let cores = 0;
+		const viewer = view(Core);
 		const { host } = await loaded((h) => {
-			h.serve(Svc, svc.factory);
+			h.serve(Core, (_, self) => {
+				const attempt = ++cores;
+				self.open(
+					async () => {
+						if (attempt < 3) throw new Error(`offline ${attempt}`);
+					},
+					() => {},
+				);
+				return { n: constant(attempt) };
+			});
 			h.serve(View, viewer.factory);
 		});
-		const got = host.get(View, { id: 1 }, context);
-		await vi.advanceTimersByTimeAsync(1000);
-		// Held only by the view: released first, the live dependency would have ended and started anew.
-		expect((await got).n.value).toBe(2);
-		expect([svc.times, viewer.times]).toEqual([
-			[0, 1000],
-			[0, 1000],
-		]);
+		const held = host.hold(View, { id: 1 }, context);
+		await flushed();
+		expect(held.state.value).toMatchObject({
+			kind: "failed",
+			cause: { kind: "waiting", error: { message: "waiting for app.core: app.core: offline 1" } },
+		});
+		const states = statesOf(await held.state.watch(context));
+		await vi.advanceTimersByTimeAsync(10_000);
+		// The core's retries at 1 s and 3 s: each attempt shows as loading, each failure as a new cause.
+		expect(states).toEqual(["loading", "failed: waiting for app.core: app.core: offline 2", "loading", "live"]);
+		expect(viewer.times).toEqual([0]);
+		held.release();
 	});
 
-	it("remembers a dependency going live while the dependent activates: the dependent is retried at once (audit)", async () => {
-		const viewer = view(Core);
+	it("passes a retry on to its broken dependency, once through a diamond", async () => {
+		const Top = local("app.top", { version: 1, params: {}, members: { n: int() } });
+		const Left = local("app.left", { version: 1, params: { id: int() }, members: { n: int() } });
 		let cores = 0;
 		const { host } = await loaded((h) => {
-			// Its first factory throws (broken); the second goes live at once, without natives.
 			h.serve(Core, () => {
-				if (++cores === 1) throw new Error("first factory");
-				return { n: constant(2) };
+				if (++cores === 1) throw new Error("bug");
+				return { n: constant(cores) };
 			});
-			h.serve(View, viewer.factory);
-		});
-		await flushed();
-		// The view activates on the core's failure while the core is retried and goes live at once.
-		const dependency = host.hold(Core, {}, context);
-		const dependent = host.hold(View, { id: 1 }, context);
-		dependency.retry();
-		await flushed();
-		expect(dependency.state.value).toEqual({ kind: "live" });
-		expect(dependent.state.value).toEqual({ kind: "live" });
-		expect(viewer.times).toEqual([0, 0]);
-		dependent.release();
-		dependency.release();
-	});
-
-	it("ignores a trigger while an attempt runs: simultaneous triggers give one attempt", async () => {
-		const gate = Promise.withResolvers<void>();
-		const svc = flaky((attempt) => attempt === 1, gate.promise);
-		const viewer = view(Svc);
-		const { host } = await loaded((h) => {
-			h.serve(Svc, svc.factory);
-			h.serve(View, viewer.factory);
-		});
-		const got = host.get(View, { id: 1 }, context);
-		// At 1 s both windows end: the dependency's retry waits at its gate, the view's waits for it.
-		await vi.advanceTimersByTimeAsync(1000);
-		gate.resolve();
-		expect((await got).n.value).toBe(2);
-		expect(viewer.times).toEqual([0, 1000]);
-	});
-
-	it("retries a dependent of a broken dependency with its backoff, for as long as it is held", async () => {
-		const viewer = view(Core);
-		const { host } = await loaded((h) => {
-			h.serve(Core, () => {
-				throw new Error("bug");
+			h.serve(Left, (_, self) => ({ n: self.get(Core, {}).n }));
+			h.serve(Top, (_, self) => {
+				const a = self.get(Left, { id: 1 }).n;
+				const b = self.get(Left, { id: 2 }).n;
+				return { n: self.derive([a, b], ([x, y]) => x + y) };
 			});
-			h.serve(View, viewer.factory);
 		});
-		const got = rejection(host.get(View, { id: 1 }, context, { readyTimeout: 16_000 }));
-		await vi.advanceTimersByTimeAsync(16_000);
-		expect(await got).toEqual({ code: "unavailable", message: "app.view(1): dependency app.core failed" });
-		expect(viewer.times).toEqual([0, 1000, 3000, 7000, 15000]);
+		const top = host.hold(Top, {}, context);
+		await flushed();
+		expect(top.state.value).toMatchObject({
+			kind: "failed",
+			cause: { kind: "waiting", error: { message: "waiting for app.left(1): app.core: bug" } },
+		});
+		await vi.advanceTimersByTimeAsync(60_000);
+		// A broken dependency is not retried by any timer.
+		expect(cores).toBe(1);
+		top.retry();
+		await flushed();
+		expect(cores).toBe(2);
+		expect(top.state.value).toEqual({ kind: "live" });
+		expect(top.n.value).toBe(4);
+		top.release();
 	});
 
 	it("fails every object of a cycle broken; none is retried", async () => {
@@ -512,6 +513,39 @@ describe("GC of failed objects", () => {
 		await expectCollected(...refs);
 		await vi.advanceTimersByTimeAsync(900);
 		expect(vi.getTimerCount()).toBe(0);
+	});
+});
+
+describe("GC of a parked chain", () => {
+	it("collects a chain parked on a type not served, released from its top: objects, attempts and index entries", async () => {
+		const Top = local("app.top", { version: 1, params: { id: int() }, members: { n: int() } });
+		const Mid = local("app.mid", { version: 1, params: { id: int() }, members: { n: int() } });
+		const Missing = local("app.missing", { version: 1, params: {}, members: { n: int() } });
+		const refs: WeakRef<object>[] = [];
+		const { host } = await loaded((h) => {
+			h.serve(Mid, (_, self) => {
+				refs.push(new WeakRef(self));
+				return { n: self.get(Missing, {}).n };
+			});
+			h.serve(Top, ({ id }, self) => {
+				refs.push(new WeakRef(self));
+				return { n: self.get(Mid, { id }).n };
+			});
+		});
+		const top = host.hold(Top, { id: 1 }, context);
+		await flushed();
+		expect(top.state.value).toMatchObject({
+			kind: "failed",
+			cause: {
+				kind: "waiting",
+				error: { message: "waiting for app.mid(1): app.missing is not served here" },
+			},
+		});
+		top.release();
+		await flushed();
+		expect(refs).toHaveLength(2);
+		await expectCollected(...refs);
+		expect(host).toBeDefined();
 	});
 });
 
@@ -705,14 +739,19 @@ describe("linger", () => {
 /** Every object attempted in this file, weakly: the objects of the cycles among them. */
 const attempted = instancesOf(ChordObject, "attempt");
 
-/** On the server (no placement): its activation holds `Far` on the session's worker. */
-const Near = remote("app.near", { version: 1, params: { session: str() }, variants: { v: { state: { n: int() } } } });
+/** On the server: its activation holds `Far` on the session's worker. */
+const Near = remote("app.near", {
+	version: 1,
+	params: { session: str() },
+	hostAddress: () => Server(),
+	variants: { v: { state: { n: int() } } },
+});
 
 /** On the session's worker: its activation holds `Near` back on the server, or, with `local`, `Middle`. */
 const Far = remote("app.far", {
 	version: 1,
 	params: { session: str() },
-	placement: ({ session }) => Session({ id: session }),
+	hostAddress: ({ session }) => Session({ id: session }),
 	variants: { v: { state: { n: int() } } },
 });
 
@@ -720,6 +759,7 @@ const Far = remote("app.far", {
 const Middle = remote("app.middle", {
 	version: 1,
 	params: { session: str() },
+	hostAddress: () => Server(),
 	variants: { v: { state: { n: int() } } },
 });
 
@@ -730,7 +770,7 @@ const Hub = local("app.hub", { version: 1, params: { session: str() }, members: 
 const Loop = remote("app.loop", {
 	version: 1,
 	params: { here: str(), there: str() },
-	placement: ({ here }) => Session({ id: here }),
+	hostAddress: ({ here }) => Session({ id: here }),
 	variants: { v: { state: { n: int() } } },
 });
 
@@ -910,7 +950,15 @@ function farHold(hold: number): Extract<Message, { kind: "hold" }> {
 /** A hold of `Near` for S1, as a worker sends it to the server. */
 function nearHold(hold: number): Extract<Message, { kind: "hold" }> {
 	const { name: type, version, fingerprint } = Near;
-	return { kind: "hold", hold, type, version, fingerprint, params: jsonPart({ session: "S1" }) };
+	return {
+		kind: "hold",
+		hold,
+		type,
+		version,
+		fingerprint,
+		params: jsonPart({ session: "S1" }),
+		address: SERVER_ADDRESS,
+	};
 }
 
 describe("a failed activation's cleanup (audit)", () => {

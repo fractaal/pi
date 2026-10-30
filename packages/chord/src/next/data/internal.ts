@@ -8,7 +8,7 @@ export {
 	invalid,
 	PROTOCOL_VERSION,
 } from "./errors.ts";
-export { openFailure } from "./failure.ts";
+export { openFailure, sameCause, waitingFor } from "./failure.ts";
 export { checkAddress, checkParams, identityKey } from "./params.ts";
 export { canonicalJson, principalKey } from "./principal.ts";
 export { check, validatorFor } from "./validator.ts";

@@ -1771,6 +1771,74 @@ validation and copies the v2 kernel added around Delta.
   setups a registry without a value cannot get one before a reload, so a reader then fails at once `transient`
   (`unavailable/undeclared`) and is retried when the registry gets its first value (R18), as `self.get` of a type not
   served here fails at once (refined 2026-10-27 after the second spec review: no `readyTimeout` wait at start); once live, a later failure of the registry changes nothing (last good value).
+- **Slice 7b's open points, as recommended (owner, 2026-10-29: "yes"; brief `slice-7b/`):** (1) the API is
+  `host.reload(facets, ctx)`, by plugin name (added, changed; a plugin missing from the list is removed), resolving with
+  a report of what each object did, rejecting with the code error and nothing changed; `load` stays the first call. (2)
+  A `writable` across a pure swap goes back to its initial value (the new factory makes a new one; no positional
+  matching). (3) The rollout across hosts is the app's: it calls `host.reload` on each host in order (server, workers,
+  clients); Chord guarantees per host (staging, commit, `installing`, rollback). (4) No install watchdog: `reload`
+  takes a context and the app passes its deadline. (5) The loader lives in Chord (`chord/next/loader`, slice 7c). (6)
+  Chord ships the app kit as optional subpaths: `loader` and `dev` (7c), `http` and `workers` (slice 10), `web` and
+  `tui` (slice 11); telemetry (slice 9) last.
+- **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
+  a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
+  each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
+  plugin may keep named packages external with an explicit list in its `package.json` (`"chord": { "external": [...] }`):
+  server and worker facets then load them from the plugin's `node_modules` (`createRequire`, as pi 1.0 loads extension
+  dependencies), native addons included; they stay in Node's module cache until the process ends, so a new version
+  takes effect after a restart. A browser or TUI facet importing an external package fails to build. Slice 7b
+  (the loader).
+- **The dependency model is decided (owner, 2026-10-29: "just build this"):** `packages/chord/docs/next/dependencies/model.md`
+  (explainer `book.md`, `index.html`) as decided, with its remaining four points taken as recommended: (1) the barrier
+  is (a), `load` resolves at the first outcomes of this host's host-lifetime objects (local blockers still in their
+  first attempt are waited for; waits on other hosts or failed dependencies end the first pass); (3) `waiting` is a new
+  `FailureCause` kind; (4) a pure swap whose new factory needs a missing dependency parks the object, no overlap of old
+  and new code; (5) a registry's last good value is kept only while every contribution it was built from is still in
+  the table. Supersedes R18's dependency deadline and backoff, S2's `broken` and S3's backoff, §7's throw for a missing
+  local type and getters' rejection, §21's `gone` on removal and its rollout `updating` deadline, the start barrier's
+  admission gate (holds wait only for the publication). Built as slice 7a (`slice-7a.md`); design.md is folded with
+  the build.
+- **Cycles across hosts: no probe, a diagnostic (owner, 2026-10-29: "yes"; dependency model, decision 6):** cycles stay
+  found as today: on one host by the walk over waiting edges at `self.get` (exact), across hosts by the activation chain
+  in holds (objects that start one after another). The remaining gap, a ring across hosts whose objects start at the
+  same moment, is not detected: under the dependency model, which has no dependency deadline, such a ring stays parked.
+  It is made visible: an attempt parked longer than its `readyTimeout` on a remote attempt that is itself only
+  `loading` is reported once per parking episode as `HostError` `parked_long { object, waitingFor, since }`; nothing
+  fails or retries. A cycle is a plugin bug (owner: "if no plugin bug, we don't need it"); the guide's rules for plugin
+  authors and agents: (1) a factory declares only what the object needs, never a type that needs it back; (2)
+  back-references and occasional lookups go into methods and routines (`ctx.get`); (3) data flows up through state and
+  registries, not mutual `self.get`; (4) host-lifetime objects on the server never declare worker types in their
+  factory. Rejected: the probe (edge-chasing searches with a check along the recorded trail, `/tmp/model/review*`,
+  seven review rounds; complete only with a re-search timer or a full search lifecycle, the most intricate code in
+  Chord for a plugin bug) and the slice 4b timeout narrowed (it polls chains across hosts again, misses a ring of
+  waiting attempts, and retries in lockstep without finding the ring). Supersedes slice 4b review decision (2)'s
+  timeout once the dependency model is built (slice 7); folded into design §6 with it.
+- **Getters wait through `waiting` (owner, 2026-10-29: "(b) with a default seems fine; UI stays responsive anyways
+  because it usually holds instead of get"; dependency model, decision 2):** `host.get`, `ctx.get` and `host.registry`
+  wait while the reference is `loading`, `failed { transient }` or `failed { waiting }`, bounded by their
+  `readyTimeout` (default 60 s; callers choose their own), and reject at the deadline with the last cause; only
+  `failed { broken }` rejects at once. Calls stay as they are: on a `loading` reference they park, bounded; on a
+  `failed` one (any cause) they reject at once. A UI holds (`host.hold`) and shows `ref.state`; code that needs the
+  object now gets it. Reviewers (`/tmp/model/stw-*.md`): Fable (b, calls included), Opus (a, plus a `whenLive`
+  helper), Sol and Astra (c: callers park until their own context aborts, with caller deadlines and caps on pending
+  calls; (b)'s default deadline is that cap). Sol's p2 note: cleanup in a `finally` after an abort needs its own
+  bounded context, not the aborted one.
+- **Only hosts with an address serve remote types (owner, 2026-10-29: "b"):** a host serving a `remote` type needs an
+  address and a principal; `load` refuses a facet that serves one on a host without an address (until now a host with
+  a principal but no address served remote types and placed every one of them "here"). So "here" is decided by the
+  address alone, as the host address of the type. Holds carry their `address` always (required on the wire).
+- **`hostAddress` instead of `placement` (owner, 2026-10-29: "yes, rename"):** the field of a `remote` contract that
+  computes where its object lives is `hostAddress: (params) => Address` (it returns the address of the host that serves
+  the object, the vocabulary of `createHost({ address })`, routes and holds); supersedes the name of "`placement`, not
+  `host`" (2026-10-21). The error reason `invalid/placement` is `invalid/host_address`; the internal module that decides
+  where a request goes (`host/placement.ts`, `Placement`) is `host/destination.ts`, `Destination`. Earlier entries' and
+  slice specs' "placement" reads "host address"; they keep their wording as history.
+- **Every remote type declares its placement (owner, 2026-10-29: "yes, let's remove it"):** `placement` is required in
+  `remote()` (a type error without it, and a declaration error at runtime); a remote type without placement, a leftover
+  of slice 3a (remote objects over one link, before host kinds in 4a), is gone, and with it the fallback "here if served
+  here, otherwise the parent" and its re-placement at the first parent link. Every remote request is placed by its
+  address alone (dependency model, `packages/chord/docs/next/dependencies/`). Tests and examples get `placement: () =>
+  Server()` or their own host kind.
 - **No client providers for now (owner, 2026-10-28: "yeah, no client providers for now"; reviews
   `/tmp/barrier-{astra,fable,opus,sol}.md`):** clients stay unaddressable and serve only `local` types (design §3).
   Client-side capabilities (a phone's camera, clipboard, a page's WebMCP tools) go through an owner's state, as the
@@ -2337,6 +2405,10 @@ Everything else from earlier lists is decided (see the entries above and `packag
 - **Future goal: deploy Chord apps to Cloudflare Durable Objects and similar platforms.** Hot reload there is not
   needed; composition through plugins is (plugin set fixed at deploy). Research in `research/chord-on-durable-objects.md`.
 - Deferred until a concrete case: jobs as objects and where a flow lives (when login is ported); project plugins.
+- **Every object may contribute** (owner, 2026-10-29: "note it down as something to consider for the future; can be
+  changed later without a need for migrations"): lift R21 so objects with params and `remote` objects contribute too;
+  the entry lives while the object is live, its identity is the object's (type, params, principal key); `contribute`
+  on every `self`. Not decided; R21 stands.
 - p3 domain points (decided per domain when p3 is designed): `SessionFiles {session}` (proposed), session delete,
   connection pools, config files with a single writer, file formats as versioned interfaces, the terminal host
   process as a revision artifact.

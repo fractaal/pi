@@ -8,7 +8,7 @@ export const PROTOCOL_VERSION = 1;
 
 /** Every code with the reasons it may carry. `invalid` requires a reason; every other code may omit it. */
 export const CHORD_ERROR_REASONS = {
-	invalid: ["args", "params", "member", "placement", "reentrant", "read_after_bulk", "cycle"],
+	invalid: ["args", "params", "member", "host_address", "reentrant", "read_after_bulk", "cycle"],
 	contract_mismatch: ["updating"],
 	forbidden: ["revoked"],
 	gone: [],

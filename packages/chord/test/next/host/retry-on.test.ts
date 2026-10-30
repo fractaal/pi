@@ -76,6 +76,27 @@ describe("retryOn", () => {
 		await host.close(context);
 	});
 
+	it("does nothing while the object is parked failed { waiting }: its dependencies decide (dependency model §3.8)", async () => {
+		const Missing = local("app.missing", { version: 1, params: {}, members: {} });
+		let factories = 0;
+		const { host } = await loaded((h) => {
+			serveModels(h);
+			h.serve(User, (_, self) => {
+				factories++;
+				self.retryOn(self.registry(Models));
+				self.get(Missing, {});
+				return {};
+			});
+		});
+		const user = host.hold(User, { id: 1 }, context);
+		await flushed();
+		expect(user.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
+		await (await host.get(Runtime, {}, context)).set(1, context);
+		await flushed();
+		expect([user.state.value.kind, factories]).toEqual(["failed", 1]);
+		await host.close(context);
+	});
+
 	it("wakes on value calls only: a throwing compose wakes nothing, its next good composition does", async () => {
 		const opens = { n: 0 };
 		const { host } = await loaded((h) => {

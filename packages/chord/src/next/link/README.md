@@ -51,7 +51,7 @@ tab.connect(webSocketLink(new WebSocket(url)), { principal: { kind: "server" } }
     fields: unsigned varints (ids, indexes, counts,
     lengths), length-prefixed UTF-8 strings, the incarnation as 16 and the fingerprint as 8 raw bytes, parts as
     length-prefixed bytes (decoded as views of the received message, never parsed), other JSON fields (a hold's
-    address and principal, errors) as length-prefixed JSON; a hold's optional fields behind one flags byte; a payload
+    address params and principal, errors) as length-prefixed JSON; a hold's optional fields behind one flags byte; a payload
     marked as carrying bytes adds its segments (count, lengths, raw bytes); `failed`'s `retryIn` as one more than it
     (0: absent). A part's length prefix is its length doubled, plus one when the part is deflated. A hold's `chain`
     as a count and 16 raw bytes per instance id, its `limit` as a varint. No outer length.
@@ -74,8 +74,8 @@ tab.connect(webSocketLink(new WebSocket(url)), { principal: { kind: "server" } }
 
 - `Message` (`message.ts`): the protocol's one tagged union, from the TypeBox schema `MESSAGE`: `hello { protocol,
   incarnation, calls }` (`calls`: how many concurrent calls this side accepts per origin, its call window),
-  `hold { hold, type, version, fingerprint, params, address?, principal?, incarnation? }` (`address`: `{ kind, params }`
-  the caller's placement computed, it routes the hold; the provider places it by its params; absent for a type without placement; `principal` and `incarnation`: whom it acts for, read only
+  `hold { hold, type, version, fingerprint, params, address, principal?, incarnation? }` (`address`: `{ kind, params }`
+  the caller's `hostAddress` computed, it routes the hold; the provider places it by its params; `principal` and `incarnation`: whom it acts for, read only
   on a parent link; `chain?`: the instance ids of the activations waiting for the hold, at most 32, read only on a
   trusted link; `limit?`: the decoded limit per part of the link a relay admitted it on, read only on a parent link), `release`, `call { call, hold, method, args?, segments? }`, `abort`, `bound { holds: [{ hold,
   variant, members: [{ member, value }], failed }] }` (one message may bind several holds: first bindings, re-holds),

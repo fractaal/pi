@@ -401,6 +401,7 @@ export async function linked(
 	const errors = { server: [] as HostError[], client: [] as HostError[] };
 	const { telemetry, readyTimeout } = options;
 	const server = createHost<TestPrincipal>({
+		address: Server(),
 		principal: { kind: "server" },
 		telemetry,
 		readyTimeout,
@@ -547,6 +548,7 @@ export async function rawLinked(
 ): Promise<{ readonly server: Host<TestPrincipal>; readonly peer: RawPeer; readonly errors: HostError[] }> {
 	const errors: HostError[] = [];
 	const server = createHost<TestPrincipal>({
+		address: Server(),
 		principal: { kind: "server" },
 		readyTimeout: options.readyTimeout,
 		compression: options.compression,
@@ -580,8 +582,19 @@ const NOTES_VARIANTS = {
 	reader: { state: { notes: arr(obj({ text: str() })), count: int() }, methods: { wait: method() } },
 };
 
+/** The host kind of the test servers, where every test type but `PlacedNotes` lives. */
+export const Server = hostKind("server");
+
+/** `Server()` as a hold names it on the wire: the address of every test type served on the server. */
+export const SERVER_ADDRESS = { kind: "server", params: {} };
+
 /** The remote type of the link tests: notes per session, an editor variant for owners, a reader one for guests. */
-export const Notes = remote("app.notes", { version: 1, params: { session: str() }, variants: NOTES_VARIANTS });
+export const Notes = remote("app.notes", {
+	version: 1,
+	params: { session: str() },
+	hostAddress: () => Server(),
+	variants: NOTES_VARIANTS,
+});
 
 /** The kind of the relay tests' workers: one per session. */
 export const Session = hostKind("session", { id: str() });
@@ -590,7 +603,7 @@ export const Session = hostKind("session", { id: str() });
 export const PlacedNotes = remote("app.placed-notes", {
 	version: 1,
 	params: { session: str() },
-	placement: ({ session }) => Session({ id: session }),
+	hostAddress: ({ session }) => Session({ id: session }),
 	variants: NOTES_VARIANTS,
 });
 
@@ -630,7 +643,7 @@ export function serveNotes(
 			},
 		};
 	});
-	// The two types differ in their name and placement only.
+	// The two types differ in their name and host address only.
 	host.serve(Type as typeof Notes, ({ session }, principal, self) => {
 		probe.factories.push(`${session} ${principal.kind}`);
 		const store = self.get(NoteStore, { session });
@@ -807,6 +820,7 @@ export async function relayed(
 	const resolves: string[] = [];
 	const { revokedBy, compression = {} } = options;
 	const server = createHost<TestPrincipal>({
+		address: Server(),
 		principal: { kind: "server" },
 		revokedBy: options.serverRevokedBy ?? revokedBy,
 		compression: compression.server,

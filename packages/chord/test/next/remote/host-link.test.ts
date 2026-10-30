@@ -22,6 +22,7 @@ import {
 	rawWorkers,
 	rejection,
 	relayed,
+	Server,
 	Session,
 	serveNotes,
 	type TestPrincipal,
@@ -33,6 +34,7 @@ import {
 const ServerWho = remote("app.server-who", {
 	version: 1,
 	params: {},
+	hostAddress: () => Server(),
 	variants: { v: { state: { who: str() }, methods: { echo: method(str(), str()) } } },
 });
 
@@ -40,7 +42,7 @@ const ServerWho = remote("app.server-who", {
 const Asker = remote("app.asker", {
 	version: 1,
 	params: { session: str() },
-	placement: ({ session }) => Session({ id: session }),
+	hostAddress: ({ session }) => Session({ id: session }),
 	variants: { v: { state: { who: str() }, methods: { ask: method(str(), str()) } } },
 });
 
@@ -48,7 +50,7 @@ const Asker = remote("app.asker", {
 const Neighbour = remote("app.neighbour", {
 	version: 1,
 	params: { session: str(), other: str() },
-	placement: ({ session }) => Session({ id: session }),
+	hostAddress: ({ session }) => Session({ id: session }),
 	variants: { v: { state: { count: int() } } },
 });
 
@@ -141,6 +143,7 @@ forEachCodec(() => {
 			const Gateway = remote("app.gateway", {
 				version: 1,
 				params: {},
+				hostAddress: () => Server(),
 				variants: { v: { state: { n: int() }, methods: { open: method(str(), int()) } } },
 			});
 			// With params: not activated by `load`, which would wait for the raw worker.
@@ -342,6 +345,7 @@ async function compressing(options: {
 }) {
 	const errors: HostError[] = [];
 	const server = createHost<TestPrincipal>({
+		address: Server(),
 		principal: { kind: "server" },
 		compression: options.server,
 		onError: (error) => errors.push(error),

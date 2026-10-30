@@ -90,7 +90,7 @@ export class ProviderSide {
 				this.#abort(message.call);
 				break;
 			case "retry":
-				this.#entries.get(message.hold)?.retry();
+				this.#entries.get(message.hold)?.retry(message);
 				break;
 			case "ack":
 				this.#ack();
@@ -128,15 +128,15 @@ export class ProviderSide {
 	}
 
 	/**
-	 * Ends with `error` every hold of this origin that acts for a principal `revoked` names and still waits: for `load`
-	 * (served here), or for its route's link (relayed).
+	 * Ends with `error` every hold of this origin that acts for a principal `revoked` names and holds nothing: served
+	 * here but unbound (before the publication, refused), or relayed and waiting for its route's link.
 	 */
-	revokeWaiting(revoked: (principal: Principal) => boolean, error: ChordError): void {
+	revokeUnbound(revoked: (principal: Principal) => boolean, error: ChordError): void {
 		for (const hold of [...this.#entries.values()]) {
 			// A hold arriving on a link acts for a principal: the link's, or one its parent named.
-			if (!hold.waiting || !revoked(hold.caller.principal!)) continue;
-			if (hold.kind === "served") hold.end(error);
-			else hold.revoked(error);
+			if (!revoked(hold.caller.principal!)) continue;
+			if (hold.kind === "served" && hold.unbound) hold.end(error);
+			else if (hold.kind === "relayed" && hold.waiting) hold.revoked(error);
 		}
 	}
 
@@ -283,7 +283,7 @@ export class ProviderSide {
 
 	/**
 	 * A hold message: a protocol error for a live id or compressed params (params are never compressed), otherwise
-	 * admitted once `load` resolved (`Hold.start`). Its activation chain is kept only from a trusted link (Q5); its
+	 * admitted (`Hold.start`, placed once the host published). Its activation chain is kept only from a trusted link (Q5); its
 	 * decoded limit is the link's, or the smaller one a parent stamped (Q2), and travels with it when it is relayed.
 	 */
 	#hold(message: Extract<Message, { readonly kind: "hold" }>): void {
@@ -310,7 +310,7 @@ export class ProviderSide {
 		const limits = limit === link.limits.decoded ? link.limits : { part: link.limits.part, decoded: limit };
 		const hold = new Hold(id, this, this.#caller(message), limits);
 		this.#entries.set(id, hold);
-		void hold.start(request);
+		hold.start(request);
 	}
 
 	/**

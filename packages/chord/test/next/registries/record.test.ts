@@ -320,7 +320,7 @@ describe("compose", () => {
 		await host.close(context);
 	});
 
-	it("before any good composition, `.value` and `host.registry` throw the error", async () => {
+	it("before any good composition, `.value` throws the error and `host.registry` rejects with it at its readyTimeout", async () => {
 		const Broken = defineRegistry<number, number>("app.broken", { version: 1 });
 		const { host, errors } = await loadedPlugins({
 			"@app/broken": (host) =>
@@ -330,7 +330,7 @@ describe("compose", () => {
 					},
 				}),
 		});
-		await expect(host.registry(Broken, context)).rejects.toThrow("bug");
+		await expect(host.registry(Broken, context, { readyTimeout: 5 })).rejects.toThrow("bug");
 		expect(kinds(errors)).toEqual(["registry_failed"]);
 		await host.close(context);
 	});
@@ -620,6 +620,31 @@ describe("contributions", () => {
 		await host.close(context);
 		// Closed: nothing composes any more; a value a reader keeps reads the last composition.
 		expect(names.value).toEqual(["@test/app:app.store=attempt 2"]);
+	});
+});
+
+describe("the last good composition (decision 5)", () => {
+	it("is dropped when a contribution it was built from leaves: `.value` throws until `compose` succeeds", async () => {
+		const Count = defineRegistry<number, number>("app.count", { version: 1 });
+		const compose = (table: RegistryTable<number>): number => {
+			if (table.length === 0) throw new Error("no contributor");
+			return table[0]!.value;
+		};
+		const { host, fail, retry } = await storeRestartable(
+			objects,
+			(attempt, self) => self.contribute(Count, attempt),
+			{
+				serve: (host) => host.serve(Count, { compose }),
+			},
+		);
+		const count = await host.registry(Count, context);
+		expect(count.value).toBe(1);
+		// Its contributor failed: the last good value was built from its contribution (a native may have closed with it).
+		fail();
+		expect(() => count.value).toThrow("no contributor");
+		await retry();
+		expect(count.value).toBe(2);
+		await host.close(context);
 	});
 });
 

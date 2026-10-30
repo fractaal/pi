@@ -1,18 +1,19 @@
 // Tests of keyed members across attempts (slice 6a §1.2, §1.4, §12): the keys references hold on an object's keyed
 // members, frozen while it is failed, re-bound by name (loaded first) when its next attempt goes live, released once.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { BACKGROUND_CONTEXT as context, withAbortSignal } from "../../../src/context/index.ts";
 import { int, keyed, local, obj, str } from "../../../src/next/contracts/index.ts";
 import { ChordError } from "../../../src/next/data/index.ts";
 import { defineState, type KeyedHandle } from "../../../src/next/documents/index.ts";
-import type { Self } from "../../../src/next/host/index.ts";
+import { createHost, defineFacet, type Self } from "../../../src/next/host/index.ts";
 import { ChordObject } from "../../../src/next/host/object.ts";
 import {
 	changesOf,
 	delivered,
 	expectCollected,
 	failLive,
+	flushed,
 	instancesOf,
 	loaded,
 	memoryStore,
@@ -291,7 +292,8 @@ describe("a key whose first pin still loads", () => {
 		await delivered();
 		expect([viewer.value.value, viewer.double.value]).toEqual([{ n: 2 }, 4]);
 		expect([pinsOf(providers.a!), pinsOf(providers.b!)]).toEqual([undefined, 1]);
-		expect(errors.filter((error) => error.kind === "activation_failed").length).toBe(1);
+		// The pin's failed load parked the viewer (a dependency failure is not its own): nothing failed it.
+		expect(errors.filter((error) => error.kind === "activation_failed").length).toBe(0);
 		const values = changesOf(await viewer.value.watch(context));
 		await providers.a!.change(
 			"k",
@@ -312,10 +314,11 @@ describe("a key whose first pin still loads", () => {
 		await close();
 	});
 
-	it("the object fails and stays failed: the consumer's activation fails transient, never live on it", async () => {
-		const { host, errors, exposer, providers, hold, gate, entered, fail, close } = await cold(() => "a");
+	it("the object fails and stays failed: the consumer parks failed { waiting } on it, never live on it", async () => {
+		const { host, exposer, providers, hold, gate, entered, fail, close } = await cold(() => "a");
 		hold();
 		const abort = new AbortController();
+		const viewer = host.hold(Viewer, { id: 1 }, context);
 		const loading = host.get(Viewer, { id: 1 }, withAbortSignal(abort.signal, context));
 		await entered.promise;
 		fail();
@@ -323,8 +326,8 @@ describe("a key whose first pin still loads", () => {
 		await delivered();
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		expect(exposer.state.value.kind).toBe("failed");
-		const failure = errors.find((error) => error.kind === "activation_failed");
-		expect(failure).toMatchObject({ failure: { kind: "transient" } });
+		expect(viewer.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
+		viewer.release();
 		abort.abort();
 		await expect(loading).rejects.toThrow();
 		expect(pinsOf(providers.a!)).toBeUndefined();
@@ -448,5 +451,56 @@ describe("chains and releases", () => {
 			return kept;
 		})();
 		await expectCollected(...refs);
+	});
+});
+
+describe("a key whose first pin still loads at startup (scenario 20, Astra)", () => {
+	it("keeps the first pass pending during an otherwise-ready dependency's delayed keyed pin", async () => {
+		const Data = defineState("app.pin-data", {
+			schema: Schema,
+			version: 1,
+			keyed: true,
+			initial: () => ({ n: 4 }),
+		});
+		const Store = local("app.pin-store", { version: 1, params: {}, members: { notes: keyed(Schema) } });
+		const Reader = local("app.pin-reader", { version: 1, params: {}, members: { value: Schema } });
+		const gate = Promise.withResolvers<void>();
+		const original = ChordObject.prototype.pinKey;
+		const spy = vi.spyOn(ChordObject.prototype, "pinKey").mockImplementation(async function (
+			this: ChordObject,
+			member,
+			key,
+			ctx,
+		) {
+			await gate.promise;
+			return original.call(this, member, key, ctx);
+		});
+		const host = createHost({ onError: () => {} });
+		let done = false;
+		const loading = host
+			.load(
+				[
+					{
+						name: "@test/pin",
+						facet: defineFacet((h) => {
+							h.serve(Store, (_, self) => ({ notes: self.state(Data) }));
+							h.serve(Reader, (_, self) => ({ value: self.get(Store, {}).notes.at("k") }));
+						}),
+					},
+				],
+				context,
+			)
+			.then(() => {
+				done = true;
+			});
+		await flushed();
+		const premature = done;
+		gate.resolve();
+		await loading;
+		spy.mockRestore();
+		const ref = await host.get(Reader, {}, context);
+		expect(ref.value.value).toEqual({ n: 4 });
+		await host.close(context);
+		expect(premature).toBe(false);
 	});
 });

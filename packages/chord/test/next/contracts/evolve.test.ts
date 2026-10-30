@@ -7,6 +7,7 @@ import {
 	arr,
 	bool,
 	evolve,
+	hostKind,
 	type Implementation,
 	int,
 	local,
@@ -18,11 +19,14 @@ import {
 	str,
 } from "../../../src/next/contracts/index.ts";
 
+const Server = hostKind("server");
+
 const Note = obj({ text: str() });
 
 const NotesV1 = remote("notes", {
 	version: 1,
 	params: { session: str() },
+	hostAddress: () => Server(),
 	variants: {
 		editor: { state: { notes: arr(Note), count: int() }, methods: { add: method(Note, str()), clear: method() } },
 		reader: { state: { notes: arr(Note) }, methods: { add: method(Note, str()) } },
@@ -164,7 +168,12 @@ describe("kinds and fixed parts", () => {
 	});
 
 	it("a new base is a full declaration with an explicit version and no older versions", () => {
-		const base = remote("notes", { version: 5, params: { session: str(), tenant: str() }, variants: { editor: {} } });
+		const base = remote("notes", {
+			version: 5,
+			params: { session: str(), tenant: str() },
+			hostAddress: () => Server(),
+			variants: { editor: {} },
+		});
 		expect(contractData(base).versions.map(({ version }) => version)).toEqual([5]);
 		expect(evolve(base, (e) => e).version).toBe(6);
 	});

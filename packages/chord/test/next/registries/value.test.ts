@@ -2,7 +2,8 @@ import { getEventListeners } from "node:events";
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT as context, withAbortSignal, withCancel } from "../../../src/context/index.ts";
 import { int, local, method, str } from "../../../src/next/contracts/index.ts";
-import type { defineFacet } from "../../../src/next/host/index.ts";
+import type { FollowObserver } from "../../../src/next/host/follow.ts";
+import { createHost, defineFacet, type Native } from "../../../src/next/host/index.ts";
 import { ChordObject } from "../../../src/next/host/object.ts";
 import { defineRegistry, type Registry } from "../../../src/next/registries/index.ts";
 import type { NativeWatchCall, WatchEnd } from "../../../src/watch.ts";
@@ -83,7 +84,7 @@ describe("older readers (S2)", () => {
 		await host.close(context);
 	});
 
-	it("without a value mapping, and for a reader newer than the provider, fail `contract_mismatch`: broken, reported", async () => {
+	it("without a value mapping, and for a reader newer than the provider, park readers failed { waiting } (contract_mismatch)", async () => {
 		const Newer = local("app.newer", { version: 1, params: {}, members: { total: int() } });
 		const Older = local("app.older", { version: 1, params: {}, members: { total: int() } });
 		const { host, errors } = await loadedPlugins({
@@ -93,11 +94,103 @@ describe("older readers (S2)", () => {
 				host.serve(Older, (_, self) => ({ total: self.derive([self.registry(SumV1)], ([v]) => v) }));
 			},
 		});
-		expect(await rejection(host.registry(SumV1, context))).toMatchObject({ code: "contract_mismatch" });
-		expect(await rejection(host.registry(SumV3, context))).toMatchObject({ code: "contract_mismatch" });
-		// Only a reload helps: no backoff, the mismatch itself the cause.
-		expect(failures(errors)).toEqual(["app.newer: broken", "app.older: broken"]);
-		expect(errors[0]).toMatchObject({ failure: { error: { code: "contract_mismatch" } } });
+		const quick = { readyTimeout: 5 };
+		expect(await rejection(host.registry(SumV1, context, quick))).toMatchObject({ code: "contract_mismatch" });
+		expect(await rejection(host.registry(SumV3, context, quick))).toMatchObject({ code: "contract_mismatch" });
+		// Not their fault: waiting (a reload serving the version wakes them), no backoff, nothing failed.
+		expect(failures(errors)).toEqual([]);
+		expect(host.hold(Newer, {}, context).state.value).toMatchObject({
+			kind: "failed",
+			cause: {
+				kind: "waiting",
+				error: {
+					message: "waiting for registry app.sum: registry app.sum: version 3 is not served here (version 2 is)",
+				},
+			},
+			retryAt: undefined,
+		});
+		await host.close(context);
+	});
+
+	it("drops an older reader's last good mapping after a contributor it was built from failed live (fix round 1, Astra 2)", async () => {
+		const R = defineRegistry<number, number>("app.mapped", { version: 2 });
+		const Old = defineRegistry<number, number>("app.mapped", { version: 1 });
+		const Contributor = local("app.contributor", { version: 1, params: {}, members: { n: int() } });
+		let observer: FollowObserver<unknown> | undefined;
+		const { host } = await loadedPlugins({
+			"@app/mapping": (h) => {
+				h.serve(R, {
+					compose: (table) => table.reduce((n, e) => n + e.value, 0),
+					accepts: {
+						1: {
+							value: (n) => {
+								if (n === 0) throw new Error("old version cannot map the empty table");
+								return n;
+							},
+						},
+					},
+				});
+				h.serve(Contributor, (_, self) => {
+					self.contribute(R, 42);
+					return {
+						n: self.follow(async (followed) => {
+							observer = followed;
+							return { value: 42, detach() {} };
+						}),
+					};
+				});
+			},
+		});
+		const old = await host.registry(Old, context);
+		expect(old.value).toBe(42);
+		observer!.end({ kind: "failed", error: new Error("runtime ended") });
+		await flushed();
+		expect(() => old.value).toThrow("old version cannot map the empty table");
+		await host.close(context);
+	});
+
+	it("never hands out a mapped native whose contributor failed and closed it (fix round 1, Sol 2)", async () => {
+		type Resource = { closed: boolean };
+		const Current = defineRegistry<Native<Resource>, readonly Native<Resource>[]>("app.resources", { version: 2 });
+		const Old = defineRegistry<Native<Resource>, Native<Resource>>("app.resources", { version: 1 });
+		const Owner = local("app.owner", { version: 1, params: {}, members: {} });
+		const resource = { closed: false };
+		let failRuntime: () => void = () => {};
+		const { host } = await loadedPlugins({
+			"@app/resources": (h) => {
+				h.serve(Current, {
+					compose: (table) => table.map(({ value }) => value),
+					accepts: {
+						1: {
+							value: (current) => {
+								if (current.length === 0) throw new Error("no current resource");
+								return current[0]!;
+							},
+						},
+					},
+				});
+				h.serve(Owner, (_, self) => {
+					const native = self.open(
+						async () => resource,
+						() => {
+							resource.closed = true;
+						},
+					);
+					self.contribute(Current, native);
+					self.follow(async (observer) => {
+						failRuntime = () => observer.end({ kind: "failed", error: new Error("runtime closed") });
+						return { value: 1, detach: () => {} };
+					});
+					return {};
+				});
+			},
+		});
+		const value = await host.registry(Old, context);
+		expect(value.value.value).toBe(resource);
+		failRuntime();
+		await flushed();
+		expect(resource.closed).toBe(true);
+		expect(() => value.value).toThrow("no current resource");
 		await host.close(context);
 	});
 
@@ -162,29 +255,30 @@ describe("readers (S3)", () => {
 		R: Registry<number, { readonly total: number }> = Sum,
 	) => host.serve(Reader, (_, self) => ({ total: self.derive([self.registry(R)], ([v]) => v.total) }));
 
-	it("activate once the registry has a value; a reader of a registry nobody serves fails at once, `load` waits for nothing", async () => {
+	it("activate once the registry has a value; a reader of a registry nobody serves parks failed { waiting }, `load` waits for nothing", async () => {
 		const started = Date.now();
 		const { host, errors } = await loadedPlugins({ "@app/reader": (host) => serveReader(host) });
 		expect(Date.now() - started).toBeLessThan(1_000);
-		expect(errors).toMatchObject([
-			{
-				kind: "activation_failed",
-				object: "app.reader",
-				failure: {
-					kind: "transient",
-					error: {
-						code: "unavailable",
-						message: "app.reader: registry app.sum has no value",
-						cause: { code: "unavailable", reason: "undeclared" },
-					},
+		expect(errors).toEqual([]);
+		expect(host.hold(Reader, {}, context).state.value).toMatchObject({
+			kind: "failed",
+			cause: {
+				kind: "waiting",
+				error: {
+					code: "unavailable",
+					message: "waiting for registry app.sum: registry app.sum: no plugin serves it here",
+					cause: { code: "unavailable", reason: "undeclared" },
 				},
 			},
-		]);
-		expect(await rejection(host.registry(Sum, context))).toMatchObject({ code: "unavailable", reason: "undeclared" });
+		});
+		expect(await rejection(host.registry(Sum, context, { readyTimeout: 5 }))).toMatchObject({
+			code: "unavailable",
+			reason: "undeclared",
+		});
 		await host.close(context);
 	});
 
-	it("a reader failed on a first `compose` that threw is retried at once by the first good composition (R18)", async () => {
+	it("a reader parked on a first `compose` that threw goes on at the first good composition", async () => {
 		const { host, errors } = await loadedPlugins({
 			"@app/sum": (host) => {
 				host.serve(Sum, {
@@ -198,12 +292,43 @@ describe("readers (S3)", () => {
 			},
 			"@app/setter": (host) => setter(host, 0),
 		});
-		expect(failures(errors)).toEqual(["app.reader: transient"]);
+		expect(failures(errors)).toEqual([]);
+		const held = host.hold(Reader, {}, context);
+		expect(held.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
 		const setters = await host.get(Setter, {}, context);
 		await setters.set(3, context);
-		// The reader's backoff is a second at least: the composition retried it.
+		// Woken by the composition: no timer of its own.
 		const reader = await host.get(Reader, {}, context, { readyTimeout: 500 });
+		held.release();
 		expect(reader.total.value).toBe(3);
+		await host.close(context);
+	});
+
+	it("host.registry before the publication waits for it, then resolves with the provider it served", async () => {
+		const host = createHost({ onError: () => {} });
+		const waiting = host.registry(Sum, context);
+		await host.load([{ name: "@app/sum", facet: defineFacet((h) => h.serve(Sum, { compose: total })) }], context);
+		expect((await waiting).value).toEqual({ total: 0 });
+		await host.close(context);
+	});
+
+	it("host.registry waits through no value until a first good composition, woken by it, its wait then gone", async () => {
+		const { host } = await loadedPlugins({
+			"@app/sum": (host) => {
+				host.serve(Sum, {
+					compose: (table) => {
+						const sum = total(table);
+						if (sum.total === 0) throw new Error("empty");
+						return sum;
+					},
+				});
+				setter(host, 0);
+			},
+		});
+		const waiting = host.registry(Sum, context, { readyTimeout: 500 });
+		await flushed();
+		await (await host.get(Setter, {}, context)).set(5, context);
+		expect((await waiting).value).toEqual({ total: 5 });
 		await host.close(context);
 	});
 

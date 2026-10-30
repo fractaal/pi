@@ -1,15 +1,16 @@
 // Objects (§6): one per identity, from its first attempt to its end. Its state across attempts (its documents, line
-// and job runs, its member sources, slice 6a §1.2), its holders, retries after failures (backoff, dependency recovery
-// R18, `ref.retry()`), a live object's failure (slice 6a §1.4), the waits and cycle checks of activations (Q5, its
-// instance id and the activation chain it was created for), lingering after its last reference (§3, D8), the job runs
-// that keep it alive (§15), its contributions to registries while live and its wake signals (`retryOn`, slice 8), and
-// its ending, revocation included (§4, R11).
+// and job runs, its member sources, slice 6a §1.2), its holders, retries after failures (backoff, `ref.retry()`, passed
+// on while parked), what it shows while its attempt is parked on dependencies (dependency model §3), its first outcome
+// (the start barrier, decision (a)), a live object's failure (slice 6a §1.4), the waits and cycle checks of activations
+// (Q5, its instance id and the activation chain it was created for), lingering after its last reference (§3, D8), the
+// job runs that keep it alive (§15), its contributions to registries while live and its wake signals (`retryOn`, slice
+// 8), and its ending, revocation included (§4, R11).
 
-import { awaitWithContext, type Context } from "../../context/index.ts";
+import type { Context } from "../../context/index.ts";
 import type { Contract, ParamsOf } from "../contracts/index.ts";
 import type { ContractShape } from "../contracts/internal.ts";
-import { ChordError, type FailureCause, isChordError, type Principal } from "../data/index.ts";
-import { invalid, type Provider } from "../data/internal.ts";
+import { ChordError, type FailureCause, type Principal } from "../data/index.ts";
+import { invalid, type Provider, sameCause } from "../data/internal.ts";
 import { Documents, type KeyedSlot } from "../documents/internal.ts";
 import type { JobDefinition } from "../jobs/index.ts";
 import { JobRecords } from "../jobs/internal.ts";
@@ -17,13 +18,14 @@ import { CHAIN } from "../link/internal.ts";
 import type { DeriveSource } from "../state/internal.ts";
 import { Attempt, type Self } from "./attempt.ts";
 import type { Caller } from "./ctx.ts";
+import type { Dependency } from "./dependencies.ts";
 import type { AnyHost } from "./host.ts";
 import { KeyedMembers, type PinnedKey } from "./keyed-members.ts";
 import { MemberSource } from "./member-source.ts";
 import type { KeyedBinding } from "./members.ts";
 import type { CloseFailed, NativeCloseReason } from "./native.ts";
 import { type Ended, type Failed, LIVE, LOADING, type RefState } from "./ref-state.ts";
-import type { Target } from "./reference.ts";
+import { type RetryOperation, retryOperation, type Target } from "./reference.ts";
 import { type RetrySource, RetryWakes } from "./retry-on.ts";
 import { uuidv7 } from "./uuid.ts";
 
@@ -60,7 +62,7 @@ type ServedType<C extends Contract> = {
 
 /** What holds an object: a reference's binding, or a hold arriving over a link. */
 export interface Holder {
-	/** The object whose attempt declared the reference; retried when this object goes live (R18). */
+	/** The object whose attempt declared the reference: it checks its dependencies again when this object changes. */
 	readonly dependent: ChordObject | undefined;
 	/** Whom the reference acts for, with its origin's incarnation (`host.references`). */
 	readonly caller: Caller;
@@ -71,34 +73,40 @@ export interface Holder {
 }
 
 /**
- * Where an object stands. `waiting`: for its identity's backoff window before its first attempt. `failed` has the
- * state its references show, and keeps the failed attempt in `holding` after a dependency failure (R18): its
- * references keep the dependencies.
+ * Where an object stands. `waiting`: for its identity's backoff window before its first attempt. `activating` has what
+ * its references show: `loading`, or `failed { waiting }` while its attempt is parked on a failed dependency. `failed`
+ * has the state its references show.
  */
 type ObjectState =
 	| { readonly kind: "waiting" }
-	| { readonly kind: "activating"; readonly attempt: Attempt }
+	| { readonly kind: "activating"; readonly attempt: Attempt; readonly shown: RefState }
 	| { readonly kind: "live"; readonly attempt: Attempt }
-	| { readonly kind: "failed"; readonly failure: Failed; readonly holding: Attempt | undefined }
+	| { readonly kind: "failed"; readonly failure: Failed }
 	| { readonly kind: "ended"; readonly ended: Ended };
 
 /**
- * What an ended object still has to do once its previous teardowns finished (`previous`): drain and close its attempt,
- * or release a failed attempt's references; then drop its documents and job runs (`end` alone).
+ * What an ended object still has to do once its previous teardowns finished (`previous`): drain and close its attempt;
+ * then drop its documents and job runs (`end` alone).
  */
 type Teardown =
 	| { readonly kind: "none" }
 	| { readonly kind: "end"; readonly previous: Promise<void> | undefined }
-	| { readonly kind: "close" | "release"; readonly attempt: Attempt; readonly previous: Promise<void> | undefined };
+	| { readonly kind: "close"; readonly attempt: Attempt; readonly previous: Promise<void> | undefined };
 
 const END: NativeCloseReason = { kind: "end" };
 
 const CLOSE: NativeCloseReason = { kind: "close" };
 
+/** How many retry ids an object remembers: a diamond's shortcut only (a ring is stopped by a retry's `through`). */
+const RETRIES_KEPT = 8;
+
+/** No dependencies waited for: the shared empty list. */
+const NO_DEPENDENCIES: readonly Dependency[] = [];
+
 /**
- * One object. Each attempt is a fresh `Attempt`; the documents, the line and the job runs, the holders (and, after a
- * dependency failure, the failed attempt's references) outlive it. A transient failure is retried after its backoff window, or at once when a
- * dependency it failed on goes live or a reference asks (`retry`); a broken one stays failed until a reference asks.
+ * One object. Each attempt is a fresh `Attempt`; the documents, the line, the job runs and the holders outlive it. An
+ * attempt parked on its dependencies waits for them without a timer; a transient failure (its own) is retried after its
+ * backoff window, or at once when a reference asks (`retry`); a broken one stays failed until a reference asks.
  * The object ends with its last reference, a live one after its type's `linger` (never, for a host-lifetime object),
  * or when the host closes.
  */
@@ -127,13 +135,20 @@ export class ChordObject implements Target {
 	#state: ObjectState = { kind: "waiting" };
 	/** References and holds of this object. */
 	readonly #holders = new Set<Holder>();
-	/** Objects this object's activation waits for; followed to find cycles (Q5). */
-	readonly #waitingFor = new Set<Target>();
-	/** The attempt a dependency went live during (R18): if it fails on a dependency, it is retried at once. */
-	#woken: Attempt | undefined;
-	/** The current attempt's outcome: resolves when it goes live, rejects with its error; renewed by every retry. */
-	#outcome = settlement();
-	/** The error of the last failed attempt, until one goes live. */
+	/** The dependencies its parked attempt waits for; their objects are followed to find cycles (Q5). */
+	#waitingFor: readonly Dependency[] = NO_DEPENDENCIES;
+	/**
+	 * Its first outcome (decision (a)): live, failed, parked with no blocker here still without one, or ended; once.
+	 * The promise is made by the first who waits for it (the start barrier, for host-lifetime objects).
+	 */
+	#firstOutcome: PromiseWithResolvers<void> | undefined;
+	#hasFirstOutcome = false;
+	/**
+	 * The ids of the last retry operations it handled (at most `RETRIES_KEPT`, the newest last; made by the first): a
+	 * retry reaching it twice through a diamond is handled once.
+	 */
+	#retried: string[] | undefined;
+	/** The error of the last failed attempt, or the last cause a parked attempt showed, until one goes live. */
 	#lastFailure: ChordError | undefined;
 	/** Ends the object when its type's `linger` passed after its last reference; cleared by a new one. */
 	#lingering: ReturnType<typeof setTimeout> | undefined;
@@ -189,7 +204,8 @@ export class ChordObject implements Target {
 		const state = this.#state;
 		if (state.kind === "failed") return state.failure;
 		if (state.kind === "live") return LIVE;
-		return state.kind === "ended" ? state.ended : LOADING;
+		if (state.kind === "ended") return state.ended;
+		return state.kind === "activating" ? state.shown : LOADING;
 	}
 
 	/** Whether its state members have values: once live (a local object stays live until it ends). */
@@ -202,12 +218,27 @@ export class ChordObject implements Target {
 		return this.#exposed !== undefined && this.#state.kind !== "ended";
 	}
 
-	/** The current attempt's outcome (the start barrier waits for the first). */
-	get settled(): Promise<void> {
-		return this.#outcome.promise;
+	/** Resolves at its first outcome (the start barrier waits for it); never rejects. */
+	get firstOutcome(): Promise<void> {
+		if (this.#hasFirstOutcome) return Promise.resolve();
+		this.#firstOutcome ??= Promise.withResolvers<void>();
+		return this.#firstOutcome.promise;
 	}
 
-	/** The error of the last failed attempt while none went live since. */
+	/** Whether it holds up the start barrier: it has no first outcome yet. */
+	get blocksFirstPass(): boolean {
+		return !this.#hasFirstOutcome;
+	}
+
+	/** An object here: it is not held on a link. */
+	get heldOnLink(): false {
+		return false;
+	}
+
+	/**
+	 * The error of its last failure while none went live since: a failed attempt's, or the cause its parked attempt
+	 * showed last (kept when the dependency falls back to `loading`, so a getter's deadline names it).
+	 */
 	get lastFailure(): ChordError | undefined {
 		return this.#lastFailure;
 	}
@@ -251,21 +282,31 @@ export class ChordObject implements Target {
 		const state = this.#state;
 		if (state.kind !== "waiting" && state.kind !== "failed") return;
 		this.#instance ??= uuidv7();
-		const attempt = new Attempt(this, state.kind === "failed" ? state.holding : undefined, this.#context);
-		this.#state = { kind: "activating", attempt };
-		if (state.kind === "failed") {
-			this.#outcome = settlement();
-			this.#notify();
-		}
+		const attempt = new Attempt(this, this.#context);
+		this.#state = { kind: "activating", attempt, shown: LOADING };
+		if (state.kind === "failed") this.#notify();
 		void this.#run(attempt);
 	}
 
 	/**
-	 * `ref.retry()` and a `retry` message: an attempt now when failed (a broken one too) or waiting, its backoff window
-	 * skipped; ignored while an attempt runs and once live.
+	 * `ref.retry()` and a `retry` message, as `operation` (handled once): an attempt now when failed (a broken one too)
+	 * or waiting, its backoff window skipped; passed on to the failed dependencies while parked `failed { waiting }`,
+	 * with this object added to the objects it passed through (at most `CHAIN`: a retry stops past 32 hops); ignored
+	 * otherwise (an attempt runs, or it is live), and when it passed through this object already (a ring) or was handled
+	 * here already (a diamond).
 	 */
-	retry(): void {
-		if (this.#state.kind !== "waiting" && this.#state.kind !== "failed") return;
+	retry(operation: RetryOperation = retryOperation()): void {
+		const instance = this.#instance;
+		if (instance !== undefined && operation.through.includes(instance)) return;
+		if (this.#handled(operation.id)) return;
+		const state = this.#state;
+		if (state.kind === "activating") {
+			const { through } = operation;
+			if (state.shown.kind !== "failed" || instance === undefined || through.length >= CHAIN) return;
+			state.attempt.retryDependencies({ id: operation.id, through: [...through, instance] });
+			return;
+		}
+		if (state.kind !== "waiting" && state.kind !== "failed") return;
 		this.host.backoff.skip(this.identity);
 		this.attempt();
 	}
@@ -396,10 +437,8 @@ export class ChordObject implements Target {
 		if (cause.kind === "transient") this.host.backoff.failed(this.identity);
 		else this.host.backoff.delete(this.identity);
 		const failure: Failed = { kind: "failed", cause, retryAt: this.host.backoff.until(this.identity) };
-		this.#state = { kind: "failed", failure, holding: undefined };
+		this.#state = { kind: "failed", failure };
 		this.#lastFailure = error;
-		this.#outcome = settlement();
-		this.#outcome.reject(error);
 		this.#withdraw(attempt);
 		attempt.seal(error);
 		// Members following another object's sources freeze now: no commit of this object changes them.
@@ -476,37 +515,39 @@ export class ChordObject implements Target {
 		throw error;
 	}
 
-	/**
-	 * Waits for `dependency`'s current attempt as part of this object's activation. Rejects at once when it is failed,
-	 * and when its attempt fails, with `unavailable` naming it (R18), its error as the cause; a dependency that failed
-	 * for a cycle rejects with that `invalid/cycle` itself.
-	 */
-	async waitFor(dependency: Target, context: Context): Promise<void> {
-		this.#waitingFor.add(dependency);
-		try {
-			await awaitWithContext(dependency.settled, context);
-		} catch (error) {
-			if (isChordError(error, "invalid") && error.reason === "cycle") throw error;
-			const message = `${this.label}: dependency ${dependency.label} failed`;
-			throw new ChordError({ code: "unavailable", message }, { cause: error });
-		} finally {
-			this.#waitingFor.delete(dependency);
-		}
+	/** Its parked attempt waits for `dependencies` (none once it leaves parking): the waits a cycle check follows. */
+	waitsFor(dependencies: readonly Dependency[]): void {
+		this.#waitingFor = dependencies;
 	}
 
 	/**
-	 * A dependency went live: retried at once (backoff window skipped) when it failed on a dependency (R18). A wake
-	 * while it activates is remembered: that activation may still fail on the dependency's earlier failure.
+	 * A dependency of its current attempt changed (its state, or its first outcome): a parked attempt checks again; an
+	 * attempt past its dependency check ignores it (R18 after live), and so does any other state.
 	 */
-	dependencyLive(): void {
+	dependencyMoved(): void {
 		const state = this.#state;
-		if (state.kind === "activating") {
-			this.#woken = state.attempt;
-			return;
+		if (state.kind === "activating") state.attempt.dependencyMoved();
+	}
+
+	/**
+	 * Its attempt `attempt` is parked showing `shown` (`loading` or `failed { waiting }`): holders are told when that
+	 * changed (a cause compared by value). `firstPass`: no blocker here is still without its first outcome, so this
+	 * object has its first outcome now.
+	 */
+	parked(attempt: Attempt, shown: RefState, firstPass: boolean): void {
+		const state = this.#state;
+		if (state.kind !== "activating" || state.attempt !== attempt) return;
+		if (!sameState(state.shown, shown)) {
+			this.#state = { kind: "activating", attempt, shown };
+			if (shown.kind === "failed") this.#lastFailure = shown.cause.error;
+			this.#notify();
 		}
-		if (state.kind !== "failed" || state.holding === undefined) return;
-		this.host.backoff.skip(this.identity);
-		this.attempt();
+		if (firstPass) this.#settleFirstOutcome();
+	}
+
+	/** Its attempt `attempt` left parking for its own steps: it shows `loading` until its outcome. */
+	unparked(attempt: Attempt): void {
+		this.parked(attempt, LOADING, false);
 	}
 
 	/**
@@ -540,14 +581,11 @@ export class ChordObject implements Target {
 			case "live":
 				return this.#wentLive(attempt);
 			case "failed":
-				return this.#failed(attempt, outcome.cause, undefined);
-			case "dependency_failed":
-				return this.#failed(attempt, outcome.cause, attempt);
+				return this.#failed(attempt, outcome.cause);
 		}
 	}
 
 	#wentLive(attempt: Attempt): void {
-		this.#woken = undefined;
 		if (this.#wakes !== undefined) this.#wakes.during = undefined;
 		this.#state = { kind: "live", attempt };
 		this.#exposed = attempt;
@@ -562,21 +600,17 @@ export class ChordObject implements Target {
 		}
 		this.#lastFailure = undefined;
 		this.host.wentLive(this);
-		this.#outcome.resolve();
 		this.#notify();
-		// R18: objects that failed because this one had failed are retried now.
-		for (const holder of [...this.#holders]) holder.dependent?.dependencyLive();
+		this.#settleFirstOutcome();
 		attempt.live();
 	}
 
 	/**
-	 * Records a failed attempt: reported, torn down in the background (reason `end`), its references released unless it
-	 * is `holding` them (R18), its holders told. Transient: a backoff window, whose end is the failure's `retryAt`;
-	 * broken: no automatic retry.
+	 * Records a failed attempt: reported, torn down in the background (reason `end`), its references released once its
+	 * natives closed, its holders told. Transient: a backoff window, whose end is the failure's `retryAt`; broken: no
+	 * automatic retry.
 	 */
-	#failed(attempt: Attempt, cause: FailureCause, holding: Attempt | undefined): void {
-		const woken = this.#woken === attempt;
-		this.#woken = undefined;
+	#failed(attempt: Attempt, cause: FailureCause): void {
 		const wokenBy = this.#wakes?.during === attempt;
 		if (this.#wakes !== undefined) this.#wakes.during = undefined;
 		// What its activation loaded for the pinned keys goes; they stay frozen.
@@ -584,25 +618,23 @@ export class ChordObject implements Target {
 		if (cause.kind === "transient") this.host.backoff.failed(this.identity);
 		else this.host.backoff.delete(this.identity);
 		const failure: Failed = { kind: "failed", cause, retryAt: this.host.backoff.until(this.identity) };
-		this.#state = { kind: "failed", failure, holding };
+		this.#state = { kind: "failed", failure };
 		this.#lastFailure = cause.error;
 		attempt.seal(this.ended());
 		const closing = attempt.close(END).then((failures) => {
 			attempt.detach();
-			// Released once its natives closed (a close may use them, §6, §13); R18's attempt keeps them for the retry.
-			if (holding === undefined) attempt.releaseReferences();
+			// Released once its natives closed (a close may use them, §6, §13).
+			attempt.releaseReferences();
 			return failures;
 		});
 		this.host.ending(this.identity, this.#reported(closing));
 		this.host.report({ kind: "activation_failed", object: this.label, failure: cause });
-		this.#outcome.reject(cause.error);
 		this.#notify();
+		this.#settleFirstOutcome();
 		// Job runs kept it while it activated; failed, they keep it no longer.
 		this.#idle();
-		// A dependency went live while this attempt activated: the wake it missed retries it now (R18).
-		if (holding !== undefined && woken) this.dependencyLive();
 		// A wake signal arrived while it activated: it retries it now.
-		else if (wokenBy) this.retry();
+		if (wokenBy) this.retry();
 	}
 
 	/**
@@ -614,7 +646,8 @@ export class ChordObject implements Target {
 		// Called by its wakes only.
 		const wakes = this.#wakes!;
 		if (state.kind === "activating") {
-			wakes.during = state.attempt;
+			// While parked its dependencies decide (dependency model §3.8).
+			if (!state.attempt.isParked) wakes.during = state.attempt;
 			return;
 		}
 		if (state.kind !== "failed" || wakes.leaving) return;
@@ -661,7 +694,7 @@ export class ChordObject implements Target {
 		for (const [member, source] of attempt.stateMembers) {
 			if (which === "all" || !attempt.owns(source)) this.#memberSource(member, attempt).freeze();
 		}
-		// A pin still loading is given up with the failure: a consumer activating on it fails transient (R18).
+		// A pin still loading is given up with the failure: a consumer parked on it shows `failed { waiting }`.
 		this.#keys.freeze(which, this.#lastFailure ?? this.ended());
 	}
 
@@ -705,7 +738,8 @@ export class ChordObject implements Target {
 		this.#stopLingering();
 		this.#wakes?.stop();
 		this.host.forget(this);
-		this.#outcome.reject(error);
+		// An object of the start barrier's cohort that ends before its first outcome settles it as ended.
+		this.#settleFirstOutcome();
 		// In a batch: the derives over its members are marked, so none keeps a cached value.
 		this.host.batch.within(() => {
 			for (const source of this.#members.values()) source.objectEnded(error);
@@ -717,12 +751,8 @@ export class ChordObject implements Target {
 		this.#holders.clear();
 		this.host.unreferenced(this, holders, this.#context);
 		for (const holder of holders) holder.end(error);
-		if (state.kind === "waiting") return { kind: "end", previous };
-		if (state.kind === "failed") {
-			// The failed attempt is closed (or closing) since it failed; only the references it holds (R18) are left.
-			const { holding } = state;
-			return holding === undefined ? { kind: "end", previous } : { kind: "release", attempt: holding, previous };
-		}
+		// A failed attempt is closed (or closing) since it failed.
+		if (state.kind === "waiting" || state.kind === "failed") return { kind: "end", previous };
 		if (state.kind === "live") this.#withdraw(state.attempt);
 		state.attempt.seal(error);
 		return { kind: "close", attempt: state.attempt, previous };
@@ -767,8 +797,10 @@ export class ChordObject implements Target {
 		if (teardown.kind === "none") return [];
 		await teardown.previous;
 		const failures = teardown.kind === "close" ? await teardown.attempt.close(reason) : [];
-		if (teardown.kind === "close") teardown.attempt.detach();
-		if (teardown.kind !== "end") teardown.attempt.releaseReferences();
+		if (teardown.kind === "close") {
+			teardown.attempt.detach();
+			teardown.attempt.releaseReferences();
+		}
 		await this.documents.settled();
 		this.documents.end();
 		this.host.store?.claims.release(this);
@@ -794,12 +826,35 @@ export class ChordObject implements Target {
 		throw new ChordError({ code: "not_ready", message: `${this.label}: not live yet` });
 	}
 
-	/** The chain of waits from this activation to `target` (see `Target`). */
+	/**
+	 * Whether the retry operation `id` reached it before (among the last few: the diamond's shortcut; a ring is stopped
+	 * by `through`); records it otherwise.
+	 */
+	#handled(id: string): boolean {
+		this.#retried ??= [];
+		const retried = this.#retried;
+		if (retried.includes(id)) return true;
+		if (retried.length === RETRIES_KEPT) retried.shift();
+		retried.push(id);
+		return false;
+	}
+
+	/** The settlement of its first outcome (once): dependents parked on it check their first pass again. */
+	#settleFirstOutcome(): void {
+		if (this.#hasFirstOutcome) return;
+		this.#hasFirstOutcome = true;
+		this.#firstOutcome?.resolve();
+		this.#firstOutcome = undefined;
+		for (const holder of this.#holders) holder.dependent?.dependencyMoved();
+	}
+
+	/** The chain of waits from this activation to `target` (see `Target`), through its parked attempt's dependencies. */
 	pathTo(target: ChordObject, visited: Set<Target>): ChordObject[] | undefined {
 		if (this === target) return [this];
 		visited.add(this);
-		for (const next of this.#waitingFor) {
-			if (visited.has(next)) continue;
+		for (const dependency of this.#waitingFor) {
+			const next = dependency.kind === "reference" ? dependency.binding.target : undefined;
+			if (next === undefined || visited.has(next)) continue;
 			const rest = next.pathTo(target, visited);
 			if (rest !== undefined) return [this, ...rest];
 		}
@@ -807,9 +862,8 @@ export class ChordObject implements Target {
 	}
 }
 
-/** A settlement nobody may wait for: its rejection is not unhandled. */
-export function settlement(): PromiseWithResolvers<void> {
-	const settlement = Promise.withResolvers<void>();
-	settlement.promise.catch(() => {});
-	return settlement;
+/** Whether two states of a reference say the same: the same object, or failures with the same cause (by value). */
+function sameState(a: RefState, b: RefState): boolean {
+	if (a === b) return true;
+	return a.kind === "failed" && b.kind === "failed" && a.retryAt === b.retryAt && sameCause(a.cause, b.cause);
 }

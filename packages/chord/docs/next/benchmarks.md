@@ -633,3 +633,43 @@ p95, and swapping host files moves it without a pattern (code layout, not work o
 `writable.set` 0.87 µs, the same value 0.011-0.016 µs and 0 B (the seal check now comes first: a set of an ended
 attempt's writable throws whatever its value); one of 10 contributions set 0.71-0.78 µs, of 100 1.43-1.61 µs (one run
 in six 3.4 µs on either variant tried: JIT).
+
+## Slice 7a: the dependency model (2026-10-29)
+
+Node 24.4.1, one CPU (`taskset -c 6`), runs alternating. HEAD is `babe30a7e`, extracted at a path of the same length
+(`/home/badlogic/pi-h7`); the build in the worktree (`/home/badlogic/pi-7a`).
+
+**Paths under every object** (`test/next/bench/calls.ts`), median per operation over nine bursts, heap allocated per
+operation, three alternating runs each, HEAD → build:
+
+| Case | HEAD | build |
+| --- | --- | --- |
+| local method call (its ctx) | 2.81-2.82 µs, 6,894 B | 2.80-2.82 µs, 6,894 B |
+| commit through a watched derive | 10.43-10.70 µs, 15,310 B | 10.38-10.53 µs, 15,310 B |
+| activation churn: get, live, release (an object with params and one dependency) | 58.5-59.9 µs, 43,716-43,719 B | 53.7-55.4 µs, 41,540-41,559 B |
+| retained per live object with one dependency (10,000 kept, an ad-hoc probe) | 7,398-7,406 B | 6,931-6,936 B |
+
+An activation whose dependencies are live at the check does not park: one check of its bindings, then its own steps a
+microtask later (as HEAD's wait did). The first build parked every attempt with a dependency (a waiter list, a
+`parked_long` record, a microtask per wake even outside parking) and cost 62.0-63.6 µs and 580 B more per activation;
+now a wake outside parking is a flag, the first-outcome promise is made only for whoever waits (the start barrier),
+and an object keeps no `Set` of waits and no settlement promise per attempt (R18's), hence the lower numbers.
+
+**Links** (`links.ts`, three runs each): wire sizes, encodes, decodes, heap per message and retained heap per hold
+(176.0 → 175.4-176.0 KiB) unchanged. Hold to live over two hops (mean of 100), binary: 1,000-item list 0.781-0.817 →
+0.807-0.811 ms, 500 KB document 1.250-1.278 → 1.289-1.310 ms (+1-3%: the hold counted at its arrival, the index
+check of the publication); text 1.545-1.580 → 1.521-1.573 and 3.299-3.379 → 3.317-3.393 ms. Commits to frames,
+streamed appends, call round trips and reconnects within the runs' spread.
+
+**Existing benchmarks**, HEAD → build: the derive diamond (`derives.ts`, three runs) 9.4-10.1 → 9.5-9.6 µs median,
+p95 19.3-19.9 → 19.3-19.4 µs. Registries (`registries.ts`, three runs): `writable.set` 0.82-0.97 → 0.77-0.87 µs; one of
+10 contributions set 0.72-2.71 → 0.70-1.06 µs; of 100 1.50-3.46 → 1.44-3.40 µs (one slow run per side: JIT);
+allocation within 20 B. A registry's last good composition keeps the list of contributions it was built from: the
+list is replaced (not spliced) when a contributor comes or goes, so a composition costs no copy.
+
+**Fix round 1** (2026-10-29: revocation over paths, retry operations on the wire, the provider's own host-address
+check for same-host remote requests, mapped values' provenance), `calls.ts`, three alternating runs, HEAD → build:
+local call 2.81 → 2.79-2.82 µs (6,894 B both), watched derive commit 10.45-10.70 → 10.35-10.47 µs, activation churn
+58.6-59.8 → 53.9-54.2 µs (43,716-43,720 → 41,559 B); retained per live object with one dependency 7,399-7,405 →
+6,930-6,938 B. The address check runs only for a remote type whose consumer and provider `hostAddress` differ; a
+retry's operation id is made per `ref.retry()`, and an object keeps its handled ids only once it was retried.

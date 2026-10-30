@@ -39,8 +39,10 @@ host.serve(Server, (_, self) => {
   a change of the table marks it, and it composes when read or, while someone watches, observes or waits for it, in
   the batch that changed the table (after the commit's adoptions); an unchanged table (every entry the same) composes
   nothing. A `compose` that throws is the owner's bug: `registry_failed` once per episode, watches get one `failed`
-  call, `.value` keeps the last good composition (before any, it throws the error); the next good composition is a
-  value call, also when its value is the same.
+  call, `.value` keeps the last good composition while every contribution it was built from is still in the table
+  (before any, or once one of them left, it throws the error: a contributor that failed or ended may have closed the
+  native its entry held; decision 5, slice 7a); the next good composition is a value call, also when its value is the
+  same.
 - The table (`RegistryTable<C>`): one `RegistryEntry { plugin, type?, version, value }` per live contributor, sorted by
   plugin name, then type (a facet's entry first): never load order. A contribution of an older version is adapted with
   `accepts[version].contribution` once per contribution value; a newer one, or an older one without an adapter, is left
@@ -53,16 +55,18 @@ host.serve(Server, (_, self) => {
   `RegistryValue<V>`: a native watchable (`.value`, `watch`) with `observe(observer, ctx)`, a synchronous observer of
   its compositions (Durable's shape, for `registryReader`). A reader whose token is older than the provider's gets the
   composition mapped back with `accepts[version].value`, once per composition, only while read or followed; a mapping
-  that throws fails that version only (`registry_failed`, its last good mapping kept). A reader without a mapping, or
-  newer than the provider, gets `contract_mismatch` (its object fails `broken`: only a reload helps). The mapping is
-  kept only while a reader or follower is there. Without a provider a registry has no value
-  (`unavailable/undeclared`); its contributions wait in the table.
+  that throws fails that version only (`registry_failed`, its last good mapping kept while every contribution the
+  composition it was mapped from was built from is still in the table: decision 5 holds for every version). A reader without a mapping, or
+  newer than the provider, gets `contract_mismatch`. The mapping is kept only while a reader or follower is there.
+  Without a provider a registry has no value (`unavailable/undeclared`); its contributions wait in the table. A
+  reader's attempt without a usable value parks `failed { waiting }` (`host/`), woken when the value turns usable; a
+  `host.registry` waits the same way up to its `readyTimeout`.
 - `keyedEntries(table, entriesOf, report)`: a map of every entry's keyed items, the first by plugin name keeping a key,
   a duplicate reported through `compose`'s `report`; `orderedEntries(table, itemsOf, orderOf?)`: every entry's items in
   table order, or by `orderOf`. Both keep each item's `plugin` (and `type`): a contribution is another plugin's code, so
   a use site catches its throws and rejections, reports the plugin, and goes on.
-- Registries carry natives: an entry lives exactly as long as its contributor. A last good composition kept after a
-  throwing `compose` may still name a contributor that left: use sites look up at each use and keep nothing.
+- Registries carry natives: an entry lives exactly as long as its contributor, and a last good composition no longer
+  than the contributions it was built from; use sites look up at each use and keep nothing.
 
 ## For Chord's layers (`internal.ts`)
 
@@ -75,7 +79,11 @@ host.serve(Server, (_, self) => {
   (`value(version)`); `close()` at the host's close.
 - `RegistryContribution` (`contribution.ts`): one contributor's contribution, a `Dependent` of its source;
   `entry(version, provider)` is its table entry (the same object while its value is), or `undefined` when left out.
-- `RegistryValueSource`: a `FollowedSource` per reader version; `read(waiter)` registers an activation's object
-  (`RegistryWaiter`), woken with `dependencyLive()` (on a microtask) when the value gets its first good value; readers
-  waiting for one count as followers, so a change composes for them. At the host's close it keeps its last start and
-  lets the record (and the host) go.
+- `RegistryValueSource`: a `FollowedSource` per reader version; `read()` registers a reader (an attempt that declared
+  it, until its references are released: an older version's mapping is kept meanwhile); `wait(waiter)` registers a
+  `RegistryWaiter` (a parked attempt, a waiting `host.registry`), told with `dependencyMoved()` (inside the batch: it
+  only records) at every change of whether the value is usable or of its failure while it is not (errors compared by
+  value: a version mismatch is made per read), and with `closed(error)` when the host closes (`released/closed`: the
+  wait ends); waiters count as followers, so a change composes for them. At the host's close it keeps its last start
+  and lets the record (and the host) go. `RegistryRecord.composedFrom` and `inTable` give a mapping the provenance
+  decision 5 checks.
