@@ -50,6 +50,8 @@ for (const pkg of workspacePackages) {
 		for (const [dependencyName, currentSpecifier] of Object.entries(dependencies)) {
 			// Registry aliases such as `npm:@earendil-works/pi-ai@0.1.2` are never workspace-linked,
 			// so lockstep bumping them would point at a version that is not published yet.
+			// Local fixture dependencies must stay local instead of becoming registry dependencies.
+			if (typeof currentSpecifier === "string" && currentSpecifier.startsWith("file:")) continue;
 			const newSpecifier = versionMap.get(dependencyName);
 			if (!newSpecifier || currentSpecifier === newSpecifier) {
 				continue;
