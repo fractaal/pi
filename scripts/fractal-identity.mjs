@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 
 /** Dependency order: each package is published before anything that depends on it. */
 export const PUBLISHABLE_PACKAGES = [
+	{ directory: "packages/schema", upstreamName: "@earendil-works/pi-schema", name: "@fractaal/pi-schema" },
 	{ directory: "packages/telemetry", upstreamName: "@earendil-works/pi-telemetry", name: "@fractaal/pi-telemetry" },
 	{ directory: "packages/codemode", upstreamName: "@earendil-works/pi-codemode", name: "@fractaal/pi-codemode" },
 	{ directory: "packages/mcp", upstreamName: "@earendil-works/pi-mcp", name: "@fractaal/pi-mcp" },
