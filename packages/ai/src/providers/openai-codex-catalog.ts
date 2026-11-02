@@ -1,8 +1,8 @@
-import { type Static, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { arr, bool, compile, int, map, nul, num, oneOf, opt, type Static, str, union } from "@earendil-works/pi-schema";
 import type { RefreshModelsContext } from "../models.ts";
 import type { Model, ModelThinkingLevel } from "../types.ts";
 import modelDataManifest from "./data/.manifest.json" with { type: "json" };
+import { openObject as object } from "./schema-builders.ts";
 
 const PROVIDER = "openai-codex";
 const BASE_URL = "https://chatgpt.com/backend-api";
@@ -10,58 +10,58 @@ const REFRESH_INTERVAL_MS = 4 * 60 * 60_000;
 const THINKING_LEVELS: ModelThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const WIRE_EFFORTS = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const CATALOG_SOURCE = `${BASE_URL}/codex/models`;
-const validateTokenClaims = Compile(
-	Type.Object({
-		"https://api.openai.com/auth": Type.Object({ chatgpt_account_id: Type.String({ minLength: 1 }) }),
+const validateTokenClaims = compile(
+	object({
+		"https://api.openai.com/auth": object({ chatgpt_account_id: str({ minLength: 1 }) }),
 	}),
-);
-const catalogVersionSchema = Type.Object({ version: Type.String({ pattern: "^\\d+\\.\\d+\\.\\d+$" }) });
-const validateVersion = Compile(catalogVersionSchema);
-const nativeCatalogSchema = Type.Object({
-	models: Type.Array(
-		Type.Object({
-			slug: Type.String({ minLength: 1, maxLength: 256 }),
-			display_name: Type.String({ minLength: 1, maxLength: 256 }),
-			visibility: Type.String(),
-			context_window: Type.Optional(Type.Union([Type.Integer({ minimum: 1 }), Type.Null()])),
-			max_context_window: Type.Optional(Type.Union([Type.Integer({ minimum: 1 }), Type.Null()])),
-			supported_reasoning_levels: Type.Array(Type.Object({ effort: Type.String() })),
-			input_modalities: Type.Optional(Type.Array(Type.String())),
+).check;
+const catalogVersionSchema = object({ version: str({ pattern: "^\\d+\\.\\d+\\.\\d+$" }) });
+const validateVersion = compile(catalogVersionSchema).check;
+const nativeCatalogSchema = object({
+	models: arr(
+		object({
+			slug: str({ minLength: 1, maxLength: 256 }),
+			display_name: str({ minLength: 1, maxLength: 256 }),
+			visibility: str(),
+			context_window: opt(union([int({ minimum: 1 }), nul()])),
+			max_context_window: opt(union([int({ minimum: 1 }), nul()])),
+			supported_reasoning_levels: arr(object({ effort: str() })),
+			input_modalities: opt(arr(str())),
 		}),
 	),
 });
-const validateNativeCatalog = Compile(nativeCatalogSchema);
+const validateNativeCatalog = compile(nativeCatalogSchema).check;
 const costRates = {
-	input: Type.Number({ minimum: 0 }),
-	output: Type.Number({ minimum: 0 }),
-	cacheRead: Type.Number({ minimum: 0 }),
-	cacheWrite: Type.Number({ minimum: 0 }),
+	input: num({ minimum: 0 }),
+	output: num({ minimum: 0 }),
+	cacheRead: num({ minimum: 0 }),
+	cacheWrite: num({ minimum: 0 }),
 };
-const metadataSchema = Type.Object({
-	id: Type.String({ minLength: 1, maxLength: 256 }),
-	name: Type.String({ minLength: 1 }),
-	reasoning: Type.Boolean(),
-	input: Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")])),
-	contextWindow: Type.Integer({ minimum: 1 }),
-	maxTokens: Type.Integer({ minimum: 1 }),
-	maxContextWindow: Type.Optional(Type.Integer({ minimum: 1 })),
-	cost: Type.Object({
+const metadataSchema = object({
+	id: str({ minLength: 1, maxLength: 256 }),
+	name: str({ minLength: 1 }),
+	reasoning: bool(),
+	input: arr(oneOf(["text", "image"])),
+	contextWindow: int({ minimum: 1 }),
+	maxTokens: int({ minimum: 1 }),
+	maxContextWindow: opt(int({ minimum: 1 })),
+	cost: object({
 		...costRates,
-		tiers: Type.Optional(Type.Array(Type.Object({ inputTokensAbove: Type.Number({ minimum: 0 }), ...costRates }))),
+		tiers: opt(arr(object({ inputTokensAbove: num({ minimum: 0 }), ...costRates }))),
 	}),
-	thinkingLevelMap: Type.Optional(Type.Record(Type.String(), Type.Union([Type.String(), Type.Null()]))),
-	compat: Type.Optional(
-		Type.Object({
-			supportsDeveloperRole: Type.Optional(Type.Boolean()),
-			supportsLongCacheRetention: Type.Optional(Type.Boolean()),
-			supportsStrictMode: Type.Optional(Type.Boolean()),
-			supportsOpenAIGrammarTools: Type.Optional(Type.Boolean()),
-			supportsToolSearch: Type.Optional(Type.Boolean()),
-			supportsExplicitPromptCacheMode: Type.Optional(Type.Boolean()),
+	thinkingLevelMap: opt(map(union([str(), nul()]))),
+	compat: opt(
+		object({
+			supportsDeveloperRole: opt(bool()),
+			supportsLongCacheRetention: opt(bool()),
+			supportsStrictMode: opt(bool()),
+			supportsOpenAIGrammarTools: opt(bool()),
+			supportsToolSearch: opt(bool()),
+			supportsExplicitPromptCacheMode: opt(bool()),
 		}),
 	),
 });
-const validateMetadata = Compile(metadataSchema);
+const validateMetadata = compile(metadataSchema).check;
 type NativeModel = Static<typeof nativeCatalogSchema>["models"][number];
 type CodexModel = Model<"openai-codex-responses">;
 
@@ -81,7 +81,7 @@ function parseMetadata(value: unknown): CodexModel[] {
 			? Object.values(value)
 			: [];
 	return rows.flatMap((row) => {
-		if (!validateMetadata.Check(row)) return [];
+		if (!validateMetadata(row)) return [];
 		// Catalogs describe model data, never where OAuth credentials are sent.
 		const { id, name, reasoning, input, contextWindow, maxTokens, maxContextWindow, cost, compat } = row;
 		let thinkingLevelMap: CodexModel["thinkingLevelMap"];
@@ -184,7 +184,7 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 					if (!versionResponse.ok)
 						throw new Error(`Codex catalog version lookup failed (${versionResponse.status}).`);
 					const version: unknown = await versionResponse.json();
-					if (!validateVersion.Check(version)) throw new Error("Codex catalog version metadata is invalid.");
+					if (!validateVersion(version)) throw new Error("Codex catalog version metadata is invalid.");
 					const headers = new Headers({ accept: "application/json", originator: "pi" });
 					if (options.catalogAuthMode !== "transport") {
 						const credential = context.credential;
@@ -194,7 +194,7 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 						if (typeof accountId !== "string" || !accountId) {
 							try {
 								const payload: unknown = JSON.parse(atob(credential.access.split(".")[1] ?? ""));
-								if (!validateTokenClaims.Check(payload)) throw new Error("Missing account ID");
+								if (!validateTokenClaims(payload)) throw new Error("Missing account ID");
 								accountId = payload["https://api.openai.com/auth"].chatgpt_account_id;
 							} catch {
 								throw new Error("Codex catalog credential has no account ID.");
@@ -211,7 +211,7 @@ export function createOpenAICodexCatalog(baseline: readonly CodexModel[], option
 					);
 					if (!response.ok) throw new Error(`Codex model discovery failed (${response.status}).`);
 					const catalog: unknown = await response.json();
-					if (!validateNativeCatalog.Check(catalog))
+					if (!validateNativeCatalog(catalog))
 						throw new Error("Codex model discovery returned an invalid catalog.");
 					let metadata: CodexModel[] = [];
 					let metadataError: Error | undefined;
