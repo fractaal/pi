@@ -54,10 +54,16 @@ test("pins published and private dependencies without touching registry aliases,
 				"@earendil-works/pi-coding-agent": "^1.0.0",
 				"@mariozechner/pi-ai": "npm:@earendil-works/pi-ai@1.0.0",
 				"example-greeting": "file:../fixtures/example-greeting",
+				"example-words": "git+file:///fixtures/example-words.git#<commit>",
 			},
 		});
 		await writeManifest(root, "packages/fixtures/example-greeting", {
 			name: "example-greeting",
+			version: "1.0.0",
+			private: true,
+		});
+		await writeManifest(root, "packages/fixtures/example-words", {
+			name: "example-words",
 			version: "1.0.0",
 			private: true,
 		});
@@ -81,6 +87,7 @@ test("pins published and private dependencies without touching registry aliases,
 		assert.equal(evalsManifest.dependencies["@earendil-works/pi-coding-agent"], "2.0.0");
 		assert.equal(evalsManifest.dependencies["@mariozechner/pi-ai"], "npm:@earendil-works/pi-ai@1.0.0");
 		assert.equal(evalsManifest.dependencies["example-greeting"], "file:../fixtures/example-greeting");
+		assert.equal(evalsManifest.dependencies["example-words"], "git+file:///fixtures/example-words.git#<commit>");
 		const generatedManifest = await readManifest(root, "packages/coding-agent/install-lock");
 		assert.equal(generatedManifest.dependencies["@earendil-works/pi-coding-agent"], "^1.0.0");
 
