@@ -114,8 +114,9 @@ table{max-width:100%}
   <p class="subtitle">Build a small notes app step by step, from one host to plugins on a server and on workers, edited while it runs</p>
   <div class="cover-stats"><div class="stat"><b>3</b><span>kinds of host in an app: server, worker, client</span></div><div class="stat"><b>1</b><span>file per host kind in a plugin</span></div><div class="stat"><b>0</b><span>restarts to apply a plugin edit</span></div><div class="stat"><b>1</b><span>rule: plugins talk only through object types and registries</span></div></div>
   <div class="cover-note"><p>A tutorial for people building apps on Chord v2, written by the redesign session from <code>design.md</code>, <code>slice-7c.md</code>,
-<code>slice-10.md</code>, <code>slice-12.md</code>, <code>slice-13.md</code>, the decision log and the code in <code>packages/chord/src</code>. API names are the current ones. The early chapters wire hosts by hand to show the parts; the last
-chapter shows the app kit (<code>chord/app</code>), which does that wiring for an app.</p>
+<code>slice-10.md</code>, <code>slice-12.md</code>, <code>slice-13.md</code>, the decision log and the code in <code>packages/chord/src</code>. API names
+are the current ones. The early chapters wire hosts by hand to show the parts; the last chapter shows the app kit
+(<code>chord/app</code>), which does that wiring for an app.</p>
 </div>
 </section><div class="inner">
 <nav class="toc"><h2>Contents</h2><ol>
@@ -168,7 +169,7 @@ addressable hosts; an <strong>address</strong> (<code>Session({ id: &quot;p1&quo
 on its own host only) or <code>remote</code> (used from any host). An <strong>object</strong> is one instance of a type, per params. A
 <strong>facet</strong> is a plugin&#39;s declarations for one host kind. A <strong>plugin</strong> is a directory with a <code>package.json</code>. A
 <strong>reference</strong> is what you get when you ask for an object (<code>host.get</code>, <code>self.get</code>, <code>ctx.get</code>). A <strong>document</strong> is data an object
-stores, changed in <strong>transactions</strong>; a <strong>table</strong> holds many records with queries, in the host&#39;s <strong>store</strong>; a <strong>derive</strong> is a value computed from others; a <strong>native</strong> is an outside
+stores, changed in <strong>transactions</strong>; a <strong>table</strong> holds many records with queries, in the host&#39;s <strong>store</strong>, and a <strong>live query</strong> keeps some of its rows current; a <strong>derive</strong> is a value computed from others; a <strong>native</strong> is an outside
 resource an object opens and closes. A <strong>registry</strong> is an
 extension point: one plugin defines it, others contribute. A <strong>rollout</strong> applies a build to the hosts in order.</p>
 </section>
@@ -217,6 +218,12 @@ The <strong>facet</strong> says this host serves
 <code>load</code> publishes the facet. <code>get</code> returns a <strong>reference</strong> once the object is live; its members are the contract&#39;s.</p>
 <p>The factory only declares: it is synchronous and opens nothing. Chord activates the object (loads its documents, opens
 what it asked to open) and then serves calls. That is why the same factory can run again when the code changes.</p>
+<p><strong><code>load</code> comes first.</strong> A <code>get</code>, <code>hold</code> or <code>registry</code> on a host whose <code>load</code> was not called throws <code>not_ready</code> at once
+(&quot;call <code>host.load</code> first&quot;): it would wait for types nobody published. A client with nothing to load calls
+<code>load([])</code>. Mistakes that would otherwise look like slowness are reported through <code>onError</code> instead: a request
+waiting for a type or registry nobody serves (<code>unbound_long</code>, after 5 s; it keeps waiting until its <code>readyTimeout</code>),
+a registry with contributions and no provider (<code>registry_undeclared</code>, when <code>load</code> publishes), and a plugin name that is
+no npm name makes <code>load</code> throw.</p>
 </section>
 
 <section class="chapter" id="parts"><header class="opener"><div class="numeral">II</div><h2>An Object&#39;s Parts</h2><p class="lede">Documents, tables, transactions, computed values, watching, and outside resources: the vocabulary of every factory.</p></header>
@@ -251,6 +258,15 @@ host.<span class="tk-f">serve</span>(<span class="tk-t">NoteStore</span>, (_para
 <p>Persisted data lives only in <code>local</code> objects with empty params (one per host and type), so its address never depends
 on who asked or with which params; an object with params (a view per project) reads from such a store. Writes go
 through the same transactions as documents: a note row and a document can change in one commit.</p>
+<p>A table has no watch of its own. To show rows live (the newest notes in a tab), the object declares a <strong>live query</strong>
+over its own table, with a limit:</p>
+<pre><code><span class="tk-k">const</span> newest = self.<span class="tk-f">query</span>(rows, recent, <span class="tk-n">50</span>);             <span class="tk-c">// the 50 newest rows, a value like a document's</span>
+<span class="tk-k">return</span> { newest, add, page };                            <span class="tk-c">// a member: tabs watch it and get only the changes</span></code></pre>
+<p>Chord runs the query before the object goes live, and again in every commit of the object that writes <code>rows</code>, and
+sends what changed. Only the object&#39;s own tables: it is their only writer, so its commits are exactly when the rows
+can change, and a commit that writes no such table costs nothing. Each writing commit runs the query once more, at
+most the limit&#39;s rows: right for data people edit, wrong for a table written hundreds of times a second (there may be
+dragons; keep what the tab shows in a document the object writes with each change instead). The limit is required.</p>
 <p>A <strong>derive</strong> is a value computed from other values, recomputed whenever they change. It is how an object offers
 something it does not store:</p>
 <pre><code><span class="tk-k">const</span> count = self.<span class="tk-f">derive</span>([doc], ([notes]) =&gt; notes.items.length);   <span class="tk-c">// 0, 1, 2, … as notes are added</span>
@@ -270,7 +286,17 @@ self.<span class="tk-f">onLive</span>(<span class="tk-k">async</span> (ctx) =&gt
 	<span class="tk-k">for</span> <span class="tk-k">await</span> (<span class="tk-k">const</span> file <span class="tk-k">of</span> inbox.value.<span class="tk-f">files</span>(ctx.abortSignal)) <span class="tk-k">await</span> <span class="tk-f">importNote</span>(file, ctx);
 });</code></pre>
 <p>Natives are why some objects restart when their plugin changes: an open connection cannot be moved to new code, so
-Chord closes it and opens it again. Objects without natives are swapped in place.</p>
+Chord closes it and opens it again. Objects without natives are swapped in place. A first read of a table is no
+native: declare it as a live query, not with <code>self.open</code>, or the object restarts at every change of its plugin.</p>
+<p><strong>Await what you start in a root or a handler.</strong> What is started with a context ends with it. Code outside objects
+gets its <code>ctx</code> from <code>host.root(fn, ctx)</code>, and that scope seals when <code>fn</code> returns; a handler&#39;s context ends when its
+caller cancels or its object ends. A change still waiting when its context ends is cancelled before it commits:</p>
+<pre><code><span class="tk-k">await</span> server.<span class="tk-f">root</span>(<span class="tk-k">async</span> (ctx) =&gt; {
+	<span class="tk-k">void</span> notes.<span class="tk-f">add</span>({ text: <span class="tk-s">"lost"</span> }, ctx).<span class="tk-k">catch</span>(() =&gt; {});   <span class="tk-c">// fn returns, the scope seals: the call's change is cancelled</span>
+}, ctx);
+<span class="tk-k">await</span> server.<span class="tk-f">root</span>(<span class="tk-k">async</span> (ctx) =&gt; notes.<span class="tk-f">add</span>({ text: <span class="tk-s">"kept"</span> }, ctx), ctx);   <span class="tk-c">// awaited: it commits</span></code></pre>
+<p>The cancelled change rejects, and since an empty <code>catch</code> would hide that it never happened, Chord also reports it
+through <code>onError</code> as <code>transaction_cancelled</code>, naming the object and, in its error, the scope that ended.</p>
 </section>
 
 <section class="chapter" id="hosts"><header class="opener"><div class="numeral">III</div><h2>Several Hosts</h2><p class="lede">A server, a worker per project, browser tabs: how they find each other&#39;s objects.</p></header>
@@ -306,6 +332,34 @@ worker.<span class="tk-f">connect</span>(parentLink, { principal: { kind: <span 
 tab.<span class="tk-f">connect</span>(<span class="tk-f">webSocketLink</span>(<span class="tk-k">new</span> <span class="tk-t">WebSocket</span>(<span class="tk-s">"/chord"</span>)), { principal: { kind: <span class="tk-s">"server"</span> } }, ctx);</code></pre>
 <p><code>P</code> is your app&#39;s type of <strong>principal</strong>, who is calling: an owner, a guest, the server, a worker. Links stamp it;
 a <code>remote</code> object is made per principal, so a guest can get a read-only variant of the same notes.</p>
+<h3 id="who-a-reference-acts-as">Who a reference acts as</h3>
+<p>A reference acts as whoever made it. <code>host.get</code> and <code>self.get</code> in a <code>local</code> object act as the host; <code>self.get</code> in a
+<code>remote</code> object acts as that object&#39;s principal; <strong><code>ctx.get</code> in a method acts as the method&#39;s caller</strong>. That is what
+lets a guest&#39;s call reach a worker as the guest and get the guest&#39;s variant, never more than the guest may see.</p>
+<p>It surprises one case: a server object that should act as itself towards a worker. The owner calls
+<code>Search.rebuildIndex</code>, which asks each project&#39;s worker to scan its files:</p>
+<pre><code><span class="tk-c">// server.ts: wrong, the worker sees the owner</span>
+rebuildIndex: <span class="tk-k">async</span> ({ project }, ctx) =&gt; {
+	<span class="tk-k">const</span> scan = <span class="tk-k">await</span> ctx.<span class="tk-f">get</span>(<span class="tk-t">IndexScan</span>, { project });   <span class="tk-c">// acts as ctx.principal: the owner, the method's caller</span>
+	<span class="tk-k">return</span> scan.<span class="tk-f">run</span>(ctx);
+},
+
+<span class="tk-c">// worker.ts: the factory serves only the server</span>
+host.<span class="tk-f">serve</span>(<span class="tk-t">IndexScan</span>, (params, principal, self) =&gt; {
+	<span class="tk-k">if</span> (principal.kind !== <span class="tk-s">"server"</span>) <span class="tk-k">throw</span> <span class="tk-k">new</span> <span class="tk-t">Error</span>(<span class="tk-s">"IndexScan serves the server only"</span>);   <span class="tk-c">// refuses the owner</span>
+	…
+});</code></pre>
+<p>The worker&#39;s factory gets <code>{ kind: &quot;owner&quot; }</code> and refuses. To act as the server, take the reference where the server
+is the maker: <code>self.get(IndexScan, { project })</code> in a <code>local</code> server object of its own (a dependency of that object,
+which acts as the host), or, in base code that has the host, a root of the server&#39;s host:</p>
+<pre><code><span class="tk-c">// base code: a root acts as the host (the server), not as the method's caller</span>
+rebuildIndex: <span class="tk-k">async</span> ({ project }, ctx) =&gt;
+	server.<span class="tk-f">root</span>(<span class="tk-k">async</span> (own) =&gt; (<span class="tk-k">await</span> own.<span class="tk-f">get</span>(<span class="tk-t">IndexScan</span>, { project })).<span class="tk-f">run</span>(own), ctx),</code></pre>
+<h3 id="calls-in-progress">Calls in progress</h3>
+<p>There is no limit on calls in progress per link. A tab sending 200 calls at once over its socket gets all 200 run:
+at most N (256 by default, announced in the handshake) are in flight per origin, the rest wait in order in the link&#39;s
+call queue, none is refused for being too many. The bounds are that call window and the part limits on what arrives
+(sizes, not counts). An object that must limit work per caller does so in its methods, or runs the work as a job.</p>
 <div class="note"><b class="tag">The app kit does this wiring</b><p>Starting workers, routing a host kind to them, the WebSocket entry and authentication are slice 10&#39;s components
 (<code>createWorkers</code>, <code>chord.http</code>). An app built with the app kit (<code>chord/app</code>, the last chapter) does not wire them:
 <code>startServer(...)</code> on the server and <code>startWorker(...)</code> in a worker&#39;s entry do.</p>
@@ -343,6 +397,17 @@ gets the current value in one frame. The UI shows a banner from <code>ref.state<
 <code>tui</code> facets, rendering with whatever terminal library the app chose. <strong>What a client never does</strong>: serve a <code>remote</code>
 type, be routed to, or keep data others rely on. Data that must outlive a tab belongs in an object on the server or a
 worker.</p>
+<p><strong>Text in the viewer&#39;s language</strong> is a client&#39;s job too, because two people looking at the same object may read
+different languages. A plugin writes its texts once, in a shared <code>messages.ts</code>; a client renders them in its host&#39;s
+language (the user&#39;s pick, else the device&#39;s), and objects store messages as data, never sentences (design §23,
+&quot;Messages and languages&quot;):</p>
+<pre><code><span class="tk-c">// plugins/notes/messages.ts: the first catalog types the others</span>
+<span class="tk-k">export</span> <span class="tk-k">const</span> messages = <span class="tk-f">defineMessages</span>(<span class="tk-s">"notes"</span>, { en: { empty: <span class="tk-s">"No notes yet"</span> }, de: { empty: <span class="tk-s">"Noch keine Notizen"</span> } });
+<span class="tk-c">// plugins/notes/web.tsx: the facet contributes its catalogs; a component renders in the page's language</span>
+self.<span class="tk-f">contribute</span>(<span class="tk-t">Translations</span>, messages.translations);
+<span class="tk-k">const</span> { t } = <span class="tk-f">useMessages</span>(messages);                       <span class="tk-c">// re-renders when the user picks another language</span>
+<span class="tk-c">// plugins/notes/worker.ts: a notice as data; every client renders it with t.render(notice)</span>
+draft.notice = messages.<span class="tk-f">message</span>(<span class="tk-s">"empty"</span>);</code></pre>
 </section>
 
 <section class="chapter" id="plugins"><header class="opener"><div class="numeral">V</div><h2>Plugins</h2><p class="lede">Move the code into a directory that can be added, edited and removed while the app runs.</p></header>
@@ -539,6 +604,11 @@ then gives every object of the changed plugin its fate:</p>
 <p>The tab&#39;s reference follows the new object and gets one frame with the difference. Nothing reconnects. If the edit
 is broken (a syntax error, a factory that throws), that plugin keeps its old code on that host and the report says why;
 every other plugin of the rollout applies.</p>
+<p>A tab applies a new web script the same way, without reloading the page, and the UI keeps what lives outside the
+changed plugin. The changed plugin&#39;s own components are new functions, so React mounts them anew and their <code>useState</code>
+starts over. What must survive the update (a half-typed note, a scroll position) goes into <strong>page state</strong>, kept by the
+tab&#39;s host under a key: <code>usePageState(key, initial)</code> from <code>chord/react</code> instead of <code>useState</code>, and
+<code>scope.pageState(key, initial)</code> on a terminal&#39;s <code>TuiScope</code> (design §21, &quot;UI on client hosts&quot;).</p>
 <div class="note"><b class="tag">Versions</b><p>A change to a contract (a new field in <code>Notes</code>&#39;s state) gets a new <code>version</code>. A tab built with the old contract keeps
 working if the provider maps the old version (<code>accepts</code>); otherwise it waits with &quot;version mismatch&quot; until it reloads.</p>
 </div>
@@ -728,7 +798,7 @@ refuses one that already has data (example 55).</p>
 </tbody></table>
 </section>
 
-<p class="colophon">Hosts and Plugins · third edition · 2026-11-02 · Chord v2 slices 1-10, 12 and 13</p>
+<p class="colophon">Hosts and Plugins · third edition · 2026-11-03 · Chord v2 slices 1-10, 12 and 13, messages and languages</p>
 </div></div>
 <script>(function activate(root) {
 	const replay = (f) => {

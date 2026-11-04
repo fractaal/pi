@@ -36,7 +36,7 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 
 ## Chord v2 Code Style
 
-Binding for Chord v2 (`packages/chord/src/`, except Chord v1 in `src/old/`) and its tests, when writing and when reviewing. The model is pi-durable's source.
+Binding for Chord v2 (`packages/chord/src/`) and its tests, when writing and when reviewing. The model is pi-durable's source.
 
 - Files: one concept per file, named after it; no one-helper files, no grab-bag files. First line: a comment saying what the file is for. Order: imports, exported types, then the public entry point first and its helpers below it in the order they are used; constants right above their first user. A blank line between top-level declarations. Split files by concept, never by size: one concept may take a long file (up to about 1,000 lines is fine); a second concept in a file is the reason to split.
 - Functions: every export has a one-line doc comment saying what it does or guarantees. Inline comments explain a non-obvious why (cost, race, decided rule), never what the next line does. Short functions with one job (about 40 lines needs a reason; one `switch` over a tagged union is fine). No boolean flag parameters that switch behaviour: two functions or a tagged value. Never write the same lines twice. Context last: required args, then `context`/`ctx` (always required, as in Durable; optional only on error-reporting paths), then optional args.
@@ -51,8 +51,11 @@ Binding for Chord v2 (`packages/chord/src/`, except Chord v1 in `src/old/`) and 
 ## Commands
 
 - After code changes (not docs): `npm run check` (full output, no tail). Fix all errors, warnings, and infos before marking work ready. WIP commits may record unfinished or failing work, but must say so; a checkpoint is not a claim of verification. This command does not run tests.
+- `apps/p2` is outside the root check and the root tests. After p2 changes also run `cd apps/p2 && npm run check`; p2's suite is `cd apps/p2 && npm test` (TUI tests need Node 26, browser tests need `CHROMIUM_BIN`).
 - Run local builds and tests as needed to verify the task. Run `npm run build` when tests or benchmarks need built `dist/` output; never substitute it for the preferred typecheck and lint command, `npm run check`. The full Chord and Durable suites need built output because some tests start Node processes, bundle with esbuild, or import package subpaths without source exports. Prefer focused checks and use the offline/non-e2e test paths below; authorization for local work is not a reason to run unrelated or live-provider suites.
-- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For the full inherited monorepo suite, run `./test.sh` from the repo root. The fork's release surface (the local release script and the tag publish workflow) uses `npm run test:published`, which covers scripts and the eight packages published under `@fractaal`. Otherwise run specific tests from the package root: `node ../../node_modules/vitest/dist/cli.js --run test/specific.test.ts`.
+- Never run the full vitest suite directly: it includes e2e tests that activate when endpoint/auth env vars are present. For the full inherited monorepo suite, run `./test.sh` from the repo root. The fork's release surface (the local release script and the tag publish workflow) uses `npm run test:published`, which covers scripts and the eight packages published under `@fractaal`. Otherwise run specific tests from the package root:
+  - Vitest: `node "$(git rev-parse --show-toplevel)/node_modules/vitest/dist/cli.js" --run test/specific.test.ts`
+  - `packages/tui` (`node:test`): `node --test test/specific.test.ts`.
 - If you create or modify a test file, run it and iterate on test or implementation until it passes.
 - For `packages/coding-agent/test/suite/`, use `test/suite/harness.ts` + the faux provider. No real provider APIs, keys, or paid tokens.
 - When regressions tests for fixing a github issue, add a comment with the github issue number next to the test.

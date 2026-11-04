@@ -1,7 +1,6 @@
 # Chord v2: target design
 
-The design of Chord v2 (`packages/chord/src`, the package's root export `@earendil-works/chord`; Chord v1 is kept in
-`src/old`) and of how apps (the playground, p3) use it: **the one current statement of every rule** (owner,
+The design of Chord v2 (`packages/chord/src`, the package's root export `@earendil-works/chord`) and of how apps (the playground, p3) use it: **the one current statement of every rule** (owner,
 2026-10-24). Every decision is recorded in the decision log `packages/chord/docs/decisions.md` (the history and the
 reasons, kept complete) and folded into this document in the same commit. Where a rule is built, the slice is named
 (`slices.md`); the code follows this document. It replaces `apps/p2/docs/target-design.md`.
@@ -58,6 +57,7 @@ versions and adapters · 28 building: slices · 29 telemetry · 30 cost model ·
 | reference | what `get` returns; keeps its object alive; live and hydrated when awaited |
 | document | a named JSON value an object owns, written in transactions |
 | derive | a value computed from watchables |
+| live query | a bounded query of an object's own table, kept current by its commits (`self.query`, section 11) |
 | native | an OS-level value opened with `self.open`; only in objects |
 | routine | standing behaviour of an object: `self.on(source, fn)`, `self.onLive(fn)` |
 | job | owned work a call starts that outlives it: intent, run, finish; optional state document per run |
@@ -147,9 +147,12 @@ export const Catalog = remote("catalog", { hostAddress: () => Server(), … });
 
   A `hostAddress` or `authorize` that throws fails the request broken with that error; an address whose params fail
   the kind's check is broken `invalid/host_address`.
-- **The publication gate** (slice 7a): a request made on this host, or a hold arriving on its links, before the
-  host's first publication (`load`'s batch of declarations) is not placed yet: it is `loading`, and the publication
-  places it. The gate lasts only for the synchronous setups, never for activation, so it cannot deadlock.
+- **The publication gate** (slice 7a): a hold arriving on its links before the host's first publication (`load`'s
+  batch of declarations) is not placed yet: it is `loading`, and the publication places it (a worker connects first,
+  W6). The gate lasts only for the synchronous setups, never for activation, so it cannot deadlock. **This host's own
+  requests before `load` is called** (`get`, `hold`, `registry`, a root's `ctx.get`) would wait for a publication
+  nobody started: they throw `not_ready` at once, "call `host.load` first"; a client host with nothing to load calls
+  `load([])` (decision "Mistakes that wait are reported at once" (a), 2026-11-03; footgun 1 of the p2 port).
 - **Then the selected provider is checked** (here: served, the version and fingerprint, the params, the provider's
   own host-address check; over a path: at the provider host). Version checks never look at a same-name registration
   elsewhere. What the check finds:
@@ -170,6 +173,17 @@ export const Catalog = remote("catalog", { hostAddress: () => Server(), … });
   the names it serves, slice 7b) wakes its requests, which run their check again
   (a refused hold sends `loading`, then `bound` or `failed`); no new message kind. Index entries go when their request
   ends (GC-tested). The consumer never re-holds a request by itself: no backoff, no polling.
+- **A request waiting unbound is reported** (decision "Mistakes that wait are reported at once" (c), 2026-11-03): one
+  indexed with a cause after the publication (`not_served`, `version`: a reference made here, a hold refused here for a
+  name) and a registry value waited for while it has none (a parked `self.registry`, a `host.registry`: `not_served`,
+  `version`, `compose`; one wait per value, not per waiter) is reported once through `onError` after 5 s as
+  `unbound_long { waitingFor, error, since }` (`waitingFor` the type's name or `registry <name>`, `error` the cause,
+  `since` `Date.now()` time); it keeps waiting until its `readyTimeout` as before. One clock per host, one timer armed for
+  the earliest wait not reported yet (no timer per request); a wait that binds, ends or is woken leaves it, and one
+  woken and left unbound again starts anew. Reported on the host that decided it: a consumer whose hold a provider
+  host refused sees `failed { waiting }`, the provider host reports. Not `parked_long`, which reports an attempt
+  (an object) parked past its `readyTimeout` whatever its blocker (loading included); a `self.get` waiting unbound
+  gets both, `unbound_long` for the request after 5 s and `parked_long` for its object later.
 
 ### The low-level host API
 
@@ -234,17 +248,17 @@ host). The workers component (§23) does this.
 | Call | Meaning |
 | --- | --- |
 | `createHost<P>({ address?, principal?, ...options })` | with an address: addressable, serves only objects placed there, acts as `principal` on its own host; without: a client. `P` is the app's principal type |
-| `load([{ name, facet }], context)` | facets with their plugin names (the plugin's `package.json` name, npm style; duplicates and invalid names are refused); runs every facet's setup, publishes all of them in one batch (types and registries served, registries composed once, contributions; requests waiting for the publication are placed after it), then waits for the start barrier (section 21: the first outcomes of its host-lifetime objects, slice 7a); a plugin whose setup throws is left out and reported (`load` resolves with `{ failed: [{ plugin, error }] }`, decision "Per plugin at startup and reload"); runs once. Loaders are adapters; base code passes its core facet the same way |
-| `reload([{ name, facet }], context)` | the complete new plugin set after `load` (a facet passed as the same object is an unchanged plugin): staging, then one commit, then every object of a changed or removed plugin takes its fate; resolves with a report (a plugin whose new code fails keeps its old code, listed in `failed`); one at a time (section 21, slice 7b) |
+| `load([{ name, facet }], context)` | facets with their plugin names (the plugin's `package.json` name, npm style: an invalid name is a programming error, `load` throws before it changes anything; a duplicate is refused and listed in `failed`); runs every facet's setup, publishes all of them in one batch (types and registries served, registries composed once, contributions; requests waiting for the publication are placed after it; a registry with contributions and no provider is reported `registry_undeclared`), then waits for the start barrier (section 21: the first outcomes of its host-lifetime objects, slice 7a); a plugin whose setup throws is left out and reported (`load` resolves with `{ failed: [{ plugin, error }] }`, decision "Per plugin at startup and reload"); runs once. Loaders are adapters; base code passes its core facet the same way |
+| `reload([{ name, facet }], context)` | the complete new plugin set after `load` (a facet passed as the same object is an unchanged plugin): staging, then one commit, then every object of a changed or removed plugin takes its fate; resolves with a report (a plugin whose new code fails keeps its old code, listed in `failed`); an invalid plugin name throws before anything changes; one at a time (section 21, slice 7b) |
 | `connect(link, { principal, trusted?, codec? }, context)` | the link to the parent, at most one open; once it closed (a drop), `connect` takes the next, and every remote reference over the parent is held again on it. `principal` = who the parent is |
 | `accept(link, { principal, trusted?, codec? }, context)` | a link from a child; holds and calls on it act as `principal` |
 | `route(Kind, { authorize, resolve }, context)` | how to reach hosts of a kind (below); called before `load`, once per kind; work arriving on its links runs under `context`; returns a `RouteHandle`: `retry(address)` resolves the address again (D10b), `suspend(address)` stops resolving it until `retry` (R1) |
-| `get(Type, params, context, { readyTimeout? })` | a reference once its object is live, waiting through `loading`, `failed { transient }` and `failed { waiting }` up to its `readyTimeout` (section 7) |
-| `hold(Type, params, context, { readyTimeout? })` | a reference at once that follows its object until released (section 7) |
+| `get(Type, params, context, { readyTimeout? })` | a reference once its object is live, waiting through `loading`, `failed { transient }` and `failed { waiting }` up to its `readyTimeout` (section 7); before `load` it rejects `not_ready` at once |
+| `hold(Type, params, context, { readyTimeout? })` | a reference at once that follows its object until released (section 7); before `load` it throws `not_ready` |
 | `close(context)` | closes the links (children, routes, then the parent), then ends every object at once and tears them down, the last to go live first (reason `close`); rejects with an `AggregateError` of the native closes that threw |
 | `revoke(r, context)` | revocation (section 4; slice 4b) |
 | `root(fn, context, { principal? })` | a call scope for code outside objects (a Durable hook, a CLI, an HTTP request): `fn` gets a handler's `ctx`, sealed when `fn` settles, `context` aborts or the host closes (slice 8 D3, section 8); an omitted `principal` acts as the host, an explicit `undefined` runs anonymous (slice 10) |
-| `registry(R, context, { readyTimeout? })` | registry `R`'s composed value for code outside objects once it is usable; waits for the publication, then while it has none up to its `readyTimeout`, then rejects with the last error (slice 8, 7a, section 17) |
+| `registry(R, context, { readyTimeout? })` | registry `R`'s composed value for code outside objects once it is usable; while it has none it waits up to its `readyTimeout`, then rejects with the last error (slice 8, 7a, section 17); before `load` it rejects `not_ready` at once |
 
 **Options of `createHost`:** `address`, `principal`, `principalKey` (section 4; the same function on every host),
 `telemetry` (section 29), `onError`, `closeTimeout`, `readyTimeout`, `heartbeat: { ping?, close? }`; later `revokedBy`
@@ -253,7 +267,7 @@ and closed by the app with `store.close(ctx)` after `host.close`; the host never
 background, as a tagged `HostError`: `listener_error` (a watch listener threw), `delivery_failed` (a frame delivery
 threw), `activation_failed { object, failure }`, `close_failed { object, native, error }`, `close_timeout { object,
 native }`, `drain_timeout { object }`, `protocol_error { error }`, `resolve_failed { address, error }`; later routine
-errors (slice 5), `derive_failed { object, member?, error }` (a derive's compute threw, once per failure episode, slice 6a), the registries' `registry_conflict { registry, message, plugins }`, `registry_failed { registry, error }`, `contribution_failed { registry, plugin, type?, error }` and `contribution_refused { registry, plugin, type?, version }` (each once per episode, slice 8), `object_failed { object, failure }` (a live object failing, slice 6a, `broken`; `transient` when a `self.follow` source failed, slice 6b R4; `failure` where the value is a `FailureCause`, `error` otherwise, 2026-10-27), `job_interrupted { object, job, id, restarts }` (a persisted run ended at the restart limit, slice 6b D6), `parked_long { object, waitingFor, state, since }` (an attempt parked longer than its `readyTimeout`, whatever its blocker, once per parking episode: a diagnostic of a ring across hosts started at the same moment or a long wait, slice 7a, audit A11, §6) and `storage_failed { error }`
+errors (slice 5), `derive_failed { object, member?, error }` (a derive's compute threw, once per failure episode, slice 6a), the registries' `registry_conflict { registry, message, plugins }`, `registry_failed { registry, error }`, `contribution_failed { registry, plugin, type?, error }` and `contribution_refused { registry, plugin, type?, version }` (each once per episode, slice 8), `object_failed { object, failure }` (a live object failing, slice 6a, `broken`; `transient` when a `self.follow` source failed, slice 6b R4; `failure` where the value is a `FailureCause`, `error` otherwise, 2026-10-27), `job_interrupted { object, job, id, restarts }` (a persisted run ended at the restart limit, slice 6b D6), `parked_long { object, waitingFor, state, since }` (an attempt parked longer than its `readyTimeout`, whatever its blocker, once per parking episode: a diagnostic of a ring across hosts started at the same moment or a long wait, slice 7a, audit A11, §6), the reports of mistakes that would otherwise look like slowness (decision "Mistakes that wait are reported at once", 2026-11-03): `registry_undeclared { registry, plugins }` (at a publication, or when a host-lifetime object's contributions enter, a registry with contributions and no provider here, naming its contributing plugins; again only once they change), `unbound_long { waitingFor, error, since }` (a request waiting unbound after the publication, below) and `transaction_cancelled { object, error }` (§8), and `storage_failed { error }`
 (slice 6a), which every app must handle: Chord never ends the process,
 the app exits with its own code for its supervisor or reopens.
 
@@ -351,7 +365,10 @@ host.route(Session, {
   behind the window. A link silent for 30 s, the handshake included, is closed (its references go `loading`). Both
   numbers are host options (`heartbeat`). The heartbeat detects a silent transport (TCP does not notice a sleeping
   laptop), not a peer that answers pings but withholds acks (bounded by the window and the pending cap instead). A
-  handler that blocks the event loop longer than 30 s gets its links closed (documented).
+  handler that blocks the event loop longer than 30 s gets its links closed (documented). Time this process did not
+  run (a tick at least one interval late: a sleep, a blocked event loop) is no silence: each link's silence stays
+  what it was before, at least `ping`, so an open link pings at once (decision "A pause of the process is no
+  silence").
 - **Flow control: an ack-clocked window per origin** (owner, 2026-10-23; per origin 2026-10-24). Per (link, origin), at
   most **K = 2** of the provider's own `bound` and `state` messages are unacknowledged; only these two kinds count
   (everything else is control, never queued behind them). The consumer sends `ack` (with the message's origin) after
@@ -375,8 +392,10 @@ host.route(Session, {
   `abort` (when sent, at the caller; when received, at the provider), its hold's `release`, `gone`, its origin's
   `closed` or the link closing. A call still queued when its hold rebinds (`loading`) is rejected `unavailable` (it may
   name a method of the old variant). A provider seeing more than N running calls of one origin closes the link
-  (protocol error); a call naming a hold it does not know is ignored before it is counted (Q1). A per-link N, if ever
-  needed, must bound a relay's forwarding too.
+  (protocol error); a call naming a hold it does not know is ignored before it is counted (Q1). **There is no limit on
+  calls in progress per link** (owner, 2026-11-03; Chord v1's `maxCalls` had no counterpart): the call window N per origin
+  and the part limits (section 22) are the bounds; 200 concurrent calls over one socket all run, N at a time in
+  flight. A per-link N, if ever needed, must bound a relay's forwarding too.
 - Holds are not limited by count (authorization and params checks protect them); size limits are a separate check
   (section 22). Byte-heavy traffic (terminals) uses separate channels (section 23), so a large state message never
   holds up keystrokes.
@@ -477,7 +496,11 @@ drops, folds or resets.
   | a relayed hold | the arriving hold's principal | the arriving hold's incarnation |
 
   So a guest's call on the server whose handler `ctx.get`s a worker type reaches the worker as the guest and gets the
-  guest's variant; two references with different principals are two remote objects.
+  guest's variant; two references with different principals are two remote objects. A server object that acts as
+  itself towards a worker takes the reference with `self.get` in its own object or in a server root (`host.root`,
+  acting as the host), never with the method's `ctx.get` (owner, 2026-11-03; p2's footgun 7): the owner calls
+  `Search.rebuildIndex`, whose `ctx.get(IndexScan, { session })` reaches the worker as the owner, and a worker
+  factory checking `principal.kind === "server"` refuses it.
 - **Upward is a boundary:** a worker's hold of a server type goes over its parent link, and the server ignores
   principal fields from a child, so it acts as the worker, whoever the worker's handler serves. A worker that acts for
   a user towards the server passes the user as data and the server object decides.
@@ -794,9 +817,8 @@ location are dropped.
   cause; only `failed { broken }` rejects at once (owner, 2026-10-29, decision "Getters wait through `waiting`"). A
   getter that gives up releases its reference. **`host.hold`** returns a reference at once that follows its object
   until released (loading, live, failed and retried as its object is, loading again while its link is down) and never
-  rejects; only invalid params throw (checked at once, also before `load`: design audit 7, 2026-10-27). A type not
-  served where it goes is `loading` before the host's publication and `failed { waiting }` after it, before and after
-  `load` alike (§3; slice 7a). Its `variant` is `undefined` until its first binding (slice 3b). A UI holds and shows
+  rejects; only invalid params throw (checked at once: design audit 7, 2026-10-27), and a use before `load` (`not_ready`,
+  §3). A type not served where it goes is `failed { waiting }` (§3; slice 7a), reported `unbound_long` after 5 s. Its `variant` is `undefined` until its first binding (slice 3b). A UI holds and shows
   `ref.state`; code that needs the object now gets it, with the patience it passes. There is no `state: false` option
   (C8) and no `optional` flag.
 - **Narrowing by variant:** `ref.variant` is the discriminant (C15: no `inVariant`/`expectVariant`); `RefIn<C, V>`
@@ -894,6 +916,17 @@ local object's handler the host's principal, none on a client), `incarnation` (t
 span (slice 9, cut C11 to decide); in a job's `run` also `jobId` and `state` (slice 5). Pass `ctx` to everything you wait
 on. Code outside objects gets a `ctx` from `host.root` (slice 8). Durable's `Context` is the same module
 (`../context`); bridging is explicit. No code versions, no request ids.
+
+**Await what you start in a root or a handler** (decision "Mistakes that wait are reported at once" (e), owner,
+2026-11-03; footgun 10 of the p2 port). What is started with a context ends with it: a root's scope seals when `fn`
+settles, a handler's context aborts when its caller cancels or its object ends, an attempt's at its seal. A document
+change or transaction (`handle.change`, `retire`, `self.tx`, `job.start`) that did not commit because its context
+ended first (it waited on its object's line, or `fn` returned before it committed) rejects with that context's abort
+reason, and is also reported through `onError` as `transaction_cancelled { object, error }` (`error` the abort
+reason, naming the scope that ended): an empty `catch` cannot hide a change that never happened.
+`host.root(async (ctx) => { void handle.change(fn, ctx).catch(() => {}); }, context)` loses the change and reports it;
+`await handle.change(fn, ctx)` inside `fn` commits it. Only the cancelled path pays (the check runs where the
+transaction failed); Chord's own transactions run under contexts that never abort.
 
 **Contexts are required** (owner, 2026-10-22): every function that takes a context requires it, as the parameter after
 the required ones (context last); optional only on error-reporting paths. A getter that cannot take one (a lazy derive
@@ -1163,6 +1196,13 @@ host.serve(DraftStore, (_, self) => {               // local, empty params: may 
   }, ctx);
   await edits.get({ id }, ctx);                                    // outside: committed state, ctx last
   ```
+- **Live queries in the commit step (owner, 2026-11-03; section 11):** a transaction that writes a table with live
+  queries (`self.query`) stages one more step write after its own writes: it reads each such query on the step's
+  backend transaction (so it sees the commit's rows, one `SELECT` counted in `chord.store.statements` and
+  `chord.query.runs`), writes nothing and records nothing in the outbox; the rows are adopted with the documents in the
+  commit's batch. A refused step adopts nothing. At activation the queries run right after the tables are prepared,
+  before the references are bound. A transaction writing no table with a live query stages nothing (one map lookup per
+  written table).
 - **The outbox (owner, 2026-10-26):** optional, `openStore(backend, ctx, { outbox: true })` (an omitted option keeps the
   persisted setting; switching needs an explicit `true` or `false`), persisted in the store's
   metadata (turning it on starts sync from an archive at the current `lastSeq`); a table in the store's backend,
@@ -1219,10 +1259,27 @@ host.serve(DraftStore, (_, self) => {               // local, empty params: may 
 | Durable's views | the conversation view, task graph and Durable documents | `Watchable`s through Durable's watches; feed derives and state members |
 | paged method | large or queryable collections | a method returning pages (chat history) |
 | table | a plugin's own records with queries (owner, 2026-10-21) | `self.table`, the store's query DSL |
+| live query | a bounded window of the object's own table, live (owner, 2026-11-03) | `self.query(table, q, limit)` |
 | plugin database | derived data only: full-text search, caches (rebuilt, never synced) | a native opened by its owner |
 
 App state lives in Chord documents; only transcript-bound data (entries, documents that fork and rewind with a
 conversation) lives in Durable.
+
+**Live queries** (decision "Live queries over an object's own tables", owner, 2026-11-03): `self.query(table, q,
+limit)` in the factory of the table's owner returns a `Watchable` of `q`'s rows (at most `limit`, in its order): a
+state member, a derive source, an `on` source. Chord runs it before the object goes live (with its documents and
+tables, section 10) and again in the commit step of every commit of the object whose staged writes touch that table;
+the rows are adopted in the commit's batch and published as `diffRevisions` ops (W1), unchanged rows kept the same
+objects so the diff compares them by identity. Rules: only the object's own tables (only it writes them, so its
+commits are the exact invalidation: a commit not writing the table runs nothing); the query is fixed for the attempt
+(params decide it); **a limit is required** (`invalid/args` at declaration; the store's query language keeps the limit
+an argument of the runner, as `page` has it). A run that fails (a row the code cannot read) is a failed member, as a
+throwing derive (one failure call, `query_failed` once per episode, `[["r", rows]]` at the next good run); the object
+stays live. It is no native, so an object with live queries swaps on reload (section 21). Cost: one query per
+touching commit, bounded by the limit (100 rows: about 60 µs unwatched, 80 µs watched, `benchmarks.md`); **there may
+be dragons** for tables written hundreds of times a second. Incremental maintenance of the result (row-level changes
+kept in memory, a re-run only when a removal empties the window or a bulk write hides which rows changed) is left for
+when a case needs it.
 
 ### Watchables (owner, 2026-10-21; log "Watchable and one watch API", W1-W4)
 
@@ -1660,8 +1717,9 @@ const router = self.registry(Http);           // a declared dependency; read rou
   never bring their own `compose`). A reload of the defining plugin replaces the declaration atomically (`serve`
   replaces; a removed defining plugin's provider goes, its readers wait `not_served`) and the table
   recomposes. Without a declaration (the defining plugin is not loaded) the registry has no composed value: readers
-  wait `failed { waiting }` (`unavailable/undeclared`), like a request for a type nobody serves; contributions wait in
-  the table.
+  wait `failed { waiting }` (`unavailable/undeclared`), like a request for a type nobody serves, reported
+  `unbound_long` after 5 s (§3); contributions wait in the table, and the registry is reported `registry_undeclared
+  { registry, plugins }` at the publication (decision "Mistakes that wait are reported at once" (b)).
 - **Versions (Q8, the owner-adapter pattern):** a contribution carries the registry version its plugin was built
   against; older ones are adapted with the defining facet's pure `accepts` when the table is built. A contribution
   without a matching version or adapter (older without adapter, or newer) is left out of the table and reported (an
@@ -1823,7 +1881,8 @@ changed (Chord compares no code); one passed as the very same facet object is un
 report once the commit happened and every object took its fate (swaps and retries had their first dependency check;
 it does not wait for objects to go live); a plugin whose new code fails keeps its old code and is listed in the
 report's `failed` (per plugin, below).
-Reloads run one after another per host; before `load` resolved it throws, after `close` it rejects `released/closed`;
+Reloads run one after another per host; before `load` resolved it throws, and so does a plugin set with an invalid
+name (before anything changes); after `close` it rejects `released/closed`;
 `context` bounds it (decision 4: no install watchdog): its abort before the commit rejects `aborted` and changes
 nothing, after the commit it only ends the wait: it rejects `aborted` with `details.committed`, a `CommittedReload`
 `{ added, changed, removed, failed }` naming what the commit applied (the plugins component adopts it, so a later
@@ -1887,7 +1946,7 @@ type ReloadReport = {
   | --- | --- |
   | its type is removed | **ended**: as an end (natives close `end`, callers of running calls rejected `released`, handlers drained, in-memory documents gone, persisted ones kept); its holders' requests are not ended: they wait unbound `not_served` (§7) |
   | failed, parked, activating or waiting for its backoff | **retried** on the new code (`ref.retry()`'s rule, whatever broke it); an activating attempt is sealed and its natives close `reload` |
-  | live, neither its live attempt nor the new factory opens natives, and no table of the new factory is newer than the store's | **swapped** in place (below) |
+  | live, neither its live attempt nor the new factory opens natives, and no table of the new factory is newer than the store's | **swapped** in place (below); live queries are no natives (section 11): an object showing table rows through `self.query` swaps, one reading them in `self.open` restarts |
   | live, otherwise | **restarted**: new calls park (it shows `loading`), its contributions leave, running calls drain (bounded by `closeTimeout`; a call outliving the drain is cut off by the seal fence), the attempt is sealed (in-memory job runs end `aborted { reload }`, persisted ones are stopped and resumed, R3), natives close `reload`, the new attempt activates after that teardown (documents stay; eager table migrations run as at activation) |
   | any of the above whose new code waits for a dependency | **parked** (decision 4): no overlap of old and new code; reported with the cause |
 
@@ -1908,13 +1967,22 @@ type ReloadReport = {
   variant lacks fails `invalid/member`; §7); exposed derives are matched by their member names, internal ones are
   rebuilt; in-memory documents migrate through `migrate` when the new code declares a higher version; the
   contributions are replaced in one batch; `self.writable` starts at its new initial value (decision 2); `retryOn`
-  sources are re-declared. **Routines hand over per object:** the old attempt's routines are aborted; the new ones
+  sources are re-declared; the new attempt's live queries run at its activation (the old attempt's are re-run by the
+  commits of its remaining calls until it is sealed, then dropped). **Routines hand over per object:** the old attempt's routines are aborted; the new ones
   start once the old routine calls finished, bounded by `closeTimeout` (a stuck one is reported `drain_timeout` and
   the whole old attempt is sealed then, audit A12: one seal token per attempt); calls never wait.
 - **Natives are not kept across reloads by name:** natives have no line, transactions or schema, so old and new code
   would interleave unchecked. In practice a restart costs little (the Durable harness is base code, terminal PTYs live
   in their own process, model runtimes, sandboxes and the search index rebuild in milliseconds); reloading the plugin
   that owns SSH connections or the relay socket hurts.
+- **UI on client hosts** (decision "Slice 11, P4", refined by "Tutorial gaps" (1)): a page or terminal applies a new
+  plugin script with `host.reload`, as any host; the UI re-renders from its registries and keeps what lives outside
+  the changed plugin. A component of a reloaded plugin is a new function, so React (or a terminal scope reopened by the
+  app) mounts it anew and its own state (`useState`) starts over. What must survive a plugin update (a half-typed
+  message, a scroll position) is **page state**: values the client host keeps by key (`usePageState(key, initial)` in
+  `chord/react`, `scope.pageState(key, initial)` on a `TuiScope`, one store per host), any same-host value, never on
+  the wire, untouched by reloads and gone with the page (a page reload, a terminal's new base bundle). Rejected: React
+  Fast Refresh (a Babel or SWC transform in every web build, fragile when hooks change).
 - **No factory trial, no migrate dry run, no consumer contract check during staging:** staging records declarations;
   incompatible consumers wait at bind (`failed { waiting }`, `contract_mismatch`). The one exception is the closure
   rule above: when a plugin of the reload failed, a changed plugin's recorded requests are checked as a bind would
@@ -2170,7 +2238,7 @@ await http.close(ctx);                                // before host.close: drai
   (`compose` builds the router) and `Authenticators`, and with `listen` the listener: a host-lifetime object whose
   native is Chord's Node server, opened right after `load`'s publication, so a reload never closes it (decisions "The
   HTTP server is a native object", "Settings are arguments, extensions are registries"). `fetch` resolves the
-  registries once; requests before the publication wait (503 past `readyTimeout`).
+  registries once; requests before the host's `load` answer 503 at once (`host.registry` throws `not_ready` then).
 - **Contributions to `Http`:** `{ routes?, wraps?, sockets?, maxPayload?, hosts?, framers?, relays?, csp? }`, a value
   or a writable (a change recomposes the router). A request uses the router as it was when it started.
 - **The security baseline** (decision "The HTTP component's security baseline", on for every request and upgrade
@@ -2252,15 +2320,17 @@ connect only (Q4). `workers.state` (a JSON watchable per address key), `stop`, `
 `workerMain(fn, { hostPackages, redact, onError })` is the child's side (`fn({ address, start, parent, plugins,
 onClose }, ctx)`, `plugins` a `WorkerPlugins` evaluating the shipped scripts, closers in reverse order). One live
 worker per address (`processLock`: an abstract socket on Linux, a named pipe on Windows, a socket file elsewhere that
-fails closed when stale; a start waits for a draining old holder without polling).
+fails closed when stale, the stale file cleared by the component before a start and after a child's exit by a signal,
+decision "Stale lock files are cleared by the starter"; a start waits for a draining old holder without polling).
 
 - **Keep-alive** (D9, R3, Q5): the child reports when `host.activity`'s references, jobs and lingering objects and the
   app's `busy` counts flip between all zero and not (local calls do not count; the first state with `ready`, which
   also carries the load report); the server stops a worker idle for `idleMs` (5 min).
-- **Never restarted by itself** (R2): a crash, a `fatal`, a link lost while its child lives (killed after a 5 s grace)
-  or a failed start leaves the address failed; its holders see `failed { waiting }` and stay on the path (Q1);
-  `retry(address)` or a rollout reaching workers clears it and starts the held ones (Q2). `stop` suspends the address
-  while it has holders (R1, Q3).
+- **Never restarted by itself** (R2): a crash, a `fatal` or a failed start leaves the address failed; its holders see
+  `failed { waiting }` and stay on the path (Q1); `retry(address)` or a rollout reaching workers clears it and starts
+  the held ones (Q2). `stop` suspends the address while it has holders (R1, Q3). A running worker's lost link (killed
+  after a 5 s grace) is a stop its holders start a new worker after (`worker_link_lost`); a second within a minute of
+  the last recovery fails the address (`worker lost its link`; decision "A lost worker link is recovered from").
 - **Errors in public and private** (decision "worker errors in public"): `state` and holders get a fixed message
   (`worker failed to start`, `worker exited (SIGSEGV)`) or the child's redacted `fatal`; the full error and the stderr
   tail go only to `onError` (`worker_failed`). Every app hook of a start (`start`, `principal`, `lock`, the fork) is
@@ -2276,7 +2346,9 @@ Decisions "The app kit, point 1" to "point 5". `startServer(options)` on the ser
 entry. Opinionated and small: an app is its API, its built-in plugins and a start script.
 
 - **Shape:** the app's layout is fixed: `src/api/v<n>/` (shared and per-kind modules) and the built-in plugins root
-  `plugins/`. The data directory is a `startServer` option (no environment variables), default a dot directory named after
+  `plugins/`. The API is a real package (decision "Tutorial gaps" (3)): a workspace package of the app's repository
+  (`"name": "@acme/app"`, `"exports": { "./v1": ..., "./v1/web": ... }`) that npm links, so Node, TypeScript, tests and
+  plugin builds resolve it alike (a test imports a plugin's `contract.ts`). The data directory is a `startServer` option (no environment variables), default a dot directory named after
   the app in the home directory. One server; worker kinds are a list the app defines, each a host kind with its own
   params (sharding is the app's) and how it starts (entry, start data, principal, idle time); zero kinds is a server
   with clients only.
@@ -2298,7 +2370,7 @@ entry. Opinionated and small: an app is its API, its built-in plugins and a star
 
 ### Web and TUI (slice 11)
 
-Decision "Slice 11's points" and "Slice 11, P3" to "P9".
+Decision "Slice 11's points", "Slice 11, P3" to "P9", and "Tutorial gaps" (1) (page state).
 
 - `chord/surfaces` serves the client surfaces (web and terminal) from the server; `chord/web` is a page's client host
   with its connection loop (p2's `keepConnected`), loading and applying the plugins' web facets. A base bundle per
@@ -2306,28 +2378,81 @@ Decision "Slice 11's points" and "Slice 11, P3" to "P9".
   one combined file named by its hash, later changed plugins one script each, each a script that registers itself (no
   eval); new scripts apply in place (`host.reload` in the page); pages learn of them through an object the web
   component serves (the current set); a base code change reloads the page.
-- `chord/react`: `HostProvider`, `useHold`, `useWatch`, `useRegistry`, `useRefState`.
+- `chord/react`: `HostProvider`, `useHold`, `useWatch`, `useRegistry`, `useRefState`, and `usePageState(key, initial)`:
+  `useState`'s pair kept by the page's host under a key, so a component remounted by a plugin reload (a new function)
+  keeps it (§21, "UI on client hosts").
 - `chord/tui/launcher`: a Node client connecting with a token, always running the downloaded code (the app's terminal
   entry on `chord/tui`) in a sandbox (decision "The terminal's sandbox is a child process": a child process on pipes
   with an empty environment, `--permission` granting nothing and no SQLite; the builtin allowlist and a frozen
   substitute `process` inside; a bridge terminal; the trusted launcher outside, confirming copy, open and attach on its
   own prompt); a component scope (`hold`, `watch`, `registry`, released on dispose, one `changed` callback for the
-  app's redraw), no pi-tui dependency.
+  app's redraw; `pageState(key, initial)`, the host's page state shared with `usePageState`), no pi-tui dependency.
 
-### Messages and languages (after slice 11)
+### Messages and languages (built after slice 11)
 
-Decision "Messages and languages in the app kit". Text people read is rendered per viewer, never by a server.
+Decision "Messages and languages in the app kit", refined in the build (2026-11-03). Text people read is rendered per
+viewer, never by a server. The shared parts are in Chord's root (`src/surfaces/`, portable), `useMessages` in
+`chord/react`, `scope.messages` in `chord/tui`, `lang` and `dir` in `chord/web`; the kit serves `Translations` on the
+server, workers, pages and terminals and `LocaleChoice` on the server. Apps re-export what their plugins use.
 
-- **Messages in code:** `defineMessages(namespace, { en, de, ... })` per plugin, in a shared `messages.ts` every
-  rendering facet imports; typed `t(key, ...args)`, keys and signatures from the first catalog; functions for plurals
-  and word order; `formatTime`, `formatNumber` through `Intl` in the viewer's locale.
-- **Translations** registry (`{ namespace, locale, messages, override? }`), per host: a translation plugin contributes
-  its shared catalog file from each facet that renders. Fallback key by key: the locale's base, then the first catalog
-  (reported once); conflicts: the first by plugin name wins. Catalogs never cross links.
-- **The locale** is a per-principal preference (device default, live switch, `lang` and `dir` on the page).
-- **Messages as data:** `t.message(key, ...args)` gives `{ namespace, key, params }` for state, notices and errors;
-  each client renders it with `t.render` (checked at runtime across a link). Prompts, model output, logs and error
-  codes are never translated.
+```ts
+// plugins/notes/messages.ts: one shared file every facet that renders imports
+export const messages = defineMessages("notes", {
+	en: { newNote: "New note", count: (n: number) => (n === 1 ? "1 note" : `${n} notes`), saved: (title: string, at: string) => `Saved "${title}" at ${formatTime(at)}` },
+	de: { newNote: "Neue Notiz", count: (n) => `${n} Notizen`, saved: (title, at) => `„${title}“ um ${formatTime(at)} gespeichert` },
+});
+// plugins/notes/web.tsx
+const { t, locale } = useMessages(messages);                 // re-renders on a locale or translation change
+self.contribute(Translations, messages.translations);        // in the facet: the plugin's own catalogs
+// plugins/notes/worker.ts: a message as data (state member `notice: union([MessageSchema, nul()])`)
+draft.notice = messages.message("saved", note.title, note.at);   // { namespace: "notes", key: "saved", params }
+// any client: t.render(notes.notice.value)
+```
+
+- **Messages in code:** `defineMessages(namespace, catalogs)` (a namespace is a name like a type's; catalog keys are
+  language tags, canonicalized) returns `t`, typed by the first catalog: the others take their functions' parameter
+  types from it, and a missing key, an unknown one or a wrong argument is a type error (when only strings differ,
+  TypeScript may report a missing key at the first catalog's line). Values are strings or functions; `formatTime(at,
+  options?)` (a `Date`, milliseconds or an ISO string; `timeStyle: "short"` by default) and `formatNumber(value,
+  options?)` use `Intl` with the locale being rendered, the platform's outside a render (a language's default
+  formatters are made once, kept in a `WeakMap` by the language).
+- **`t` is per host** (refinement (3)): `useMessages(t)` returns `{ t, locale }` bound to the `HostProvider`'s host and
+  its language; `scope.messages(t)` returns a `t` reading the host's language at each call, its change calling
+  `changed`; `t.in(language)` binds to any `Language`. The plain `t(key, ...args)` renders in the language of the
+  render under way (a **render scope**: synchronous, set while a bound `t` calls a message function, so a nested plain
+  `t` or `formatTime` follows it), and outside one in the first catalog (servers, tests, logs). No module-level current
+  language: one process runs many hosts, and a server renders per recipient.
+- **Rendering a key:** down the language's chain (`pt-BR`, `pt`): the host's `Translations` catalog for the namespace
+  and locale, else the plugin's own; else the first catalog. Each key found further down is reported (`fallback`), a
+  contributed message that throws is reported (`failed`, naming its plugin) and the chain goes on (use sites guard
+  contributions, §17).
+- **Translations** (refinements (1), (2)): a registry (`chord.translations`, version 1) whose contribution is a list of
+  `{ namespace, locale, messages, override? }` (a contributor contributes once per registry, and one translation
+  plugin translates several namespaces). A plugin's own catalogs are its built-in contributions literally: each
+  rendering facet contributes `t.translations`, so the registry knows every locale offered (for the device default and
+  a settings list); `t` still renders its own catalogs if a facet forgot. The composed `TranslationIndex` keeps one
+  catalog per namespace and canonical locale: the first by plugin name wins and the other is reported
+  (`registry_conflict`), `override: true` wins over a catalog without it; an invalid locale is left out, reported;
+  `locales` lists every locale offered. Catalogs may be partial (`MessagesOf<typeof t>` is the full shape a translation
+  fills); contributions are per host, so a translation plugin keeps them in a shared file and contributes them from
+  each facet that renders. Catalogs never cross links.
+- **The locale:** `LocaleChoice` (remote on the server, params `{}`, per principal: `pick`, a language tag of at most 35
+  characters or `null`, and `choose`), kept like the theme choice: both are a **preference** (`preferenceContract`,
+  `preferenceFacet`: one persisted document of picks by principal key, the last 10,000 choosers). A client's
+  `followActiveLanguage(host, preferred, changed, report, ctx)` resolves the locale: the pick when a catalog offers it
+  (or a base or another region of its language), else the first of the device's languages offered (`navigator.languages`
+  on a page, followed on `languagechange`; the system locale in the terminal: the launcher's `locales`, by default
+  `LANGUAGE`, `LC_ALL`, `LC_MESSAGES`, `LANG`, then `Intl`'s, passed in the bridge's start), else English (the source
+  of truth), else the first offered. The result, a `Language` (`{ locale, dir, chain, translations, report }`; `dir`
+  from the locale's likely script), is the host's page state under `chord.language`, which `useMessages` and
+  `scope.messages` follow; it changes only when the locale or the index does, nothing reloads. A page writes `lang`
+  and `dir` on its root element. Reports go to the client's `onError` once each (`{ kind: "messages", report }`).
+- **Messages as data:** `t.message(key, ...args)` returns `MessageData<"notes", "saved">` (`{ namespace, key, params }`;
+  `Message` is the link protocol's), only for keys whose arguments are JSON scalars (`MessageParam`), so a `Date`
+  argument does not compile. A contract member uses `MessageSchema` (any namespace and key). `t.render(message)`
+  refuses another literal namespace at the type level and checks at runtime what crossed a link: another namespace, a
+  key the first catalog lacks or params that are no list show the key (reported `unknown`), a message that throws on
+  its params shows the key (reported `failed`). Prompts, model output, logs and error codes are never translated.
 
 ### Channels
 
