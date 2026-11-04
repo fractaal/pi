@@ -13,7 +13,7 @@ note: |
   `slice-10.md`, `slice-12.md`, `slice-13.md`, the decision log and the code in `packages/chord/src`. API names
   are the current ones. The early chapters wire hosts by hand to show the parts; the last chapter shows the app kit
   (`chord/app`), which does that wiring for an app.
-colophon: Hosts and Plugins · third edition · 2026-11-02 · Chord v2 slices 1-10, 12 and 13
+colophon: Hosts and Plugins · third edition · 2026-11-03 · Chord v2 slices 1-10, 12 and 13, messages and languages
 ---
 
 # Before we begin {.preface}
@@ -75,7 +75,7 @@ addressable hosts; an **address** (`Session({ id: "p1" })`) names one. An **obje
 on its own host only) or `remote` (used from any host). An **object** is one instance of a type, per params. A
 **facet** is a plugin's declarations for one host kind. A **plugin** is a directory with a `package.json`. A
 **reference** is what you get when you ask for an object (`host.get`, `self.get`, `ctx.get`). A **document** is data an object
-stores, changed in **transactions**; a **table** holds many records with queries, in the host's **store**; a **derive** is a value computed from others; a **native** is an outside
+stores, changed in **transactions**; a **table** holds many records with queries, in the host's **store**, and a **live query** keeps some of its rows current; a **derive** is a value computed from others; a **native** is an outside
 resource an object opens and closes. A **registry** is an
 extension point: one plugin defines it, others contribute. A **rollout** applies a build to the hosts in order.
 
@@ -130,6 +130,13 @@ The **facet** says this host serves
 The factory only declares: it is synchronous and opens nothing. Chord activates the object (loads its documents, opens
 what it asked to open) and then serves calls. That is why the same factory can run again when the code changes.
 
+**`load` comes first.** A `get`, `hold` or `registry` on a host whose `load` was not called throws `not_ready` at once
+("call `host.load` first"): it would wait for types nobody published. A client with nothing to load calls
+`load([])`. Mistakes that would otherwise look like slowness are reported through `onError` instead: a request
+waiting for a type or registry nobody serves (`unbound_long`, after 5 s; it keeps waiting until its `readyTimeout`),
+a registry with contributions and no provider (`registry_undeclared`, when `load` publishes), and a plugin name that is
+no npm name makes `load` throw.
+
 # An Object's Parts {#parts lede="Documents, tables, transactions, computed values, watching, and outside resources: the vocabulary of every factory."}
 
 A factory builds an object from a handful of parts, each declared with one call on `self`. The notes object grows to
@@ -173,6 +180,20 @@ Persisted data lives only in `local` objects with empty params (one per host and
 on who asked or with which params; an object with params (a view per project) reads from such a store. Writes go
 through the same transactions as documents: a note row and a document can change in one commit.
 
+A table has no watch of its own. To show rows live (the newest notes in a tab), the object declares a **live query**
+over its own table, with a limit:
+
+```ts
+const newest = self.query(rows, recent, 50);             // the 50 newest rows, a value like a document's
+return { newest, add, page };                            // a member: tabs watch it and get only the changes
+```
+
+Chord runs the query before the object goes live, and again in every commit of the object that writes `rows`, and
+sends what changed. Only the object's own tables: it is their only writer, so its commits are exactly when the rows
+can change, and a commit that writes no such table costs nothing. Each writing commit runs the query once more, at
+most the limit's rows: right for data people edit, wrong for a table written hundreds of times a second (there may be
+dragons; keep what the tab shows in a document the object writes with each change instead). The limit is required.
+
 A **derive** is a value computed from other values, recomputed whenever they change. It is how an object offers
 something it does not store:
 
@@ -205,7 +226,22 @@ self.onLive(async (ctx) => {                                  // a routine start
 ```
 
 Natives are why some objects restart when their plugin changes: an open connection cannot be moved to new code, so
-Chord closes it and opens it again. Objects without natives are swapped in place.
+Chord closes it and opens it again. Objects without natives are swapped in place. A first read of a table is no
+native: declare it as a live query, not with `self.open`, or the object restarts at every change of its plugin.
+
+**Await what you start in a root or a handler.** What is started with a context ends with it. Code outside objects
+gets its `ctx` from `host.root(fn, ctx)`, and that scope seals when `fn` returns; a handler's context ends when its
+caller cancels or its object ends. A change still waiting when its context ends is cancelled before it commits:
+
+```ts
+await server.root(async (ctx) => {
+	void notes.add({ text: "lost" }, ctx).catch(() => {});   // fn returns, the scope seals: the call's change is cancelled
+}, ctx);
+await server.root(async (ctx) => notes.add({ text: "kept" }, ctx), ctx);   // awaited: it commits
+```
+
+The cancelled change rejects, and since an empty `catch` would hide that it never happened, Chord also reports it
+through `onError` as `transaction_cancelled`, naming the object and, in its error, the scope that ended.
 
 # Several Hosts {#hosts lede="A server, a worker per project, browser tabs: how they find each other's objects."}
 
@@ -265,6 +301,46 @@ tab.connect(webSocketLink(new WebSocket("/chord")), { principal: { kind: "server
 `P` is your app's type of **principal**, who is calling: an owner, a guest, the server, a worker. Links stamp it;
 a `remote` object is made per principal, so a guest can get a read-only variant of the same notes.
 
+## Who a reference acts as
+
+A reference acts as whoever made it. `host.get` and `self.get` in a `local` object act as the host; `self.get` in a
+`remote` object acts as that object's principal; **`ctx.get` in a method acts as the method's caller**. That is what
+lets a guest's call reach a worker as the guest and get the guest's variant, never more than the guest may see.
+
+It surprises one case: a server object that should act as itself towards a worker. The owner calls
+`Search.rebuildIndex`, which asks each project's worker to scan its files:
+
+```ts
+// server.ts: wrong, the worker sees the owner
+rebuildIndex: async ({ project }, ctx) => {
+	const scan = await ctx.get(IndexScan, { project });   // acts as ctx.principal: the owner, the method's caller
+	return scan.run(ctx);
+},
+
+// worker.ts: the factory serves only the server
+host.serve(IndexScan, (params, principal, self) => {
+	if (principal.kind !== "server") throw new Error("IndexScan serves the server only");   // refuses the owner
+	…
+});
+```
+
+The worker's factory gets `{ kind: "owner" }` and refuses. To act as the server, take the reference where the server
+is the maker: `self.get(IndexScan, { project })` in a `local` server object of its own (a dependency of that object,
+which acts as the host), or, in base code that has the host, a root of the server's host:
+
+```ts
+// base code: a root acts as the host (the server), not as the method's caller
+rebuildIndex: async ({ project }, ctx) =>
+	server.root(async (own) => (await own.get(IndexScan, { project })).run(own), ctx),
+```
+
+## Calls in progress
+
+There is no limit on calls in progress per link. A tab sending 200 calls at once over its socket gets all 200 run:
+at most N (256 by default, announced in the handshake) are in flight per origin, the rest wait in order in the link's
+call queue, none is refused for being too many. The bounds are that call window and the part limits on what arrives
+(sizes, not counts). An object that must limit work per caller does so in its methods, or runs the work as a job.
+
 :::note | The app kit does this wiring
 Starting workers, routing a host kind to them, the WebSocket entry and authentication are slice 10's components
 (`createWorkers`, `chord.http`). An app built with the app kit (`chord/app`, the last chapter) does not wire them:
@@ -313,6 +389,21 @@ gets the current value in one frame. The UI shows a banner from `ref.state`, not
 `tui` facets, rendering with whatever terminal library the app chose. **What a client never does**: serve a `remote`
 type, be routed to, or keep data others rely on. Data that must outlive a tab belongs in an object on the server or a
 worker.
+
+**Text in the viewer's language** is a client's job too, because two people looking at the same object may read
+different languages. A plugin writes its texts once, in a shared `messages.ts`; a client renders them in its host's
+language (the user's pick, else the device's), and objects store messages as data, never sentences (design §23,
+"Messages and languages"):
+
+```ts
+// plugins/notes/messages.ts: the first catalog types the others
+export const messages = defineMessages("notes", { en: { empty: "No notes yet" }, de: { empty: "Noch keine Notizen" } });
+// plugins/notes/web.tsx: the facet contributes its catalogs; a component renders in the page's language
+self.contribute(Translations, messages.translations);
+const { t } = useMessages(messages);                       // re-renders when the user picks another language
+// plugins/notes/worker.ts: a notice as data; every client renders it with t.render(notice)
+draft.notice = messages.message("empty");
+```
 
 # Plugins {#plugins lede="Move the code into a directory that can be added, edited and removed while the app runs."}
 
@@ -563,6 +654,12 @@ then gives every object of the changed plugin its fate:
 The tab's reference follows the new object and gets one frame with the difference. Nothing reconnects. If the edit
 is broken (a syntax error, a factory that throws), that plugin keeps its old code on that host and the report says why;
 every other plugin of the rollout applies.
+
+A tab applies a new web script the same way, without reloading the page, and the UI keeps what lives outside the
+changed plugin. The changed plugin's own components are new functions, so React mounts them anew and their `useState`
+starts over. What must survive the update (a half-typed note, a scroll position) goes into **page state**, kept by the
+tab's host under a key: `usePageState(key, initial)` from `chord/react` instead of `useState`, and
+`scope.pageState(key, initial)` on a terminal's `TuiScope` (design §21, "UI on client hosts").
 
 :::note | Versions
 A change to a contract (a new field in `Notes`'s state) gets a new `version`. A tab built with the old contract keeps

@@ -15,6 +15,8 @@ import type { AnyDefinition } from "../documents/internal.ts";
 import type { JobDefinition } from "../jobs/index.ts";
 import type { Registry, RegistryProvider } from "../registries/index.ts";
 import { checkProvider, type RegistryValueSource } from "../registries/internal.ts";
+import { checkLiveQuery } from "../store/live-query.ts";
+import type { Query } from "../store/query.ts";
 import { tableSqlName } from "../store/sql.ts";
 import type { ChordStore } from "../store/store.ts";
 import type { TableDefinition } from "../store/table.ts";
@@ -68,18 +70,25 @@ export function isPluginName(name: string): boolean {
 	return PLUGIN_NAME.test(name);
 }
 
+/**
+ * Throws for the first plugin of `facets` whose name is no npm package name: a programming error, so `load` and
+ * `reload` throw before they change anything (decision "Mistakes that wait are reported at once" (d)).
+ */
+export function checkPluginNames(facets: readonly { readonly name: string }[]): void {
+	for (const { name } of facets) if (!isPluginName(name)) throw new Error(`"${name}" is not a valid plugin name`);
+}
+
 /** A staged table with nothing in it. */
 export function emptyStaged(): Staged {
 	return { types: new Map(), registries: new Map(), plugins: new Map() };
 }
 
 /**
- * Runs one plugin's setup and checks what it declared: its name (an npm name), a type or registry it serves twice, a
- * remote type on a host without a principal or address, every provider's `accepts` (`checkAccepts`) and every registry
- * provider's shape. Throws the first error, naming the plugin.
+ * Runs one plugin's setup (its name checked by `checkPluginNames` before) and checks what it declared: a type or
+ * registry it serves twice, a remote type on a host without a principal or address, every provider's `accepts`
+ * (`checkAccepts`) and every registry provider's shape. Throws the first error, naming the plugin.
  */
 export function stagePlugin<P extends Principal>({ name, facet }: PluginFacet<P>, host: StagingHost): StagedPlugin {
-	if (!isPluginName(name)) throw new Error(`"${name}" is not a valid plugin name`);
 	// The host's presence lists are typed for its `P`.
 	const references = host.references as <C extends Contract>(Type: C) => Watchable<readonly Presence<C, P>[]>;
 	const types = new Map<string, Served>();
@@ -266,6 +275,16 @@ class RecordingSelf {
 		const object = this.#object;
 		store.claims.assertTable(tableSqlName(object.served.contract.name, definition.name), object);
 		this.#tables.set(definition.name, definition);
+		return INERT;
+	}
+
+	/** A live query over a table this factory declared (its handle is inert: the query names the table), limited. */
+	query(_table: unknown, q: Query, limit: unknown): never {
+		this.#assertDeclaring("query");
+		const label = this.#object.label;
+		const table = this.#tables.get(q.table.name);
+		if (table !== q.table) throw new Error(`${label}: self.query: the table is not one this factory declared`);
+		checkLiveQuery(table, q, limit, label);
 		return INERT;
 	}
 
