@@ -1,4 +1,14 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CredentialStore, createModels, type Provider } from "@earendil-works/pi-ai";
@@ -116,7 +126,11 @@ describe("AuthStorage", () => {
 	test("keeps a coalesced reload alive while another credential reader is waiting", async () => {
 		writeAuthJson({ anthropic: { type: "api_key", key: "old" } });
 		const storage = AuthStorage.create(authJsonPath);
+		const beforeExternalEdit = statSync(authJsonPath);
 		writeAuthJson({ anthropic: { type: "api_key", key: "new" } });
+		// This test exercises reload coalescing, so make the synthetic external edit observable even
+		// on filesystems whose timestamps do not advance for immediate same-size rewrites.
+		utimesSync(authJsonPath, beforeExternalEdit.atime, new Date(beforeExternalEdit.mtimeMs + 1_000));
 		let grantLock: (() => void) | undefined;
 		const lockGranted = new Promise<void>((resolve) => {
 			grantLock = resolve;
