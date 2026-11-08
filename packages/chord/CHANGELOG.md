@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Chord v2's app kit changes `startServer`'s `principal` from `{ server, worker }` to `{ server, worker?, owner }`: `owner` is the app-chosen strict-JSON principal used by the owner link, owner token file, pairing and invites, and is exposed as `AppInfo.owner`; it must differ from `server`. `worker` is required only when worker kinds are configured. Migration: add the app's owner principal and keep the existing worker function when the app has workers.
+
 ## [1.6.0] - 2026-11-06
 
 ### Breaking Changes
