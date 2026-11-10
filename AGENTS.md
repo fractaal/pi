@@ -32,7 +32,7 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 - Always ask before removing functionality or code that appears intentional.
 - Do not preserve backward compatibility unless the user asks for it.
 - Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
-- Never modify `packages/ai/src/models.generated.ts` directly; update the catalog definitions in `packages/ai/catalog/` instead (see its README), then regenerate. Including the resulting `models.generated.ts` diff is always OK, even if regeneration includes unrelated upstream model metadata changes. The generated model data in `packages/ai/src/providers/data/` is gitignored: never stage it, and don't look for it in git history.
+- Never modify generated model files directly; update the catalog definitions in `packages/ai/catalog/` instead (see its README), then regenerate. Unlike upstream, this fork commits the generated snapshot in `packages/ai/src/providers/data/`, including its manifest, so offline builds and releases use reviewed data rather than live provider APIs. Review and commit that snapshot with model-definition changes; including generated wrappers and ordinary upstream model metadata changes is OK.
 
 ## Chord v2 Code Style
 
@@ -112,6 +112,10 @@ When posting issue/PR comments:
 When closing issues via commit:
 
 - Include `fixes #<number>` or `closes #<number>` in the message so merging auto-closes the issue. For multiple issues, repeat the keyword per issue (`closes #1, closes #2`); a shared keyword (`closes #1, #2`) only closes the first.
+
+## Writing p2 plugin code
+
+Before writing or reviewing plugin code in `apps/p2` (server and worker facets, contracts, stores), read [apps/p2/docs/plugin-practices.md](apps/p2/docs/plugin-practices.md) in full and follow it.
 
 ## Building p2's web UI
 
