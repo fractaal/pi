@@ -2,7 +2,7 @@
 
 `node catalog/generate.ts` (`npm run generate-models`) fetches upstream catalogs and writes the built-in model catalog:
 
-- `src/providers/data/<provider>.json`: model values, grouped by API (gitignored)
+- `src/providers/data/<provider>.json`: model values, grouped by API (committed in this fork with their manifest for deterministic offline builds; gitignored upstream)
 - `src/providers/<provider>.models.ts` and `src/models.generated.ts`: typed wrappers (committed)
 - with `--json-output <dir>`: the public catalog JSON served by pi.dev
 

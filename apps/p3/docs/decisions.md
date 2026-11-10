@@ -77,3 +77,29 @@ and its working rules are in `handoff.md`.
   Configured resources cover fine-grained cases (conversation access to one session with chosen actions, expiring list
   entries). Rendering: renderers per contract and form (row, card, detail, ...) from any plugin, detail views assembled
   from panels several plugins contribute. No stringly-typed APIs.
+- **Session metadata store on the server (owner, 2026-11-09, voice):** a session's data lives in one of two places, and
+  a plugin picks one per fact. (1) The **session metadata store** on the server, provided by the base: everything about
+  a session that is needed while its worker is not running (title, pin, archive, location, a Discord channel binding, a
+  plugin's labels or settings for that session). Any plugin writes to it under its own typed key per session (a token
+  defined once in its contract file with a name and a schema, like `defineState`); server code reads and writes it by
+  session id without starting the worker; the worker reads its own session's metadata through a view and writes through
+  server methods (one writer: the server). A rename is one server write. (2) The **session's own store**: everything
+  only used while the worker runs (transcript, Durable state, a plugin's working data). Never keep the same fact in
+  both. Export of one session = its store plus its entries in the metadata store; import writes both back and resolves
+  references to instance things (environment, providers). Sessions stay self-contained as a unit; no tagging of
+  arbitrary tables, no pending edits. Replaces the split proposed on PR #11951 (comment 6737930304).
+- **Backups, not session sync; one format (owner, 2026-11-09, voice):** no per-session sync and no synced read-only
+  copies elsewhere (a session without its instance, its environments, providers and plugins, is useless; the use case
+  is working with a session, never reading it remotely). Radius offers whole-instance backups (the server store and all
+  session stores together) and restore onto a new machine. The **sync format** of Chord's stores stays the one format
+  for both backups and exports (a single session's export: its store plus its session metadata entries): it encodes
+  every kind of data the core stores hold, plugin data included, and we bet on it.
+- **Session data on the server as host-keyed documents (owner, 2026-11-09, supersedes the typed metadata store of the
+  "Session metadata store" entry):** each plugin keeps its per-session server data in its own server object as Chord
+  documents or table rows keyed by the session's host address (`defineState(..., { keyed: Session })`, table columns
+  `host(Session)`; Chord decision "Documents and table rows can belong to a host"); its worker part follows its own
+  document through its own view (pinned with `at(Session({ id: principal.session }))`). Export of a session = its own
+  store + every server record and row belonging to its address, in the store archive format; import into a non-empty
+  store refuses, replaces explicitly, or copies under a new id; delete retires them. The rule stays: anything needed
+  while the worker is off lives on the server, the rest in the session's store, never both. No central metadata store,
+  no `metadataOf`, no export callbacks.
