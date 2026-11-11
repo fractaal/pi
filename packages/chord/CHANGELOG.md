@@ -55,6 +55,8 @@
 - Chord v2's workers no longer leave an address failed when a running worker loses its link (the heartbeat, a protocol error, the worker closing its own link): the worker is stopped, `worker_link_lost { address, error }` is reported, and its holders get a new worker. A second lost link within a minute of the last recovery still fails the address (public error `worker lost its link`). Crashes, `fatal`s and failed starts still stay failed until `retry` or a rollout.
 - Chord v2's objects no longer answer a call `not_ready` during a reload while the caller sees them `live`: a call over a link to an object whose swap had parked (its new code waiting for a dependency) or whose restart had drained, sent while its hold was still bound to the old instance, got `not_ready: ... not live yet`. Such a call now waits for the object's new attempt (live, failed or ended), bounded by `readyTimeout` (`unavailable/park_timeout`); a parked attempt showing `failed { waiting }` rejects it with that cause; it stays when the hold then leaves the old instance with `loading`.
 
+## [1.5.2] - 2026-11-10
+
 ## [1.5.1] - 2026-11-09
 
 ### Breaking Changes

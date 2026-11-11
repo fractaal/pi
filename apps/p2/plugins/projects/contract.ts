@@ -12,6 +12,20 @@ export type ProjectPlace = Static<typeof ProjectPlaceSchema>;
 export const ProjectSchema = obj({ name: str(), places: arr(ProjectPlaceSchema) });
 export type Project = Static<typeof ProjectSchema>;
 
+/** A project's glyph seed: its first place's path (its name without places). */
+export const projectSeed = (project: Project): string => project.places[0]?.path ?? project.name;
+
+/**
+ * The glyph seed of the place `env`/`cwd`: the project named `member` (a session's membership), else a project with a
+ * place containing it on that machine, by its `projectSeed`; else the place's own path.
+ */
+export function placeSeed(projects: readonly Project[], env: string | null, cwd: string, member?: string): string {
+	const project =
+		projects.find((each) => each.name === member) ??
+		projects.find((each) => each.places.some((place) => place.env === env && below(cwd, place.path) !== undefined));
+	return project ? projectSeed(project) : cwd;
+}
+
 /** Session `session` belongs to project `project` from now on. */
 const Assign = obj({ session: str({ maxLength: 64 }), project: str({ maxLength: 64 }) });
 

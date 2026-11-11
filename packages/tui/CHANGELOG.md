@@ -9,6 +9,8 @@
 - Fixed Markdown rendering HTML comments (`<!-- ... -->`) as visible text ([#11710](https://github.com/earendil-works/pi/issues/11710))
 - Fixed fullscreen Kitty images in Orca showing only their first row. Orca's xterm.js image addon stores images in the cells they cover. `TuiAltScreen` now draws Kitty images after clearing and writing the rows they cover on every terminal, not only WezTerm ([#11835](https://github.com/earendil-works/pi/issues/11835))
 
+## [1.5.2] - 2026-11-10
+
 ## [1.5.1] - 2026-11-09
 
 ### Fixed
