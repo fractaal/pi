@@ -3,8 +3,8 @@
 import { createContext } from "react";
 import type { SidebarRow } from "./sidebar/model.ts";
 
+export { SessionDot } from "./sidebar/ActivityMarks.tsx";
 export type { SidebarRow } from "./sidebar/model.ts";
-export { SessionDot } from "./sidebar/Row.tsx";
 
 export type DrawerRows = {
 	/** Every row of the sidebar, with its worker state, including the ones listed apart. */
