@@ -12,6 +12,8 @@
 
 - `renderTrace` escapes control characters (C0, C1, DEL) as `\uXXXX` in span and event names, trace and span ids of links, attribute keys and error names and messages, so ids taken from another process's carrier never reach a terminal or viewer raw.
 
+## [1.5.2] - 2026-11-10
+
 ## [1.5.1] - 2026-11-09
 
 ### Added

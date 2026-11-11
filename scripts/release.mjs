@@ -7,7 +7,7 @@
  *   node scripts/release.mjs <x.y.z>
  *
  * Steps:
- * 1. Check for uncommitted changes
+ * 1. Check the npm version and for uncommitted changes
  * 2. Bump version via npm run version:xxx or set an explicit version
  * 3. Update CHANGELOG.md files: [Unreleased] -> [version] - date
  * 4. Regenerate release artifacts
@@ -27,7 +27,6 @@ import { execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RELEASE_TAG_PREFIX } from "./fractal-identity.mjs";
-import { findPackageDirectories } from "./package-workspaces.mjs";
 import { getPublicWorkspacePackages } from "./release-packages.mjs";
 
 const RELEASE_TARGET = process.argv[2];
@@ -157,7 +156,7 @@ function bumpOrSetVersion(target) {
 		}
 
 		console.log(`Setting explicit version (${target})...`);
-		run(`npm version ${target} --workspaces --no-git-tag-version --no-workspaces-update && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts`);
+		run(`npm version ${target} --workspace packages --no-git-tag-version --no-workspaces-update && node scripts/sync-versions.js && npm install --package-lock-only --ignore-scripts`);
 	}
 
 	// npm version can temporarily install the previous workspace versions before
@@ -170,8 +169,8 @@ function bumpOrSetVersion(target) {
 }
 
 function getChangelogs() {
-	return findPackageDirectories()
-		.map((directory) => join(directory, "CHANGELOG.md"))
+	return getPublicWorkspacePackages()
+		.map(({ directory }) => join(directory, "CHANGELOG.md"))
 		.filter((path) => existsSync(path));
 }
 
@@ -216,7 +215,18 @@ function addUnreleasedSection() {
 // Main flow
 console.log("\n=== Release Script ===\n");
 
-// 1. Check for uncommitted changes
+// 1. Check the npm version and for uncommitted changes
+// The release rewrites package-lock.json. npm 10 (bundled with Node 22) drops the `libc`
+// fields that tell npm which native packages are glibc and which are musl builds.
+console.log("Checking npm version...");
+const npmVersion = run("npm --version", { silent: true }).trim();
+if (Number(npmVersion.split(".")[0]) < 11) {
+	console.error(`Error: the release needs npm 11 or newer to write package-lock.json; found npm ${npmVersion}.`);
+	console.error("Run `npm install -g npm@11` or use a Node version that bundles npm 11 or newer.");
+	process.exit(1);
+}
+console.log(`  npm ${npmVersion}\n`);
+
 console.log("Checking for uncommitted changes...");
 const status = run("git status --porcelain", { silent: true });
 if (status && status.trim()) {

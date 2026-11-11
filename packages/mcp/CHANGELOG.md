@@ -17,6 +17,8 @@
 - Fixed Streamable HTTP errors reading the whole HTTP error body; only the first 8 KiB kept in the error is read, and the rest is cancelled
 - Fixed `OAuthCallbackServer.close()` waiting for minutes when the browser kept an unused connection open to the callback port, for example a preconnect. It now closes the remaining connections ([#11311](https://github.com/earendil-works/pi/issues/11311))
 
+## [1.5.2] - 2026-11-10
+
 ## [1.5.1] - 2026-11-09
 
 ### Added

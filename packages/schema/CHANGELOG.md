@@ -24,6 +24,8 @@
 - A required property set to `undefined` is valid when its schema takes `undefined` (a union with `Type.Undefined()`, `Type.Unknown()`, `Type.Any()`), as in TypeBox; before, it was always missing. An optional one set to `undefined` still counts as absent.
 - Fixed local `$ref`s in schemas whose root `$id` is a relative path with a directory, such as `schemas/tool.json`: the `$id` was applied twice, so `compile` threw and `unresolvedRefs: "reject"` rejected valid tool arguments. Relative `$id`s are now also applied once with `unevaluatedProperties`/`unevaluatedItems`, when explaining errors under nested resources, and on the first coercion of a schema with `$dynamicRef` ([#11697](https://github.com/earendil-works/pi/issues/11697))
 
+## [1.5.2] - 2026-11-10
+
 ## [1.5.1] - 2026-11-09
 
 ### Added
