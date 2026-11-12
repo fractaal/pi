@@ -64,6 +64,17 @@ const probe = () => ({ variant: "reader" as const, members: { label: async () =>
 export default defineFacet((host) => host.serve(${kind === "server" ? "ServerProbe" : "Probe"}, probe));`;
 }
 
+/**
+ * Asserts that `path` has no route (its plugin's was removed): it answers as a path nobody registered, which a request
+ * without credentials gets as the sign-in page (401), never revealing which paths exist.
+ */
+async function unregistered(port: number, path: string): Promise<void> {
+	const gone = await http(port, path);
+	const never = await http(port, "/__dev_never_registered");
+	assert.deepEqual([gone.status, never.status], [401, 401], `${path}: registration was removed`);
+	for (const answer of [gone, never]) assert.match(answer.body, /<title>Pi · Sign in<\/title>/);
+}
+
 /** A probe facet of `kind` whose eager object serves a route (server) and records its close in `directory`. */
 function lifecycleFacet(directory: string, name: string, route: string, kind: "server" | "worker"): string {
 	return `import { writeFileSync } from "node:fs";
@@ -410,7 +421,7 @@ test(
 			const serverPid = await removedServer.pid(BACKGROUND_CONTEXT);
 			const removedPid = await removedWorker.pid(BACKGROUND_CONTEXT);
 			assert.equal(await removedUnseen.label(BACKGROUND_CONTEXT), "removable-plugin");
-			assert.equal((await http(port, "/__dev_removable", { headers: await local(port) })).body, "removable");
+			assert.equal((await http(port, "/__dev_removable")).body, "removable");
 			await chat.send({ text: "slow plugin-removal-sentinel", requestId: "plugin-removal" }, BACKGROUND_CONTEXT);
 			await until(status.statuses, (value) => value?.[first.id]?.busy.includes(1) === true);
 			let revision = (await devState()).revision;
@@ -420,11 +431,7 @@ test(
 			const removedRefs = [removedServer, removedWorker, removedUnseen];
 			await poll(() => removedRefs.every((ref) => statusOf(ref) === "failed"));
 			for (const ref of removedRefs) ref.release();
-			assert.equal(
-				(await http(port, "/__dev_removable", { headers: await local(port) })).status,
-				404,
-				"registration was removed",
-			);
+			await unregistered(port, "/__dev_removable");
 			for (const pid of [serverPid, removedPid, secondPid])
 				await poll(
 					async () =>
@@ -476,11 +483,7 @@ test(
 			const addedSecond = browser.hold(Added.worker, { session: second.id }, BACKGROUND_CONTEXT);
 			assert.equal(await addedSecond.label(BACKGROUND_CONTEXT), "added-plugin");
 			addedSecond.release();
-			assert.equal(
-				(await http(port, "/__dev_added", { headers: await local(port) })).body,
-				"added",
-				"new host object activated",
-			);
+			assert.equal((await http(port, "/__dev_added")).body, "added", "new host object activated");
 			assert.equal(await workerProbe.pid(BACKGROUND_CONTEXT), firstPid);
 			await until(status.statuses, (value) => value?.[first.id]?.busy.includes(1) === true);
 			await until(chat.view, (value) =>
@@ -503,7 +506,7 @@ test(
 			await poll(() => statusOf(addedServer) === "failed" && statusOf(addedWorker) === "failed");
 			addedServer.release();
 			addedWorker.release();
-			assert.equal((await http(port, "/__dev_added", { headers: await local(port) })).status, 404);
+			await unregistered(port, "/__dev_added");
 			assert.equal(ports().length, 1, "add/remove never restarts the backend");
 			assert(!log.includes("Unknown p2 plugin: dev-removable"));
 			await chat.send({ text: "slow restart-stream-sentinel", requestId: "restart-stream" }, BACKGROUND_CONTEXT);
