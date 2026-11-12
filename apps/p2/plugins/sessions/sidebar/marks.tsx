@@ -1,4 +1,5 @@
-// Session activity marks shared by sidebar rows and other plugins' entries, without the row's glyph dependencies.
+// The state marks of sidebar rows, apart from the rows (which show project glyphs) so other plugins' web facets can
+// show them through the sessions plugin's contract (`contract.web.tsx`) with nothing but React.
 import type { SidebarRow } from "./model.ts";
 
 /** A conversation running a turn where its row has no icon: a small spinner (a still ¾ ring with reduced motion). */

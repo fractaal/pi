@@ -6,6 +6,10 @@
 
 - Chord v2's app kit changes `startServer`'s `principal` from `{ server, worker }` to `{ server, worker?, owner }`: `owner` is the app-chosen strict-JSON principal used by the owner link, owner token file, pairing and invites, and is exposed as `AppInfo.owner`; it must differ from `server`. `worker` is required only when worker kinds are configured. Migration: add the app's owner principal and keep the existing worker function when the app has workers.
 
+### Fixed
+
+- The optional peer dependencies on `react`, `ws` and `esbuild` are ranges (`^19.3.0`, `^8.21.0`, `^0.28.2`), not exact versions: npm no longer refuses to install Chord in a project with another patch release of them, such as react 19.3.1 ([#12008](https://github.com/earendil-works/pi/issues/12008)).
+
 ## [1.6.0] - 2026-11-06
 
 ### Breaking Changes
