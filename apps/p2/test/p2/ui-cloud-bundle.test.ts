@@ -50,6 +50,7 @@ describe("the Cloud Brain page", { skip: !browserTests }, () => {
 			chordUrl: `ws://127.0.0.1:${fixture.server.port}/chord`,
 		})}'></div><script type="module" src="${prefix}${manifest.script}"></script></body></html>`;
 		const requested: string[] = [];
+		const responses: Promise<unknown>[] = [];
 		const serve = (raw: unknown) => {
 			const message = JSON.parse(String(raw)) as {
 				method?: string;
@@ -59,24 +60,29 @@ describe("the Cloud Brain page", { skip: !browserTests }, () => {
 			const { requestId, request } = message.params;
 			const path = new URL(request.url).pathname;
 			requested.push(path);
-			if (!path.startsWith(prefix)) return void browser.call("Fetch.continueRequest", { requestId });
+			if (!path.startsWith(prefix)) {
+				responses.push(browser.call("Fetch.continueRequest", { requestId }));
+				return;
+			}
 			const file = path.slice(prefix.length);
-			void (async () => {
-				const body = file === "index.html" ? Buffer.from(page) : await readFile(join(out, SHA, file));
-				const type = file.endsWith(".js")
-					? "text/javascript"
-					: file.endsWith(".css")
-						? "text/css"
-						: file.endsWith(".html")
-							? "text/html"
-							: "application/octet-stream";
-				await browser.call("Fetch.fulfillRequest", {
-					requestId,
-					responseCode: 200,
-					responseHeaders: [{ name: "Content-Type", value: type }],
-					body: body.toString("base64"),
-				});
-			})();
+			responses.push(
+				(async () => {
+					const body = file === "index.html" ? Buffer.from(page) : await readFile(join(out, SHA, file));
+					const type = file.endsWith(".js")
+						? "text/javascript"
+						: file.endsWith(".css")
+							? "text/css"
+							: file.endsWith(".html")
+								? "text/html"
+								: "application/octet-stream";
+					await browser.call("Fetch.fulfillRequest", {
+						requestId,
+						responseCode: 200,
+						responseHeaders: [{ name: "Content-Type", value: type }],
+						body: body.toString("base64"),
+					});
+				})(),
+			);
 		};
 		browser.socket.on("message", serve);
 		await browser.call("Fetch.enable", { patterns: [{ urlPattern: `${origin}/*` }] });
@@ -90,8 +96,10 @@ describe("the Cloud Brain page", { skip: !browserTests }, () => {
 				requested.join("\n"),
 			);
 		} finally {
-			await browser.call("Fetch.disable");
 			browser.socket.off("message", serve);
+			// Replies already in flight must settle before disabling Fetch, or teardown rejects them after the test.
+			await Promise.all(responses);
+			await browser.call("Fetch.disable");
 		}
 	});
 });
