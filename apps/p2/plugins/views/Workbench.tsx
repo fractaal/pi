@@ -5,6 +5,7 @@
 import { BACKGROUND_CONTEXT, liveIn } from "@p2/app/v1";
 import {
 	CloseIcon,
+	reportClientError,
 	useComposerState,
 	useObject,
 	useReadable,
@@ -283,7 +284,7 @@ export function Workbench({ children }: { children?: ReactNode }) {
 				viewList.map((view) => {
 					const pane = panes.get(view.id);
 					if (!pane) return null;
-					const Kind = kinds.get(view.kind);
+					const Kind = kinds.get(view.kind)?.Pane;
 					return (
 						<div
 							key={view.id}
@@ -295,6 +296,8 @@ export function Workbench({ children }: { children?: ReactNode }) {
 								<PaneBoundary key={`${view.kind}:${kindsVersion(Kind)}`}>
 									<Kind
 										session={session}
+										{...(view.item === undefined ? {} : { item: view.item })}
+										inline={false}
 										view={view}
 										editable={editor !== undefined}
 										annotations={notesOf(annotations, view.id)}
@@ -364,6 +367,10 @@ class PaneBoundary extends Component<{ children: ReactNode }, { error?: string }
 
 	static getDerivedStateFromError(error: unknown): { error: string } {
 		return { error: error instanceof Error ? error.message : String(error) };
+	}
+
+	override componentDidCatch(error: unknown): void {
+		reportClientError(error, "view pane");
 	}
 
 	override render() {

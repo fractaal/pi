@@ -20,7 +20,7 @@ import { Views } from "../../plugins/views/contract.ts";
 import type { Host, RefIn } from "../../src/runtime/chord.ts";
 import { ServerNatives } from "../../src/runtime/server.ts";
 import { Browser, browserTests } from "./browser.ts";
-import { APP, type Fixture, failureOf, holdIn, http, poll, startFixture, until } from "./helpers.ts";
+import { APP, type Fixture, failureOf, holdIn, http, poll, startFixture, until, webAssets } from "./helpers.ts";
 
 /** The skill's example plugin. */
 const EXAMPLE = join(APP, "plugins/agent-plugins/skills/writing-p2-plugins/example/counter");
@@ -141,7 +141,7 @@ describe("the agent's plugins", () => {
 	it("a subagent at local:<root> writes the example with the coding tools and applies it", async () => {
 		const { fixture, owner, session, chat, root } = await start(true);
 		// The skill is listed for this conversation (it works on the server's machine), from the plugin's own files.
-		await call(chat, "view", { action: "list" });
+		await call(chat, "codemode", "return await tools.view_list({});");
 		assert.match(
 			sections(chat.view.value).skills ?? "",
 			/<name>writing-p2-plugins<\/name>.*<location>[^<]*plugins\/agent-plugins\/skills\/writing-p2-plugins\/SKILL\.md</,
@@ -186,18 +186,22 @@ describe("the agent's plugins", () => {
 		await board.waved.on(({ value }) => waves.push(value.from), BACKGROUND_CONTEXT);
 		await board.wave(BACKGROUND_CONTEXT);
 		await poll(() => waves.length === 1, 10_000, "a wave");
-		// Its tool is deferred and for code mode only: a script calls it.
+		// Its tool is for code mode only, in its extension's namespace: a script calls it.
 		const tools = (chat.view.value?.docs["pi.agent"] as { modelTools?: unknown } | undefined) ?? {};
 		assert.doesNotMatch(JSON.stringify(tools), /counter_add/);
 		const script = await call(chat, "codemode", "return await tools.counter_add({ by: 3 });");
 		assert.match(textOf(script), /The count is/);
 		await until(board.count, (value) => value === 5);
+		assert.match(sections(chat.view.value).codemode ?? "", /## counter\nThe session's shared counter/);
 		// Its pane: a view of its kind, and its web facet in the page's bundle.
-		assert.match(textOf(await call(chat, "view", { action: "open", kind: "counter", title: "Counter" })), /Opened/);
+		assert.match(
+			textOf(await call(chat, "codemode", 'return await tools.view_open({ kind: "counter", title: "Counter" });')),
+			/"id":"counter"/,
+		);
 		const views = await holdIn(owner, Views, { session }, "editor");
 		await until(views.views, (value) => value.some((view) => view.kind === "counter"));
-		const manifest = JSON.parse((await fixture.http("/__p2_web")).body) as { script: string };
-		assert.match((await fixture.http(manifest.script)).body, /counter\.web/);
+		const assets = await webAssets(fixture.server.port, { Cookie: fixture.owner.cookie });
+		assert.match((await fixture.http(assets.plugins)).body, /counter\.web/);
 	});
 
 	it("reloads an edited plugin in place: the objects held go on with the new code", async () => {
@@ -295,7 +299,7 @@ describe("the agent's plugins", () => {
 			text: "a note in the user root",
 		});
 		// The next turn's prompt lists the plugin's skill, from its files in the user root.
-		await call(chat, "view", { action: "list" });
+		await call(chat, "codemode", "return await tools.view_list({});");
 		const skills = sections(chat.view.value).skills ?? "";
 		assert.ok(skills.includes(`<location>${join(root, "notes/skills/taking-notes/SKILL.md")}</location>`), skills);
 		assert.match(skills, /The project&apos;s clashing skill/);
@@ -345,9 +349,8 @@ describe("the agent's plugins", () => {
 		const guestChat = await holdIn(guest, Chat, { session, conversation: 1 }, "participant");
 		const reloaded = await call(guestChat, "reload_plugins", {});
 		assert.equal(reloaded.isError, false, textOf(reloaded));
-		const library = await call(guestChat, "view", { action: "saved" });
-		assert.equal(library.isError, false, textOf(library));
-		assert.match(textOf(library), /No saved views/);
+		const listed = await call(guestChat, "codemode", "return await tools.view_list({});");
+		assert.equal(listed.isError, false, textOf(listed));
 		guestChat.release();
 		sharing.release();
 		await guest.close(BACKGROUND_CONTEXT);
@@ -359,8 +362,10 @@ describe("the agent's plugins", () => {
 		async () => {
 			const { fixture, session, chat, root } = await start(true);
 			assert.match(
-				textOf(await call(chat, "view", { action: "open", kind: "counter", title: "Counter" })),
-				/Opened/,
+				textOf(
+					await call(chat, "codemode", 'return await tools.view_open({ kind: "counter", title: "Counter" });'),
+				),
+				/"id":"counter"/,
 			);
 			const browser = await Browser.start();
 			try {

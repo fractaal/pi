@@ -21,7 +21,7 @@ const internalPackagePrefix = `${UPSTREAM_PACKAGE_SCOPE}pi-`;
 const installPackageName = `${UPSTREAM_PACKAGE_SCOPE}pi-coding-agent-install`;
 const internalPackageNames = new Set(["@earendil-works/chord"]);
 const allowedInstallScriptPackages = new Map([
-	["@google/genai@2.21.0", "preinstall is a no-op in the published package"],
+	["@google/genai@2.32.0", "preinstall is a no-op in the published package"],
 	["protobufjs@7.6.6", "postinstall only warns about protobufjs version scheme mismatches"],
 ]);
 

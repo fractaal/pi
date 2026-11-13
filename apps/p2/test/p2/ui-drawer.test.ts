@@ -228,10 +228,12 @@ describe("drawer and new-session parity", { skip: !browserTests }, () => {
 			"participant",
 		);
 		await childChat.send({ text: "slow child", requestId: "drawer-busy" }, BACKGROUND_CONTEXT);
-		await browser.wait(`document.querySelector('.session-header.has-subagents :is(.working-frame, .working-mark)')`);
+		await browser.wait(
+			`document.querySelector('.session-header.has-subagents :is(.working-frame, .run-mark[data-state=working])')`,
+		);
 		await browser.click(".session-header.has-subagents .subagent-toggle");
 		await browser.wait(
-			`!${conversations}.hidden && document.querySelector('.nav-row:has(> .subagent-row) .working-mark')`,
+			`!${conversations}.hidden && document.querySelector('.nav-row:has(> .subagent-row) .run-mark[data-state=working]')`,
 		);
 		// While it works, its row ends with its step: the model's answer streams.
 		await browser.wait(`${subagentRow}.querySelector('.subagent-step')?.textContent === 'Thinking'`);
@@ -554,9 +556,9 @@ describe("guest drawer in Chromium", { skip: !browserTests }, () => {
 			assert.equal(state.search, false);
 			await browser.click('nav[aria-label="Shared session"] .theme-toggle');
 			await browser.wait(`document.documentElement.dataset.theme==='light'`);
-			// A shared session installs as a home-screen app too, and can poll the current bundle manifest.
+			// A shared session installs as a home-screen app too, and can ask the current base bundle.
 			const fetched = await browser.evaluate<{ manifest: number; icon: number; bundle: number; title: string }>(
-				`Promise.all(['/manifest.webmanifest','/icons/icon-192.png','/__p2_web'].map((path)=>fetch(path).then((r)=>r.status))).then(([manifest,icon,bundle])=>({manifest,icon,bundle,title:document.title}))`,
+				`Promise.all(['/manifest.webmanifest','/icons/icon-192.png','/_chord/web/base'].map((path)=>fetch(path).then((r)=>r.status))).then(([manifest,icon,bundle])=>({manifest,icon,bundle,title:document.title}))`,
 			);
 			assert.deepEqual(fetched, { manifest: 200, icon: 200, bundle: 200, title: "Pi" });
 			assert.equal(

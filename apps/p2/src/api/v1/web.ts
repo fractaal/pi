@@ -2,8 +2,9 @@
 // sheets, navigation) and the shared components and stores of p2's page (chat, drawer, viewers, icons).
 export * from "../../runtime/web.tsx";
 export * from "../../web/AppLayout.tsx";
-export * from "../../web/ArtifactPicker.tsx";
 export * from "../../web/activity/api.ts";
+export { reportClientError } from "../../web/app-boundary.tsx";
+export * from "../../web/artifact-kinds.ts";
 export * from "../../web/Chat.tsx";
 export * from "../../web/Code.tsx";
 export * from "../../web/CostPanel.tsx";
@@ -16,7 +17,9 @@ export {
 } from "../../web/command-menu/context.ts";
 export { useCommandMatches } from "../../web/command-menu/match.ts";
 export {
+	type CommandMenuRow,
 	type CommandTargetRow,
+	useCommandMenuRow,
 	useCommandRouteTarget,
 	useCommandTargetRow,
 } from "../../web/command-menu/targets.ts";
@@ -29,8 +32,10 @@ export * from "../../web/file-completion.tsx";
 export * from "../../web/haptics.ts";
 export * from "../../web/history.ts";
 export * from "../../web/icons.tsx";
+export { type LongPress, type LongPressHandlers, useLongPress } from "../../web/long-press.ts";
 export * from "../../web/Markdown.tsx";
 export * from "../../web/ModelPicker.tsx";
+export * from "../../web/menu-components.ts";
 export * from "../../web/navigation.ts";
 export * from "../../web/navigation-components.ts";
 export * from "../../web/new-session.tsx";
@@ -42,6 +47,7 @@ export * from "../../web/SessionStats.tsx";
 export * from "../../web/SettingsNav.tsx";
 export * from "../../web/SidePanel.tsx";
 export * from "../../web/Switch.tsx";
+export * from "../../web/shared-context.ts";
 export * from "../../web/sidebar.ts";
 export * from "../../web/ThemeButton.tsx";
 export { setTheme, type ThemePreference } from "../../web/theme.ts";
