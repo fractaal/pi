@@ -6,14 +6,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { homedir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { isChordError, type PluginFacet, webSocketLink } from "@earendil-works/chord";
+import { isChordError, localeChoiceFacet, type PluginFacet, webSocketLink } from "@earendil-works/chord";
 import { filesFacet } from "@earendil-works/chord/app/files";
 import { nodeCompression } from "@earendil-works/chord/compression";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { RolloutResult } from "@earendil-works/chord/plugins";
+import { webSurface } from "@earendil-works/chord/surfaces";
+import { telemetryIngestFacet } from "@earendil-works/chord/telemetry-ingest";
 import { WebSocketServer } from "ws";
 import { backupConfigured } from "../runtime/backup.ts";
-import { type Ctx, createHost, type Host, type HostError, hostErrorText, Server } from "../runtime/chord.ts";
+import { type Ctx, createHost, type Host, type HostError, hostErrorText, Server, Session } from "../runtime/chord.ts";
 import { envDefaultModel } from "../runtime/default-model.ts";
 import { type DevCommand, type DevResult, parseDevCommand } from "../runtime/dev-protocol.ts";
 import { configureFetch } from "../runtime/fetch.ts";
@@ -21,6 +23,7 @@ import {
 	assertMigrated,
 	hostFiles,
 	openHostStore,
+	openTelemetry,
 	serverDirectory,
 	userPluginsDirectory,
 } from "../runtime/host-dirs.ts";
@@ -28,12 +31,11 @@ import { fromOrigin, sendJson } from "../runtime/http.ts";
 import { captureProcessLogs, processLogs } from "../runtime/logs.ts";
 import { mintOwnerLink } from "../runtime/owner-link.ts";
 import { signIn } from "../runtime/page.ts";
-import { isGuest, isOwner, type P2Principal, SERVER } from "../runtime/principals.ts";
+import { isGuest, isOwner, type P2Principal, principalAttributes, SERVER } from "../runtime/principals.ts";
 import { takeProcessLock } from "../runtime/process-lock.ts";
 import {
 	Authenticators,
 	findRoute,
-	LinkTokens,
 	PageCookies,
 	type PluginApply,
 	type PluginOutcome,
@@ -46,15 +48,9 @@ import {
 	Upgrades,
 	WorkerInitValues,
 } from "../runtime/server.ts";
+import { isLinkClient, STALE_PAGE_CODE, STALE_PAGE_REASON } from "../runtime/stale-page.ts";
 import { WorkerBoundary, type WorkerInit } from "../runtime/worker.ts";
-import {
-	type BundleInput,
-	buildTuiBundle,
-	buildWebBundle,
-	type TuiBundle,
-	tuiManifest,
-	type WebBundle,
-} from "./bundles.ts";
+import { type BundleInput, buildTuiBundle, type TuiBundle, tuiManifest } from "./bundles.ts";
 import { devControl } from "./dev.ts";
 import { readDevCommand, sendDevCommand, serveDevChannel } from "./dev-channel.ts";
 import { LoadedModules, loadedModuleHashes, loadedPluginFiles } from "./dev-modules.ts";
@@ -78,6 +74,7 @@ import {
 import { SessionWorkers } from "./session-workers.ts";
 import { limitedSocket, MAX_CLIENT_FRAME } from "./socket-limits.ts";
 import { tuiPreferencesFacet } from "./tui-preferences.ts";
+import { WEB_ENTRY, WEB_RESOLUTION } from "./web/base.ts";
 import { createWeb, isAppPage, isPublicFile } from "./web.ts";
 
 /** The p2 app directory (`apps/p2`), told to facets as `Server.info.app` and `WorkerInit.app`. */
@@ -109,15 +106,6 @@ export type ServerOptions = {
 	readonly facets?: readonly PluginFacet<P2Principal>[];
 };
 
-/** The view kit's path, the one route a sandboxed frame's `Origin: null` request reaches (docs/rooms.md). */
-const VIEW_KIT = /^\/view-kit\/[0-9a-f]{64}\.js$/;
-
-/** A token link's path: `/chord/<kind>` (docs/rooms.md). */
-const TOKEN_LINK = /^\/chord\/([a-z][a-z0-9-]{0,31})$/;
-
-/** Old content-named files remain briefly so HTML returned just before a reload can finish loading. */
-const WEB_BUNDLE_GRACE_MS = 60_000;
-
 export type P2Server = {
 	readonly host: Host;
 	readonly port: number;
@@ -128,6 +116,25 @@ export type P2Server = {
 	reload(plugins: readonly string[]): Promise<RolloutResult>;
 	close(): Promise<void>;
 };
+
+/** A page's refused link: the base bundle it names (`null`: none, a page from older code) and the server's. */
+type StalePage = { readonly sent: string | null; readonly current: string | undefined };
+
+/** Who a principal is, for the owner's notices: the owner's access (and device) or a guest's name and ID. */
+function principalText(principal: P2Principal): string {
+	switch (principal.kind) {
+		case "owner":
+			return principal.access === "device"
+				? `the owner's device ${principal.device}`
+				: `the owner (${principal.access})`;
+		case "guest":
+			return `guest ${principal.name} (${principal.id})`;
+		case "worker":
+			return `session ${principal.session}'s worker`;
+		default:
+			return principal.kind;
+	}
+}
 
 export async function startServer(options: ServerOptions = {}): Promise<P2Server> {
 	// As Pi Mobile: a half-set default model from the environment refuses to start (before taking any lock).
@@ -171,9 +178,18 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 	// host-lifetime objects (the catalog, shares, subagents, session lifecycle operations) and its `Files` index. It keeps
 	// an outbox while backup is configured (`src/runtime/backup.ts`), which `plugins/backup` uploads.
 	let store: Awaited<ReturnType<typeof openHostStore>>;
+	// The telemetry store (`<data>/telemetry.sqlite`, Chord's §29): the server's host records to it, the ingest facet
+	// below writes what workers and owner pages send. Always on: Chord's cost (§30), no sampling.
+	let telemetry: Awaited<ReturnType<typeof openTelemetry>>;
 	try {
 		assertMigrated(dataDir);
-		store = await openHostStore(serverDirectory(dataDir), { outbox: backupConfigured() }, BACKGROUND_CONTEXT);
+		telemetry = await openTelemetry(dataDir);
+		store = await openHostStore(serverDirectory(dataDir), { outbox: backupConfigured() }, BACKGROUND_CONTEXT).catch(
+			async (error: unknown) => {
+				await telemetry.close();
+				throw error;
+			},
+		);
 	} catch (error) {
 		await unlock();
 		throw error;
@@ -183,6 +199,8 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		address: Server(),
 		principal: SERVER,
 		store,
+		telemetry: telemetry.telemetry,
+		principalAttributes,
 		// JSON parts above 16 KiB this host originates (snapshots of the catalogs) go deflated: the WebSocket does not
 		// compress, and a tunnel carries them as they are.
 		compression: nodeCompression,
@@ -198,6 +216,14 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		userRoot,
 	);
 	const { plugins: chordPlugins } = p2Plugins;
+	const serveWeb = options.web ?? true;
+	/**
+	 * The pages' code (Chord's web surface): the base bundle built from src/hosts/web/entry.ts after the listen, the
+	 * plugins' web facets as scripts that apply in place; served by `web.ts` with p2's own access rules (no routes).
+	 */
+	const surface = serveWeb
+		? webSurface(host, { plugins: chordPlugins, entry: WEB_ENTRY, ...WEB_RESOLUTION, routes: false })
+		: undefined;
 	// Listen first so plugins see the actual port, but capture requests/upgrades BEFORE listening.
 	// A reconnect can arrive while plugins load: without an upgrade listener Node treats it as
 	// a normal HTTP request, loses it, and leaves the browser waiting forever for its handshake.
@@ -211,13 +237,19 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 	});
 	http.on("upgrade", (request, socket, head) => {
 		const path = new URL(request.url ?? "/", "http://localhost").pathname;
-		/** `/chord/<kind>`: a link admitted by a token alone (`LinkTokens`). */
-		const tokenKind = TOKEN_LINK.exec(path)?.[1];
 		void loaded
-			.then(() => (tokenKind === undefined ? upgradePrincipal(request) : tokenPrincipal(request, tokenKind)))
+			.then(() => upgradePrincipal(request))
 			.catch(() => undefined)
 			.then(async (principal) => {
-				if ((path === "/chord" || tokenKind !== undefined) && principal !== undefined) {
+				if (path === "/chord" && principal !== undefined) {
+					const stale = await stalePage(request);
+					if (stale) {
+						// Its link would re-hold what its code holds, types removed since included (each waiting on the
+						// worker and reported there at every start): it reloads onto the current bundle instead.
+						reportStalePage(request, principal, stale);
+						sockets.handleUpgrade(request, socket, head, (ws) => ws.close(STALE_PAGE_CODE, STALE_PAGE_REASON));
+						return;
+					}
 					upgraded.set(request, principal);
 					sockets.handleUpgrade(request, socket, head, (ws) => sockets.emit("connection", ws, request));
 				} else if (principal !== undefined) {
@@ -283,7 +315,6 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 	);
 	// Capture before plugin resources open (e.g. provider SDK startup), not only after the logs facet activates.
 	const stopLogs = captureProcessLogs("server");
-	const serveWeb = options.web ?? true;
 	/** Source files of the last built bundles, by bundle (dev watcher: which plugin saves affect downloaded code). */
 	const bundleInputs = new Map<"tui" | "web", readonly string[]>();
 	/**
@@ -308,8 +339,7 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 	};
 	/** Records a built bundle only once it is current (after a successful reload commit). */
 	const adoptTui = (bundle: TuiBundle): void => recordInputs("tui", bundle.inputs);
-	const adoptWeb = (bundle: WebBundle): void => recordInputs("web", bundle.inputs);
-	// Both bundles build once, on first use, and again only when a plugin reload commits. A late lazy build may not
+	// The TUI bundle builds once, on first use, and again only when a plugin reload commits. A late lazy build may not
 	// overwrite the input baseline installed by a newer reload.
 	let tuiBundle: Promise<TuiBundle> | undefined;
 	const getTuiBundle = (): Promise<TuiBundle> => {
@@ -328,31 +358,6 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		tuiBundle = current;
 		return current;
 	};
-	let webBundle: Promise<WebBundle> | undefined;
-	const retainedWebBundles: { readonly bundle: Promise<WebBundle>; readonly expires: number }[] = [];
-	const getWebBundle = (): Promise<WebBundle> => {
-		if (webBundle) return webBundle;
-		let current!: Promise<WebBundle>;
-		current = buildWebBundle(plugins, roots).then(
-			(bundle) => {
-				if (webBundle === current) adoptWeb(bundle);
-				return bundle;
-			},
-			(error: unknown) => {
-				if (webBundle === current) webBundle = undefined;
-				throw error;
-			},
-		);
-		webBundle = current;
-		return current;
-	};
-	const previousWebBundles = async (): Promise<readonly WebBundle[]> => {
-		const now = Date.now();
-		for (let index = retainedWebBundles.length - 1; index >= 0; index--)
-			if (retainedWebBundles[index]!.expires <= now) retainedWebBundles.splice(index, 1);
-		const settled = await Promise.allSettled(retainedWebBundles.map(({ bundle }) => bundle));
-		return settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
-	};
 	const stopDevEvents = dev
 		? workers.subscribe(({ session, running, generation, pid }) =>
 				process.send?.({
@@ -366,7 +371,10 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		: undefined;
 	/** Script nonce of the page CSP (one per server, written into the page's inline scripts). */
 	const nonce = randomUUID();
-	const web = serveWeb ? createWeb({ nonce, bundle: getWebBundle, previousBundles: previousWebBundles }) : undefined;
+	const web =
+		surface === undefined
+			? undefined
+			: createWeb({ nonce, surface, root: (fn) => host.root(fn, BACKGROUND_CONTEXT) });
 	try {
 		await chordPlugins.load(
 			host,
@@ -380,12 +388,31 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 							workers,
 							root: (fn, context) => host.root(fn, context),
 							store,
+							telemetry: telemetry.telemetry,
 							plugins: { root: userRoot, reload: (requested) => applyPlugins(requested) },
 						}),
 					},
 					{ name: "@p2/tui-preferences", facet: tuiPreferencesFacet(dataDir) },
 					// The server's files (the kit's `Files`): `<data>/server/files/`.
 					{ name: "chord.app.files", facet: filesFacet(hostFiles(serverDirectory(dataDir))) },
+					// The pages' code, and the user's locale pick that a page's language follows (Chord's page holds it).
+					{
+						name: "chord.telemetry",
+						facet: telemetryIngestFacet<P2Principal>({
+							target: telemetry.telemetry,
+							// Owners' pages only: a guest could open page after page (each its own budget).
+							admit: isOwner,
+							workerHost: (principal) =>
+								principal.kind === "worker" ? Session({ id: principal.session }).key : undefined,
+							principalAttributes,
+						}),
+					},
+					...(surface === undefined
+						? []
+						: [
+								{ name: "chord.web", facet: surface.facet },
+								{ name: "chord.locale.choice", facet: localeChoiceFacet<P2Principal>() },
+							]),
 					...(options.facets ?? []),
 				],
 				modules: SERVER_PACKAGES,
@@ -396,6 +423,7 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		processLogs.notice("server", `Server startup failed: ${error instanceof Error ? error.message : String(error)}`);
 		await workers.close(BACKGROUND_CONTEXT).catch(() => {});
 		await host.close(BACKGROUND_CONTEXT).catch(() => {});
+		await telemetry.close().catch(() => {});
 		await store.close(BACKGROUND_CONTEXT).catch(() => {});
 		p2Plugins.close();
 		stopLogs();
@@ -406,9 +434,9 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 
 	let reloading = false;
 	/**
-	 * Builds `requested` (and plugins added since), then the TUI and web bundles of the new selection, then rolls the
-	 * build out to the server and every running worker and adopts the bundles. Stops before the rollout at the first
-	 * failed build (a facet's, or a bundle's): nothing changes then.
+	 * Builds `requested` (and plugins added since), web facets included, then the TUI bundle of the new selection, then
+	 * rolls the build out to the server, every running worker and the pages (the web surface), and adopts the TUI bundle.
+	 * Stops before the rollout at the first failed build (a facet's, or the TUI bundle's): nothing changes then.
 	 */
 	const rebuild = async (requested: readonly string[]): Promise<Rebuilt> => {
 		const built = await chordPlugins.build(requested, BACKGROUND_CONTEXT);
@@ -418,31 +446,26 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		if (failed.length) return { kind: "failed", failed };
 		const next = currentSelection();
 		processLogs.append("server", "event", `Reloading plugins: ${requested.join(", ")}`);
-		// Prepare downloaded code before the backend commit; publish only a successfully committed selection.
+		// Prepare the TUI's downloaded code before the backend commit; publish only a successfully committed selection.
+		// Web facets are among `built`: the web surface's step publishes them to pages after the server and workers.
 		let nextTuiBundle: TuiBundle;
-		let nextWebBundle: WebBundle | undefined;
 		try {
 			nextTuiBundle = await buildTuiBundle(next, options.tuiDirectory ?? roots);
-			nextWebBundle = serveWeb ? await buildWebBundle(next, roots) : undefined;
 		} catch (error) {
 			return { kind: "failed", failed: bundleFailures(error, roots) };
 		}
 		const result = await chordPlugins.rollout(
-			[chordPlugins.step("server", host), workers.workers.step("workers")],
+			[
+				chordPlugins.step("server", host),
+				workers.workers.step("workers"),
+				...(surface === undefined ? [] : [surface.step("web")]),
+			],
 			built,
 			BACKGROUND_CONTEXT,
 		);
 		plugins = next;
 		tuiBundle = Promise.resolve(nextTuiBundle);
 		adoptTui(nextTuiBundle);
-		if (nextWebBundle) {
-			if (webBundle) {
-				retainedWebBundles.unshift({ bundle: webBundle, expires: Date.now() + WEB_BUNDLE_GRACE_MS });
-				retainedWebBundles.splice(2);
-			}
-			webBundle = Promise.resolve(nextWebBundle);
-			adoptWeb(nextWebBundle);
-		}
 		const changed = [...new Set(built.facets.map((facet) => facet.plugin))].sort();
 		for (const notice of processLogs.notices())
 			if (notice.source === "server" && notice.message.startsWith("Reload refused:"))
@@ -451,8 +474,8 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 		return { kind: "rolled", built, result, changed };
 	};
 	/**
-	 * Builds `requested` (and plugins added since), then rolls them out to the server and every running worker; the TUI
-	 * and web bundles are rebuilt first (a failed build keeps the old code and bundles). A plugin whose build or
+	 * Builds `requested` (and plugins added since), then rolls them out to the server, every running worker and the
+	 * pages; the TUI bundle is rebuilt first (a failed build keeps the old code and bundles). A plugin whose build or
 	 * evaluation fails keeps its old code (an added one stays out), reported in the result.
 	 */
 	const performReload = async (
@@ -706,19 +729,12 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 					// The Radius shell frames the relayed UI; X-Frame-Options cannot name another origin.
 					if (access.origin.relayShellOrigin !== undefined) response.removeHeader("X-Frame-Options");
 				}
-				// A sandboxed frame (an opaque origin: Chrome sends `Origin: null` even for its scripts) may load the view
-				// kit (views plugin, docs/rooms.md), and only that, as nobody: no cookie reaches the route.
-				const anonymous =
-					request.headers.origin === "null" &&
-					(request.method === "GET" || request.method === "HEAD") &&
-					VIEW_KIT.test(path);
-				if (access === undefined || (!anonymous && !sameOrigin(request, access.origin))) {
+				if (access === undefined || !sameOrigin(request, access.origin)) {
 					response.writeHead(403, { "Content-Type": "text/plain" });
 					response.end(access === undefined ? "Localhost only" : "Invalid origin");
 					return;
 				}
-				const { origin } = access;
-				const principal = anonymous ? undefined : access.principal;
+				const { principal, origin } = access;
 				// Unauthenticated readiness (Pi Mobile's /health, polled by launchers); known Hosts only.
 				if (path === "/health" && (request.method === "GET" || request.method === "HEAD")) {
 					response.writeHead(200, { "Content-Type": "application/json" });
@@ -794,7 +810,8 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 					if (cookies.length) response.setHeader("Set-Cookie", cookies);
 				}
 				if (isOwner(principal) || (isGuest(principal) && (await web?.guestMayLoad(request, principal)))) {
-					if (web !== undefined) return web.handle(request, response, origin.relayShellOrigin);
+					if (web !== undefined)
+						return web.handle(request, response, { principal, shellOrigin: origin.relayShellOrigin });
 					response.writeHead(404, { "Content-Type": "text/plain" });
 					response.end("Not found");
 					return;
@@ -829,27 +846,31 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 			return access !== undefined && sameOrigin(request, access.origin) ? access.principal : undefined;
 		}, BACKGROUND_CONTEXT);
 	};
-	/**
-	 * The principal of a token link (`/chord/<kind>?token=…`), or undefined to refuse it. Its caller may be a sandboxed
-	 * frame: `Origin` may be `null` (or this server's own), and its cookies are never read. The Host must be one this
-	 * server answers (loopback, an allowed tunnel, a relay's): DNS rebinding is refused as for every request.
-	 */
-	const tokenPrincipal = async (request: IncomingMessage, kind: string): Promise<P2Principal | undefined> =>
-		host.root(async (ctx) => {
-			let origin: RequestOrigin | undefined;
-			for (const resolve of (await host.registry(RequestResolvers, ctx)).value.values()) {
-				origin = resolve(request, ctx)?.origin;
-				if (origin !== undefined) break;
-			}
-			origin ??= requestOrigin(request, allowedHosts);
-			const from = request.headers.origin;
-			if (origin === undefined || (from !== undefined && from !== "null" && from !== origin.origin))
-				return undefined;
-			const token = new URL(request.url ?? "/", "http://localhost").searchParams.get("token");
-			const admit = (await host.registry(LinkTokens, ctx)).value.get(kind);
-			return token && admit ? admit(token, ctx) : undefined;
-		}, BACKGROUND_CONTEXT);
 	const upgraded = new WeakMap<IncomingMessage, P2Principal>();
+	/**
+	 * A page's link from code other than the current: its `web` query names another base bundle, or it names neither a
+	 * base nor a client (`client`: the TUI, Cloud Brain's pages, scripts), a page from before pages named their base
+	 * (src/runtime/stale-page.ts). Without the web surface no page is served here and none is asked.
+	 */
+	const stalePage = async (request: IncomingMessage): Promise<StalePage | undefined> => {
+		const query = new URL(request.url ?? "/", "http://localhost").searchParams;
+		const sent = query.get("web");
+		if (surface === undefined || (sent === null && isLinkClient(query.get("client")))) return undefined;
+		const current = await surface.base();
+		if (sent === null) return { sent, current };
+		return current !== undefined && sent !== current ? { sent, current } : undefined;
+	};
+	/** Stale pages already reported, by who and which version: each is told the owner once per server run. */
+	const staleReported = new Set<string>();
+	const reportStalePage = (request: IncomingMessage, principal: P2Principal, { sent, current }: StalePage): void => {
+		const who = principalText(principal);
+		const agent = String(request.headers["user-agent"] ?? "unknown browser").slice(0, 200);
+		const text = `A page running an older p2 (web bundle ${sent ?? "unnamed: from before 2026-11-12"}, current ${current ?? "not built"}) tried to connect and was told to reload: ${who}, ${agent}, from ${request.socket.remoteAddress ?? "unknown address"} (WebSocket /chord).`;
+		const key = `${who}\n${agent}\n${sent}`;
+		if (staleReported.has(key)) return;
+		staleReported.add(key);
+		processLogs.notice("stale-pages", text);
+	};
 	// Mobile's limits: frames up to 1 MiB, 4 MiB unsent output (socket-limits.ts); Chord queues calls behind its window.
 	sockets.on("connection", (socket, request: IncomingMessage) => {
 		const principal = upgraded.get(request);
@@ -871,18 +892,21 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 					process.send?.({ type: "dev-worker", sessionId: session, running: false });
 				});
 	}
-	// Build the web UI in the background, so the first page load rarely waits for it. A superseded lazy build neither
-	// changes the current baseline nor reports a stale failure after a newer reload committed.
-	if (serveWeb) {
-		const startupWebBundle = getWebBundle();
-		void startupWebBundle.catch((error: unknown) => {
-			if (webBundle === undefined || webBundle === startupWebBundle)
-				processLogs.notice(
-					"server",
-					`Web UI build failed: ${error instanceof Error ? error.message : String(error)}`,
-				);
-		});
-	}
+	// Build the pages' base bundle in the background, so the first page load rarely waits for it; its files are the
+	// web's base code (a save of one asks for a restart in dev mode).
+	void surface?.build().then((built) => {
+		if (built.kind === "built")
+			recordInputs(
+				"web",
+				// Packages change by an install, which restarts anyway (the old bundle recorded none either).
+				[...built.inputs].flatMap(([file, hash]) => (file.includes("/node_modules/") ? [] : [{ file, hash }])),
+			);
+		else
+			processLogs.notice(
+				"server",
+				`Web UI build failed: ${built.error instanceof Error ? built.error.message : String(built.error)}`,
+			);
+	});
 	markLoaded();
 	if (supervised) process.send?.({ type: "dev-ready" });
 	let closing: Promise<void> | undefined;
@@ -902,8 +926,10 @@ export async function startServer(options: ServerOptions = {}): Promise<P2Server
 				stopDevEvents?.();
 				for (const client of sockets.clients) client.terminate();
 				await new Promise<void>((resolve) => sockets.close(() => resolve()));
+				// Workers send their last spans while closing, the host records its own: the store drains after both.
 				await workers.close(BACKGROUND_CONTEXT);
 				await host.close(BACKGROUND_CONTEXT);
+				await telemetry.close();
 				await store.close(BACKGROUND_CONTEXT);
 				p2Plugins.close();
 				stopLogs();

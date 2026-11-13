@@ -5,6 +5,11 @@
 ### Breaking Changes
 
 - Chord v2's app kit changes `startServer`'s `principal` from `{ server, worker }` to `{ server, worker?, owner }`: `owner` is the app-chosen strict-JSON principal used by the owner link, owner token file, pairing and invites, and is exposed as `AppInfo.owner`; it must differ from `server`. `worker` is required only when worker kinds are configured. Migration: add the app's owner principal and keep the existing worker function when the app has workers.
+- `telemetryIngestFacet` requires `admit(principal)`: only the pages of principals it admits may send their spans to `PageTelemetry`; a refused principal's hold fails `forbidden`. The app kit admits every signed-in page. Migration: pass `admit` (`() => true` keeps the old behaviour).
+
+### Added
+
+- `@earendil-works/chord/telemetry-ingest`: the telemetry recorder, the page and worker batches and objects, the ingest facet and the senders, for an app wiring telemetry into hosts of its own.
 
 ### Fixed
 
