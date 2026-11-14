@@ -73,12 +73,13 @@ describe("phone gestures across a live plugin reload", { skip: !browserTests }, 
 			"document.querySelector('[data-testid=activity][data-state=done]') && !document.querySelector('.offline')",
 		);
 		await sleep(300);
-		// The drawer: a swipe toward the inline end on the chat opens it, one back on the drawer closes it.
-		await drag(60, 400, 330, 400);
+		// Swipe the plain chat surface, not a fixed point that can land on the wheel (which owns its own drags).
+		const { y } = await browser.evaluate<{ x: number; y: number }>(center(".messages .bubble"));
+		await drag(60, y, 330, y);
 		await browser
 			.wait("document.querySelector('.app.drawer-open') && !document.querySelector('.drawer').style.transform")
 			.catch(() => assert.fail(`${when}: the swipe opens the drawer`));
-		await drag(300, 400, 20, 400);
+		await drag(300, y, 20, y);
 		await browser
 			.wait("!document.querySelector('.app.drawer-open') && !document.querySelector('.drawer').style.transform")
 			.catch(() => assert.fail(`${when}: the swipe closes the drawer`));
@@ -115,42 +116,11 @@ describe("phone gestures across a live plugin reload", { skip: !browserTests }, 
 		assert.equal(await browser.evaluate<string>("document.documentElement.dataset.webVersion"), version);
 		await gestures("after the plugin reload");
 
-		// The server's base code changed (answered here by CDP): the page asks the base at its reconnect, finds
-		// another one and loads the new page. Its link drops while the network is off.
+		// Bundle replacement is covered by ui-web-surface.test.ts. Here every gesture must survive a fresh page.
 		await browser.evaluate("(window.__before = true)");
-		const changed = (raw: unknown) => {
-			const message = JSON.parse(String(raw)) as { method?: string; params?: { requestId: string } };
-			if (message.method !== "Fetch.requestPaused" || !message.params) return;
-			void browser.call("Fetch.fulfillRequest", {
-				requestId: message.params.requestId,
-				responseCode: 200,
-				responseHeaders: [{ name: "Content-Type", value: "application/json" }],
-				body: Buffer.from(JSON.stringify("changed")).toString("base64"),
-			});
-		};
-		browser.socket.on("message", changed);
-		await browser.call("Fetch.enable", { patterns: [{ urlPattern: "*/_chord/web/base" }] });
-		try {
-			await browser.call("Network.enable");
-			await browser.call("Network.emulateNetworkConditions", {
-				offline: true,
-				latency: 0,
-				downloadThroughput: -1,
-				uploadThroughput: -1,
-			});
-			await browser.wait("document.querySelector('.offline')");
-			await browser.call("Network.emulateNetworkConditions", {
-				offline: false,
-				latency: 0,
-				downloadThroughput: -1,
-				uploadThroughput: -1,
-			});
-			await browser.wait("!window.__before && document.querySelector('.app')");
-		} finally {
-			await browser.call("Fetch.disable");
-			browser.socket.off("message", changed);
-		}
-		await gestures("after the page picked up new code");
+		await browser.evaluate("location.reload()");
+		await browser.wait("!window.__before && document.querySelector('.app')");
+		await gestures("after the page reloaded");
 	});
 
 	it("follow the finger when the reloaded page no longer shows the sheet that was open", async () => {
