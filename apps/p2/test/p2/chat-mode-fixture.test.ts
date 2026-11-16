@@ -203,7 +203,7 @@ describe("chat mode (server, sharing, fake provider)", () => {
 		assert.match(text, /^Owner: my notes \[attached: notes\.txt, d\.png, e\.png\]$/m);
 		assert.match(text, /Alice \(guest\) mentioned you:\n@Pi, what do you think\?/);
 		assert.match(text, /^Owner: hello people$/m, "chat never passed on goes with the first mention");
-		for (const name of ["a.png", "b.png", "c.png", "notes.txt", "d.png", "e.png"]) assert(text.includes(`(${name},`));
+		for (const name of ["a.png", "b.png", "c.png", "notes.txt", "d.png", "e.png"]) assert(text.includes(`${name}"`));
 		const inlined = (asked.content as { type: string }[]).filter((part) => part.type === "image");
 		assert.equal(inlined.length, MAX_DIGEST_IMAGES, "only the newest images are inlined");
 		// People see the mention from its entry's data: Alice's own words, and which chat went with it.
