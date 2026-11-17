@@ -25,7 +25,7 @@ import { claimOwner } from "../../src/hosts/tui-config.ts";
 import { defineFacet } from "../../src/runtime/chord.ts";
 import { TuiRuntime } from "../../src/runtime/tui.ts";
 import { TuiEntryRenderers, TuiMarkdownTransformers, TuiToolRenderers } from "../../src/runtime/tui-renderers.ts";
-import { AssistantMessageComponent } from "../../src/tui/components/messages.ts";
+import { AssistantMessageComponent, UserMessageComponent } from "../../src/tui/components/messages.ts";
 import { ToolExecutionComponent } from "../../src/tui/components/tool-execution.ts";
 import { tuiCoreFacet } from "../../src/tui/core-commands.ts";
 import { transcriptComponent } from "../../src/tui/messages.ts";
@@ -39,12 +39,14 @@ import { wholeView } from "../fixtures/whole-view.ts";
 import { type Cell, holdIn, poll, startFixture } from "./helpers.ts";
 import { SESSION, type Stub, sessionsStub, topology } from "./tui-fixture.ts";
 
-const plain = (lines: string[]): string => lines.map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
+const plain = (lines: readonly string[]): string =>
+	lines.map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
 const CTRL_C = "\x03";
 const CTRL_D = "\x04";
 const CTRL_END = "\x1b[1;5F";
 const CTRL_HOME = "\x1b[1;5H";
 const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
 const LEFT = "\x1b[D";
 
 const usage = {
@@ -117,6 +119,24 @@ test("pi's message components: Markdown, hidden thinking, error notices, sanitiz
 		/Response was truncated before completion\./,
 	);
 	assert.equal(safeText("safe\x1b]52;c;evil\x07\x1b[2J\x00 text"), "safe text");
+});
+
+test("prompt zones stay unchanged across repeated renders and follow updated messages", () => {
+	const item = { type: "user" as const, key: "user", text: "Original user", images: [], files: [] };
+	const user = new UserMessageComponent(item, ctx());
+	const answer = new AssistantMessageComponent(ctx(), assistant([{ type: "text", text: "Original answer" }]));
+	for (const component of [user, answer]) {
+		const first = component.render(60);
+		const saved = [...first];
+		assert.deepEqual(component.render(60), saved);
+		assert.deepEqual(first, saved, "a later render must not mutate the earlier frame");
+		for (const zone of ["\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07"])
+			assert.equal(first.join("").split(zone).length - 1, 1);
+	}
+	user.update({ ...item, text: "Updated user" });
+	answer.updateContent(assistant([{ type: "text", text: "Updated answer" }]));
+	assert.match(plain(user.render(60)), /Updated user/);
+	assert.match(plain(answer.render(60)), /Updated answer/);
 });
 
 test("tool cards: pi's bash, read, edit diff, generic fallback, code mode with nested calls, theme swap", () => {
@@ -466,6 +486,56 @@ test("a gap in view fills its missing entries; its Load more line goes", async (
 	});
 	await poll(async () => (await screen()).includes("filled answer"));
 	assert.deepEqual(queries, [{ minEntryId: 2, maxEntryId: 9, order: "ascending", limit: 100 }]);
+	assert(!(await screen()).includes("Load more"));
+});
+
+test("a gap revealed by cached scrolling loads once without rerendering loaded lines", async (t) => {
+	const queries: { minEntryId?: number; maxEntryId?: number }[] = [];
+	const { runtime, worker, stubs, screen, send } = await chatRuntime(
+		t,
+		() => viewOf([answerEntry(1, longAnswer(40, "loaded"), 1)]),
+		{
+			entries: (query) => {
+				queries.push(query);
+				return { items: [answerEntry(50, "filled gap", 50)], more: false };
+			},
+		},
+	);
+	await poll(async () => (await screen()).includes("loaded-39"));
+	const later = { ...viewOf([answerEntry(100, longAnswer(40, "recent"), 100)]), before: 99 as EntryId };
+	stubs.get(1)!.latest = later;
+	await worker.root((root) => {
+		for (const view of stubs.get(1)!.views) view.replace(root, later);
+	});
+	await poll(async () => (await screen()).includes("recent-39"));
+	assert.deepEqual(queries, [], "an offscreen gap does not fetch yet");
+
+	const surface = runtime.ctx.surface("chat");
+	assert(surface instanceof ChatSurface);
+	const render = surface.transcript.render;
+	let renders = 0;
+	surface.transcript.render = (width) => {
+		renders++;
+		return render.call(surface.transcript, width);
+	};
+	try {
+		send(PAGE_UP);
+		await poll(async () => !(await screen()).includes("recent-39"));
+		assert.equal(renders, 0, "moving through loaded lines must reuse component output");
+	} finally {
+		surface.transcript.render = render;
+	}
+	send(CTRL_HOME);
+	await poll(async () => (await screen()).includes("loaded-0"));
+	assert.deepEqual(queries, [], "the interior gap is still offscreen");
+	await poll(async () => {
+		if (queries.length > 0) return true;
+		send(PAGE_DOWN);
+		await screen();
+		return queries.length > 0;
+	});
+	await poll(async () => (await screen()).includes("filled gap"));
+	assert.deepEqual(queries, [{ minEntryId: 2, maxEntryId: 99, order: "ascending", limit: 100 }]);
 	assert(!(await screen()).includes("Load more"));
 });
 

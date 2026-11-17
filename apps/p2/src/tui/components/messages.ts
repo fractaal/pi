@@ -22,12 +22,18 @@ export type MessageContext = RenderContext & {
 };
 type UserItem = Extract<Item, { type: "user" }>;
 
-/** OSC 133 prompt zones: pi-tui uses them for prompt jumps and strips them from screen lines. */
-function zone(lines: string[]): string[] {
+const zonedLines = new WeakMap<readonly string[], readonly string[]>();
+
+/** OSC 133 zones, copied once per change: pi-tui's cached render output must not be mutated. */
+function zone(lines: readonly string[]): readonly string[] {
 	if (lines.length === 0) return lines;
-	lines[0] = OSC133_ZONE_START + lines[0];
-	lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
-	return lines;
+	const cached = zonedLines.get(lines);
+	if (cached) return cached;
+	const zoned = [...lines];
+	zoned[0] = OSC133_ZONE_START + zoned[0];
+	zoned[zoned.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + zoned[zoned.length - 1];
+	zonedLines.set(lines, zoned);
+	return zoned;
 }
 
 /** Rebuilds baked content when the theme changed (section 5.4). */
@@ -40,7 +46,7 @@ abstract class Themed extends Container {
 		this.themeVersion = ctx.theme.version;
 	}
 	protected abstract rebuild(): void;
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		if (this.themeVersion !== this.ctx.theme.version) {
 			this.themeVersion = this.ctx.theme.version;
 			this.rebuild();
@@ -125,7 +131,7 @@ export class UserMessageComponent extends Themed {
 		if (tail.length) box.addChild(new Text(tail.join("\n"), 0, 0));
 		this.addChild(box);
 	}
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		return zone(super.render(width));
 	}
 }
@@ -163,7 +169,7 @@ export class AssistantMessageComponent extends Themed {
 		this.rebuild();
 	}
 
-	override render(width: number): string[] {
+	override render(width: number): readonly string[] {
 		const lines = super.render(width);
 		return this.hasToolCalls ? lines : zone(lines);
 	}

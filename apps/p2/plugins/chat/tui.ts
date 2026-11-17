@@ -9,6 +9,7 @@ import {
 	type Component,
 	Container,
 	ScrollView,
+	type ScrollViewOptions,
 	Text,
 	TruncatedText,
 	truncateToWidth,
@@ -82,6 +83,21 @@ const NO_OUTGOING: readonly Outgoing[] = [];
 /** pi: a second Ctrl+C within this window exits; a second Escape runs `doubleEscapeAction`. */
 const DOUBLE_CTRL_C_MS = 500;
 const DOUBLE_ESCAPE_MS = 500;
+
+/** Paging follows the laid-out viewport even when pi-tui reuses the transcript's cached output. */
+class TranscriptScrollView extends ScrollView {
+	private readonly transcript: TranscriptView;
+
+	constructor(transcript: TranscriptView, options: ScrollViewOptions) {
+		super(transcript, options);
+		this.transcript = transcript;
+	}
+
+	override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void): void {
+		super.updateLayout(contentHeight, viewportHeight, requestRender);
+		this.transcript.viewportChanged();
+	}
+}
 
 export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 	readonly [CHAT_SURFACE] = true as const;
@@ -203,7 +219,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 			{ expanded: runtime.expandedTools, showThinking: runtime.showThinking },
 			{ render: (width) => runtime.header.render(width), invalidate: () => runtime.header.invalidate() },
 		);
-		this.scroll = new ScrollView(this.transcript, {
+		this.scroll = new TranscriptScrollView(this.transcript, {
 			follow: "end",
 			primary: true,
 			overscroll: "chain",
@@ -845,7 +861,15 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 	private loadEarlier(): void {
 		const ref = this.ref;
 		const store = this.transcriptStore;
-		if (ref === undefined || statusOf(ref) !== "live" || !store || this.earlierFailed.has(store)) return;
+		if (
+			ref === undefined ||
+			statusOf(ref) !== "live" ||
+			!store ||
+			this.earlierFailed.has(store) ||
+			store.value?.view.items[0]?.kind !== "earlier" ||
+			store.value.loadingEarlier
+		)
+			return;
 		this.runtime.perform(
 			(async () => {
 				try {
