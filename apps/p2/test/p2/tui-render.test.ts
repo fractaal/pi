@@ -25,7 +25,7 @@ import { claimOwner } from "../../src/hosts/tui-config.ts";
 import { defineFacet } from "../../src/runtime/chord.ts";
 import { TuiRuntime } from "../../src/runtime/tui.ts";
 import { TuiEntryRenderers, TuiMarkdownTransformers, TuiToolRenderers } from "../../src/runtime/tui-renderers.ts";
-import { AssistantMessageComponent } from "../../src/tui/components/messages.ts";
+import { AssistantMessageComponent, UserMessageComponent } from "../../src/tui/components/messages.ts";
 import { ToolExecutionComponent } from "../../src/tui/components/tool-execution.ts";
 import { tuiCoreFacet } from "../../src/tui/core-commands.ts";
 import { transcriptComponent } from "../../src/tui/messages.ts";
@@ -39,7 +39,8 @@ import { wholeView } from "../fixtures/whole-view.ts";
 import { type Cell, holdIn, poll, startFixture } from "./helpers.ts";
 import { SESSION, type Stub, sessionsStub, topology } from "./tui-fixture.ts";
 
-const plain = (lines: string[]): string => lines.map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
+const plain = (lines: readonly string[]): string =>
+	lines.map((line) => stripTerminalSequences(line).trimEnd()).join("\n");
 const CTRL_C = "\x03";
 const CTRL_D = "\x04";
 const CTRL_END = "\x1b[1;5F";
@@ -117,6 +118,24 @@ test("pi's message components: Markdown, hidden thinking, error notices, sanitiz
 		/Response was truncated before completion\./,
 	);
 	assert.equal(safeText("safe\x1b]52;c;evil\x07\x1b[2J\x00 text"), "safe text");
+});
+
+test("prompt zones stay unchanged across repeated renders and follow updated messages", () => {
+	const item = { type: "user" as const, key: "user", text: "Original user", images: [], files: [] };
+	const user = new UserMessageComponent(item, ctx());
+	const answer = new AssistantMessageComponent(ctx(), assistant([{ type: "text", text: "Original answer" }]));
+	for (const component of [user, answer]) {
+		const first = component.render(60);
+		const saved = [...first];
+		assert.deepEqual(component.render(60), saved);
+		assert.deepEqual(first, saved, "a later render must not mutate the earlier frame");
+		for (const zone of ["\x1b]133;A\x07", "\x1b]133;B\x07", "\x1b]133;C\x07"])
+			assert.equal(first.join("").split(zone).length - 1, 1);
+	}
+	user.update({ ...item, text: "Updated user" });
+	answer.updateContent(assistant([{ type: "text", text: "Updated answer" }]));
+	assert.match(plain(user.render(60)), /Updated user/);
+	assert.match(plain(answer.render(60)), /Updated answer/);
 });
 
 test("tool cards: pi's bash, read, edit diff, generic fallback, code mode with nested calls, theme swap", () => {
