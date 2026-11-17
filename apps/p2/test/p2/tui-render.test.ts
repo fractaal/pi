@@ -46,6 +46,7 @@ const CTRL_D = "\x04";
 const CTRL_END = "\x1b[1;5F";
 const CTRL_HOME = "\x1b[1;5H";
 const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
 const LEFT = "\x1b[D";
 
 const usage = {
@@ -485,6 +486,56 @@ test("a gap in view fills its missing entries; its Load more line goes", async (
 	});
 	await poll(async () => (await screen()).includes("filled answer"));
 	assert.deepEqual(queries, [{ minEntryId: 2, maxEntryId: 9, order: "ascending", limit: 100 }]);
+	assert(!(await screen()).includes("Load more"));
+});
+
+test("a gap revealed by cached scrolling loads once without rerendering loaded lines", async (t) => {
+	const queries: { minEntryId?: number; maxEntryId?: number }[] = [];
+	const { runtime, worker, stubs, screen, send } = await chatRuntime(
+		t,
+		() => viewOf([answerEntry(1, longAnswer(40, "loaded"), 1)]),
+		{
+			entries: (query) => {
+				queries.push(query);
+				return { items: [answerEntry(50, "filled gap", 50)], more: false };
+			},
+		},
+	);
+	await poll(async () => (await screen()).includes("loaded-39"));
+	const later = { ...viewOf([answerEntry(100, longAnswer(40, "recent"), 100)]), before: 99 as EntryId };
+	stubs.get(1)!.latest = later;
+	await worker.root((root) => {
+		for (const view of stubs.get(1)!.views) view.replace(root, later);
+	});
+	await poll(async () => (await screen()).includes("recent-39"));
+	assert.deepEqual(queries, [], "an offscreen gap does not fetch yet");
+
+	const surface = runtime.ctx.surface("chat");
+	assert(surface instanceof ChatSurface);
+	const render = surface.transcript.render;
+	let renders = 0;
+	surface.transcript.render = (width) => {
+		renders++;
+		return render.call(surface.transcript, width);
+	};
+	try {
+		send(PAGE_UP);
+		await poll(async () => !(await screen()).includes("recent-39"));
+		assert.equal(renders, 0, "moving through loaded lines must reuse component output");
+	} finally {
+		surface.transcript.render = render;
+	}
+	send(CTRL_HOME);
+	await poll(async () => (await screen()).includes("loaded-0"));
+	assert.deepEqual(queries, [], "the interior gap is still offscreen");
+	await poll(async () => {
+		if (queries.length > 0) return true;
+		send(PAGE_DOWN);
+		await screen();
+		return queries.length > 0;
+	});
+	await poll(async () => (await screen()).includes("filled gap"));
+	assert.deepEqual(queries, [{ minEntryId: 2, maxEntryId: 99, order: "ascending", limit: 100 }]);
 	assert(!(await screen()).includes("Load more"));
 });
 

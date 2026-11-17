@@ -338,6 +338,7 @@ export class TranscriptView implements Component {
 	private scroll: ScrollView | undefined;
 	/** Items of the last render with their first line, in order. */
 	private rendered: { key: string; start: number; entryId?: number }[] = [];
+	private gaps: { item: Extract<Item, { type: "gap" }>; start: number; end: number }[] = [];
 	private pendingAnchor: TranscriptAnchor | undefined;
 	/** Called when the reader reached the top: load older history. */
 	onTop: (() => void) | undefined;
@@ -387,6 +388,7 @@ export class TranscriptView implements Component {
 		this.views.clear();
 		this.order = [];
 		this.keys = [];
+		this.gaps = [];
 	}
 
 	setState(state: Partial<ViewState>): void {
@@ -437,21 +439,25 @@ export class TranscriptView implements Component {
 		const lines: string[] = this.header ? [...this.header.render(width)] : [];
 		const starts = new Map<string, number>();
 		const rendered: { key: string; start: number; entryId?: number }[] = [];
+		const gaps: typeof this.gaps = [];
 		// The callbacks below may sync synchronously (store change -> runtime.changed()) and replace `this.order`:
 		// everything after this point works on the views that were actually rendered.
 		const order = this.order;
 		const keys = this.keys;
 		order.forEach((view, index) => {
 			const key = keys[index]!;
-			starts.set(key, lines.length);
-			rendered.push({ key, start: lines.length, entryId: itemEntryId(view.item) });
+			const start = lines.length;
+			starts.set(key, start);
+			rendered.push({ key, start, entryId: itemEntryId(view.item) });
 			lines.push(...view.component.render(width));
+			if (view.item.type === "gap") gaps.push({ item: view.item, start, end: lines.length });
 		});
 		if (order.length === 0 && this.empty && !this.tail) lines.push("", ` ${this.empty}`);
 		if (this.tail) lines.push(...this.tail.render(width));
 		// One empty line between the transcript and the dock (DTUI).
 		lines.push("");
 		this.rendered = rendered;
+		this.gaps = gaps;
 		if (scroll && kept) {
 			const start = starts.get(kept.key);
 			if (start !== undefined) {
@@ -473,21 +479,24 @@ export class TranscriptView implements Component {
 				}
 			}
 		}
-		// At the top of a laid-out viewport (or everything fits): older history may continue above.
-		if (scroll && scroll.viewportHeight > 0 && scroll.scrollTop === 0 && !this.pendingAnchor) this.onTop?.();
-		if (scroll && scroll.viewportHeight > 0 && !this.pendingAnchor)
-			order.forEach((view, index) => {
-				const start = rendered[index]!.start;
-				const end = rendered[index + 1]?.start ?? lines.length;
-				const visible = end > scroll.scrollTop && start < scroll.scrollTop + scroll.viewportHeight;
-				if (visible && view.item.type === "gap") this.onVisibleGap?.(view.item);
-			});
 		return lines;
+	}
+
+	/** Notify history from final viewport state without rendering or scanning the whole transcript again. */
+	viewportChanged(): void {
+		const scroll = this.scroll;
+		if (!scroll || scroll.viewportHeight === 0 || this.pendingAnchor) return;
+		const top = scroll.scrollTop;
+		const bottom = top + scroll.viewportHeight;
+		const gaps = this.gaps;
+		if (top === 0) this.onTop?.();
+		for (const { item, start, end } of gaps) if (end > top && start < bottom) this.onVisibleGap?.(item);
 	}
 
 	dispose(): void {
 		for (const view of this.order) view.dispose();
 		this.views.clear();
 		this.order = [];
+		this.gaps = [];
 	}
 }

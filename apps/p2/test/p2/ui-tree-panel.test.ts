@@ -117,11 +117,11 @@ describe("the tree panel", { skip: !browserTests }, () => {
 		await choose("third");
 		await settled();
 		await marked("third");
-		// The reader scrolls to the top: the mark follows the transcript again ("second" starts above its middle).
-		const box = await browser.evaluate<{ x: number; y: number }>(
-			`(() => { const box = document.querySelector('.scroller.transcript').getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`,
+		// The reader brings "second" to the actual reading line; notices and platform metrics can resize the viewport.
+		const wheel = await browser.evaluate<{ x: number; y: number; deltaY: number }>(
+			`(() => { const box = document.querySelector('.scroller.transcript').getBoundingClientRect(); const row = [...document.querySelectorAll('.messages .user')].find(e => e.querySelector('.bubble')?.textContent.trim().endsWith('second')); return { x: box.left + box.width / 2, y: box.top + box.height / 2, deltaY: row.getBoundingClientRect().top - (box.top + box.height / 2) + 8 }; })()`,
 		);
-		await browser.call("Input.dispatchMouseEvent", { type: "mouseWheel", ...box, deltaX: 0, deltaY: -3000 });
+		await browser.call("Input.dispatchMouseEvent", { type: "mouseWheel", ...wheel, deltaX: 0 });
 		await browser.wait(
 			`document.querySelector('[data-testid=tree-panel] a[data-active] .tree-text')?.textContent === 'second'`,
 		);
