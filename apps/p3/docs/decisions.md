@@ -424,4 +424,12 @@ older entries that say `docs/<file>` or `apps/p3/docs/<file>` now are `apps/p3/d
   their `execArgv`; background recompilation stays on (turning it off saves 1.5 to 2.5 MiB for up to 25% more CPU).
   p3 enforces its minimum Node version at start, and every flag is checked in the supported versions. A memory test
   in the release tests runs a real worker with Durable and pi-ai (stub provider), a burst and five parallel subagents,
-  and fails if the worker's USS ever exceeds 45 MiB.
+  and fails if the worker's USS ever exceeds 55 MiB, one budget for every supported Node (owner, same day: raised
+  from 45 to 50, because after five parallel streams glibc keeps about 10 MiB it freed, the session's own data is
+  about 4 MiB, and the glibc setting that removes it only helps on Linux; then to 55, because Node 26's workers settle
+  about 7 MiB above Node 24's and 50 failed one run in five on Node 26).
+- **p3 ships as a single executable, likely (owner, 2026-11-17):** p3 itself is likely distributed as a Node single
+  executable application (SEA: one binary per platform with Node and p3's code inside), not installed from npm; the
+  packages (the API `@earendil-works/p3` that plugins type-check against, Chord and the others) still go to npm. First
+  step: the local release build (`release:p3:local`) also makes the executable, and the release tests, the memory test
+  and the bench run against it beside the npm install, measured overnight. Later the release uploads the executables.
