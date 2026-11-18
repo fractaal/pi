@@ -22,17 +22,20 @@ export type MessageContext = RenderContext & {
 };
 type UserItem = Extract<Item, { type: "user" }>;
 
+// Container output is shared across frames until a child changes, so zoned copies are kept per source array.
 const zonedLines = new WeakMap<readonly string[], readonly string[]>();
 
-/** OSC 133 zones, copied once per change: pi-tui's cached render output must not be mutated. */
+/** OSC 133 prompt zones: pi-tui uses them for prompt jumps and strips them from screen lines. */
 function zone(lines: readonly string[]): readonly string[] {
 	if (lines.length === 0) return lines;
-	const cached = zonedLines.get(lines);
-	if (cached) return cached;
-	const zoned = [...lines];
-	zoned[0] = OSC133_ZONE_START + zoned[0];
-	zoned[zoned.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + zoned[zoned.length - 1];
-	zonedLines.set(lines, zoned);
+	let zoned = zonedLines.get(lines);
+	if (zoned === undefined) {
+		const copy = [...lines];
+		copy[0] = OSC133_ZONE_START + copy[0];
+		copy[copy.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + copy[copy.length - 1];
+		zoned = copy;
+		zonedLines.set(lines, zoned);
+	}
 	return zoned;
 }
 
