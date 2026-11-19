@@ -9,6 +9,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { BACKGROUND_CONTEXT } from "@p2/app/v1";
 import { Chat } from "../../plugins/chat/contract.ts";
 import { Models } from "../../plugins/models/contract.ts";
@@ -129,6 +130,12 @@ describe("subagent rows in the sidebar", { skip: !browserTests }, () => {
 		await main.send({ text: "slow main", requestId: "slow-main" }, BACKGROUND_CONTEXT);
 		await sub.send({ text: "slow rows", requestId: "slow" }, BACKGROUND_CONTEXT);
 		await browser.wait(`${row("helper")}.querySelector('.nav-marker > .pi-dots[role=img][aria-label=Working]')`);
+		await until(
+			sub.view,
+			(view) =>
+				(view?.docs["pi.live"] as { generation?: { message?: unknown } } | undefined)?.generation?.message !==
+				undefined,
+		);
 		assert.equal((await shown("helper")).tooltip, "faux-1 · off\nFollows the session");
 		await hover("helper");
 		const cancel = `.sidebar-section[data-key=other] .conversation-row > button.item-action[data-action=cancel][aria-label="Stop helper"]`;
@@ -142,7 +149,10 @@ describe("subagent rows in the sidebar", { skip: !browserTests }, () => {
 		await until(status.statuses, (states) => !states?.[session]?.busy.includes(helper().conversationId));
 		// Stopped, not finished on its own.
 		const last = await until(sub.view, (view) => !(view?.docs["pi.live"] as { run?: unknown } | undefined)?.run);
-		assert.doesNotMatch(JSON.stringify(last?.entries ?? []), /Echo: slow rows/);
+		const answer = (last?.entries ?? [])
+			.flatMap((entry) => entry.model ?? [])
+			.findLast((message) => message.role === "assistant") as AssistantMessage | undefined;
+		assert.equal(answer?.stopReason, "aborted", "stopping preserves streamed text as an aborted partial");
 		// A stopped run shows nothing; the main conversation still runs, and the session's item says so.
 		await browser.wait(`!${row("helper")}.querySelector('.nav-marker > *')`);
 		assert.ok(status.statuses.value?.[session]?.busy.includes(1), "the main conversation still runs");
