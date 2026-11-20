@@ -33,14 +33,7 @@ import { headersToRecord } from "../utils/headers.ts";
 import { getIdentityHeaders } from "../utils/identity.ts";
 import { resolveHttpProxyUrlForTarget } from "../utils/node-http-proxy.ts";
 import { isRetryableAssistantError, retryAssistantCall } from "../utils/retry.ts";
-import { getSystemMessageText } from "../utils/text.ts";
-import {
-	getDeclaredTools,
-	getInitialSystemMessage,
-	normalizeContext,
-	resolveTranscript,
-	resolveTranscriptTools,
-} from "../utils/transcript.ts";
+import { getDeclaredTools, normalizeContext, resolveTranscript, resolveTranscriptTools } from "../utils/transcript.ts";
 import { uuidv7 } from "../utils/uuid.ts";
 import { createGrammarToolInputProperties } from "./constrained-sampling.ts";
 import { retainCodexCompactionInput, trimCodexCompactionToolOutputs } from "./openai-codex-compaction-history.ts";
@@ -203,7 +196,6 @@ interface RequestBody {
 	model: string;
 	store?: boolean;
 	stream?: boolean;
-	instructions?: string;
 	previous_response_id?: string;
 	input?: ResponseInput;
 	tools?: OpenAITool[];
@@ -765,8 +757,10 @@ function buildRequestBody(
 	const requestContext = options?.nativeCompaction
 		? trimCodexCompactionToolOutputs(context, checkpointInput, model.contextWindow)
 		: context;
+	// The system prompt goes into a leading developer item, not top-level `instructions`, as in Codex.
+	// From GPT-6.2 on, the backend appends `instructions` after `input`, so every new turn changed the
+	// prompt before the system prompt and it was never served from the prompt cache (#12273).
 	const messages = convertResponsesMessages(model, requestContext, CODEX_TOOL_CALL_PROVIDERS, {
-		includeSystemPrompt: false,
 		grammarToolInputProperties,
 		supportsMidConvoSystemMessages: model.compat?.supportsMidConvoSystemMessages ?? false,
 		supportsAdditionalTools,
@@ -783,7 +777,11 @@ function buildRequestBody(
 		if (!isOpenAINativeCompactionItem(checkpoint.item)) {
 			throw new Error("Stored OpenAI native compaction checkpoint is malformed");
 		}
-		messages.unshift(...(checkpoint.retainedInput ?? []), {
+		const first = messages[0];
+		const hasLeadingPrompt =
+			first && "role" in first && "content" in first && (first.role === "developer" || first.role === "system");
+		// Keep the prompt first, then replay retained user input and the checkpoint before new conversation items.
+		messages.splice(hasLeadingPrompt ? 1 : 0, 0, ...(checkpoint.retainedInput ?? []), {
 			...checkpoint.item,
 		} satisfies ResponseCompactionItemParam);
 	}
@@ -792,13 +790,10 @@ function buildRequestBody(
 		messages.push({ type: "compaction_trigger" } as unknown as ResponseInput[number]);
 	}
 
-	const initialSystemMessage = getInitialSystemMessage(context.messages);
-	const instructions = initialSystemMessage ? getSystemMessageText(initialSystemMessage) : "";
 	const body: RequestBody = {
 		model: model.id,
 		store: false,
 		stream: true,
-		instructions: instructions || "You are a helpful assistant.",
 		input: messages,
 		text: { verbosity: options?.textVerbosity || "low" },
 		include: ["reasoning.encrypted_content"],
@@ -1843,10 +1838,7 @@ async function processWebSocketStream(
 				model,
 				normalizeContext({ messages: [output] }),
 				CODEX_TOOL_CALL_PROVIDERS,
-				{
-					includeSystemPrompt: false,
-					grammarToolInputProperties,
-				},
+				{ grammarToolInputProperties },
 			).filter((item) => item.type !== "function_call_output" && item.type !== "custom_tool_call_output");
 			entry.continuation = {
 				lastRequestBody: fullBody,
