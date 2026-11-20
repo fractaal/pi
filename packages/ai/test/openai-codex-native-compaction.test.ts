@@ -269,9 +269,12 @@ describe("OpenAI Codex native compaction", () => {
 		);
 	});
 
-	it("replays the exact opaque checkpoint before later messages", async () => {
+	// The prompt must stay first for Codex caching (#12273), without moving new messages ahead of the checkpoint.
+	it("replays the exact opaque checkpoint after the leading prompt and before later messages", async () => {
 		mockResponse([{ type: "compaction", encrypted_content: "next-checkpoint" }], (body) => {
+			expect(body).not.toHaveProperty("instructions");
 			expect(body.input).toEqual([
+				{ role: "developer", content: "Be concise." },
 				{ type: "compaction", id: "cmp_1", encrypted_content: "opaque-checkpoint" },
 				{ role: "user", content: [{ type: "input_text", text: "Synthetic context" }] },
 				{ type: "compaction_trigger" },
