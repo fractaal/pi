@@ -63,6 +63,10 @@ const CODEX_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]
 const WEBSOCKET_MESSAGE_TOO_BIG_CLOSE_CODE = 1009;
 const WEBSOCKET_CONNECTION_LIMIT_REACHED_CODE = "websocket_connection_limit_reached";
 const PREVIOUS_RESPONSE_NOT_FOUND_CODE = "previous_response_not_found";
+// The Responses API rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
+const MIN_OUTPUT_TOKENS = 16;
+// Fixed reasoning.effort while configuration_update items carry the thinking level.
+const CONFIGURATION_UPDATE_REQUEST_EFFORT = "medium";
 
 const CODEX_RESPONSE_STATUSES = new Set<CodexResponseStatus>([
 	"completed",
@@ -198,6 +202,7 @@ interface RequestBody {
 	stream?: boolean;
 	previous_response_id?: string;
 	input?: ResponseInput;
+	max_output_tokens?: number;
 	tools?: OpenAITool[];
 	tool_choice?: OpenAICodexResponsesOptions["toolChoice"];
 	parallel_tool_calls?: boolean;
@@ -353,12 +358,14 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 	const normalizedContext = resolveTranscript(context, model.compat?.supportsMidConvoSystemMessages);
 
 	(async () => {
+		const configurationUpdateEffort = getConfigurationUpdateEffort(model, options);
 		const output: AssistantMessage = {
 			role: "assistant",
 			content: [],
 			api: "openai-codex-responses" as Api,
 			provider: model.provider,
 			model: model.id,
+			...(configurationUpdateEffort === undefined ? {} : { providerThinkingLevel: configurationUpdateEffort }),
 			usage: {
 				input: 0,
 				output: 0,
@@ -388,7 +395,14 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 			);
 			const cacheSessionId = options?.cacheRetention === "none" ? undefined : options?.sessionId;
 			const codexSessionId = clampOpenAIPromptCacheKey(cacheSessionId);
-			let body = buildRequestBody(model, normalizedContext, options, codexSessionId, grammarToolInputProperties);
+			let body = buildRequestBody(
+				model,
+				normalizedContext,
+				options,
+				codexSessionId,
+				grammarToolInputProperties,
+				configurationUpdateEffort,
+			);
 			const nextBody = await options?.onPayload?.(body, model);
 			if (nextBody !== undefined) {
 				body = nextBody as RequestBody;
@@ -651,11 +665,14 @@ function buildSimpleCodexOptions(
 		...buildBaseOptions(model, context, options, apiKey),
 		toolChoice: options?.toolChoice,
 	} satisfies OpenAICodexResponsesOptions;
-	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
+	const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : "off";
+	// Off is sent as effort none, so with configuration_update items switching to it keeps the cache.
+	const reasoningEffort = clampedReasoning !== "off" ? clampedReasoning : model.reasoning ? "none" : undefined;
+
 	return {
 		...base,
 		authMode: options?.authMode,
-		reasoningEffort: clampedReasoning === "off" ? undefined : clampedReasoning,
+		reasoningEffort,
 		nativeCompactionCheckpoint: options?.nativeCompactionCheckpoint,
 	};
 }
@@ -730,6 +747,26 @@ export async function compactOpenAICodexResponses(
 // Request Building
 // ============================================================================
 
+/** Effort to send in configuration_update items, or undefined to send it as reasoning.effort. */
+function getConfigurationUpdateEffort(
+	model: Model<"openai-codex-responses">,
+	options: OpenAICodexResponsesOptions | undefined,
+): string | undefined {
+	if (!model.compat?.supportsMidConvoEffort || options?.reasoningEffort === undefined) return undefined;
+	return resolveReasoningEffort(model, options.reasoningEffort) ?? undefined;
+}
+
+/** Provider-native effort for a requested level; null when the model takes no reasoning field for it. */
+function resolveReasoningEffort(
+	model: Model<"openai-codex-responses">,
+	reasoningEffort: NonNullable<OpenAICodexResponsesOptions["reasoningEffort"]>,
+): string | null {
+	if (reasoningEffort === "none") {
+		return model.thinkingLevelMap?.off === undefined ? "none" : model.thinkingLevelMap.off;
+	}
+	return model.thinkingLevelMap?.[reasoningEffort] ?? reasoningEffort;
+}
+
 function buildRequestBody(
 	model: Model<"openai-codex-responses">,
 	context: TranscriptContext,
@@ -739,6 +776,7 @@ function buildRequestBody(
 		getDeclaredTools(context.messages),
 		model.compat?.supportsOpenAIGrammarTools ?? false,
 	),
+	configurationUpdateEffort?: string,
 ): RequestBody {
 	const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
 	const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
@@ -766,6 +804,7 @@ function buildRequestBody(
 		supportsAdditionalTools,
 		supportsToolSearch,
 		toolOptions: { strict: null, supportsStrictMode, supportsOpenAIGrammarTools },
+		configurationUpdateEffort,
 	});
 
 	if (checkpoint) {
@@ -802,6 +841,10 @@ function buildRequestBody(
 		parallel_tool_calls: true,
 	};
 
+	if (options?.maxTokens && (model.compat?.supportsMaxOutputTokens ?? true)) {
+		body.max_output_tokens = Math.max(options.maxTokens, MIN_OUTPUT_TOKENS);
+	}
+
 	if (options?.temperature !== undefined) {
 		body.temperature = options.temperature;
 	}
@@ -820,11 +863,9 @@ function buildRequestBody(
 
 	if (options?.reasoningEffort !== undefined) {
 		const effort =
-			options.reasoningEffort === "none"
-				? model.thinkingLevelMap?.off === undefined
-					? "none"
-					: model.thinkingLevelMap.off
-				: (model.thinkingLevelMap?.[options.reasoningEffort] ?? options.reasoningEffort);
+			configurationUpdateEffort === undefined
+				? resolveReasoningEffort(model, options.reasoningEffort)
+				: CONFIGURATION_UPDATE_REQUEST_EFFORT;
 		if (effort !== null) {
 			body.reasoning = {
 				effort,
