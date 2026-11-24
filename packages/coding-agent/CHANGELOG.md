@@ -13,6 +13,7 @@
 - Added GPT-6.2 Astra and GPT-6.2 Sol to the `openai`, `azure`, and `openai-codex` providers. Both reject reasoning effort `none` and `minimal`, so thinking level `off` is unavailable. Azure serves them with a 1.05M context window; Codex serves GPT-6.2 Sol with 500K and GPT-6.2 Astra with 272K
 - Added `qwen4-max-preview` to the Qwen Token Plan Individual providers ([#12259](https://github.com/earendil-works/pi/issues/12259))
 - Added a transcript notice when OpenAI drops reasoning items from a request, such as `OpenAI dropped 2 reasoning items: prefix_mismatch (details in session)` after compaction on GPT-6.2. Like the Anthropic thinking notice, it is shown when `showCacheMissNotices` is on and only when more items are dropped than in the previous response. Both notices now name the reasons
+- Added `full_output_error` to the bash tool's structured output and `fullOutputError` to its details, `BashResult` and `BashExecutionMessage`, giving the reason when truncated output could not be saved to a temp file. User bash output that was truncated without a saved file now says so in the model context and the TUI ([#10585](https://github.com/earendil-works/pi/issues/10585))
 
 ### Changed
 
@@ -23,6 +24,7 @@
 - The resume command printed on exit is now on its own line after `To resume this session:`, so it can be selected with a triple-click ([#12237](https://github.com/earendil-works/pi/issues/12237))
 - The llama.cpp extension now connects to `http://127.0.0.1:9931` by default, the current llama-server default port, instead of port 8080 ([#12001](https://github.com/earendil-works/pi/pull/12001) by [@julien-c](https://github.com/julien-c))
 - Anthropic message threads are now on by default for any provider whose baseUrl is on api.anthropic.com, not only the `anthropic` provider ([#11987](https://github.com/earendil-works/pi/issues/11987))
+- Changed the default Mistral model from `devstral-medium-latest` to `mistral-medium-latest`, because Mistral retired Devstral and the model catalog no longer lists it
 
 ### Fixed
 
@@ -79,6 +81,13 @@
 - Fixed text after a multi-row inline image in Markdown drawing over the image ([#12017](https://github.com/earendil-works/pi/issues/12017))
 - Fixed Kitty and iTerm2 images covering overlays drawn over them ([#11584](https://github.com/earendil-works/pi/issues/11584))
 - Fixed Enter on a Tab path menu for an absolute path (`look at /tmp/fi`) or a slash command argument menu (`/open /tm`) submitting the prompt instead of accepting the completion ([#12309](https://github.com/earendil-works/pi/issues/12309), [#12312](https://github.com/earendil-works/pi/pull/12312) by [@acmerfight](https://github.com/acmerfight))
+- Fixed the `AuthStorage` coalesced-reload test failing intermittently on systems with coarse file timestamps ([#12190](https://github.com/earendil-works/pi/issues/12190))
+- Fixed the `thinkingLevelMap` reference in the models.json schema and docs suggesting pi does not support the `xhigh` and `max` thinking levels; it now says they are opt-in and only offered when mapped, and the model guide explains how to map thinking levels ([#12281](https://github.com/earendil-works/pi/issues/12281))
+- Fixed Mermaid diagrams wider than the terminal falling back to their source without explanation; a note now says how many columns the diagram needs ([#12324](https://github.com/earendil-works/pi/issues/12324))
+- Fixed copies on Wayland silently failing when `wl-copy` guessed a non-text MIME type from the copied text, for example `application/x-ruby` for text starting with `def`, which clipboard managers such as Klipper discard; pi now copies as `text/plain` ([#12446](https://github.com/earendil-works/pi/pull/12446) by [@ttempaa](https://github.com/ttempaa))
+- Fixed pi crashing when the bash tool or a `!` command could not write its full-output temp file, for example when `/tmp` was full, over a per-user quota or not writable; both now keep the truncated output and say why the full output could not be saved. Opening the external editor and `/share` now report such failures instead of crashing ([#10585](https://github.com/earendil-works/pi/issues/10585))
+- Fixed `/login` showing a provider as configured when its stored `auth.json` key is a `!command` that fails, while requests failed with `No API key found`. `/login` now shows `stored key did not resolve`, `getProviderAuthStatus()` returns `{ configured: false, source: "stored" }`, and entering the same `!command` again in `/login` runs it again instead of reusing the cached failure ([#12164](https://github.com/earendil-works/pi/issues/12164))
+- Fixed `pi update` run from WSL through the Windows installation of pi rebuilding that installation with Linux npm; it now stops and says that running the Windows installation from WSL is unsupported ([#12172](https://github.com/earendil-works/pi/issues/12172))
 
 ### Removed
 

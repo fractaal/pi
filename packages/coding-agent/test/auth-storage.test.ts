@@ -1,14 +1,4 @@
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	rmSync,
-	statSync,
-	symlinkSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CredentialStore, createModels, type Provider } from "@earendil-works/pi-ai";
@@ -51,6 +41,24 @@ describe("AuthStorage", () => {
 		writeAuthJson({ anthropic: { type: "api_key", key: "!printf 'command-key'" } });
 		const storage = AuthStorage.create(authJsonPath);
 		expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "command-key" });
+	});
+
+	// Regression test for #12164: a failed command stays cached until the key is saved again.
+	test("runs a command-backed key again after it is saved", async () => {
+		const name = `PI_TEST_AUTH_STORAGE_COMMAND_${Date.now()}`;
+		const credential = { type: "api_key" as const, key: `!printenv ${name}` };
+		writeAuthJson({ anthropic: credential });
+		const storage = AuthStorage.create(authJsonPath);
+		try {
+			expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: undefined });
+			process.env[name] = "command-key";
+			expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: undefined });
+
+			await storage.modify("anthropic", async () => credential);
+			expect(await storage.read("anthropic")).toEqual({ type: "api_key", key: "command-key" });
+		} finally {
+			delete process.env[name];
+		}
 	});
 
 	test("returns OAuth credentials unchanged", async () => {
@@ -126,11 +134,8 @@ describe("AuthStorage", () => {
 	test("keeps a coalesced reload alive while another credential reader is waiting", async () => {
 		writeAuthJson({ anthropic: { type: "api_key", key: "old" } });
 		const storage = AuthStorage.create(authJsonPath);
-		const beforeExternalEdit = statSync(authJsonPath);
-		writeAuthJson({ anthropic: { type: "api_key", key: "new" } });
-		// This test exercises reload coalescing, so make the synthetic external edit observable even
-		// on filesystems whose timestamps do not advance for immediate same-size rewrites.
-		utimesSync(authJsonPath, beforeExternalEdit.atime, new Date(beforeExternalEdit.mtimeMs + 1_000));
+		// Change the file size so the revision changes even with coarse file timestamps (#12190).
+		writeAuthJson({ anthropic: { type: "api_key", key: "newer" } });
 		let grantLock: (() => void) | undefined;
 		const lockGranted = new Promise<void>((resolve) => {
 			grantLock = resolve;
@@ -148,7 +153,7 @@ describe("AuthStorage", () => {
 		firstController.abort();
 		await expect(first).rejects.toMatchObject({ name: "AbortError" });
 		grantLock?.();
-		await expect(second).resolves.toEqual({ type: "api_key", key: "new" });
+		await expect(second).resolves.toEqual({ type: "api_key", key: "newer" });
 		expect(lockSpy).toHaveBeenCalledTimes(1);
 		expect(release).toHaveBeenCalledTimes(1);
 	});
