@@ -20,6 +20,7 @@
 - Fixed Enter on an autocomplete menu submitting the prompt when the completed text started with `/`, such as a Tab path menu for an absolute path (`look at /tmp/fi`) or a slash command argument (`/open /tm`). Enter now submits only from the slash command name menu ([#12309](https://github.com/earendil-works/pi/issues/12309), [#12312](https://github.com/earendil-works/pi/pull/12312) by [@acmerfight](https://github.com/acmerfight))
 - Fixed `SettingsList` with `enableSearch` moving the selection back to the first entry when Left, Right, Home or End moved the cursor in the search field without changing the query ([#12245](https://github.com/earendil-works/pi/issues/12245))
 - Fixed `Editor.addToHistory()` storing a prompt again when it was already in history; it now moves the existing entry to the most recent position ([#12279](https://github.com/earendil-works/pi/issues/12279))
+- Fixed a failed crash-log write replacing the rendered-line-width error and leaving the terminal in raw mode ([#10585](https://github.com/earendil-works/pi/issues/10585))
 
 ## [1.6.0] - 2026-11-06
 
