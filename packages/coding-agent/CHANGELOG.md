@@ -14,6 +14,8 @@
 - Added `qwen4-max-preview` to the Qwen Token Plan Individual providers ([#12259](https://github.com/earendil-works/pi/issues/12259))
 - Added a transcript notice when OpenAI drops reasoning items from a request, such as `OpenAI dropped 2 reasoning items: prefix_mismatch (details in session)` after compaction on GPT-6.2. Like the Anthropic thinking notice, it is shown when `showCacheMissNotices` is on and only when more items are dropped than in the previous response. Both notices now name the reasons
 - Added `full_output_error` to the bash tool's structured output and `fullOutputError` to its details, `BashResult` and `BashExecutionMessage`, giving the reason when truncated output could not be saved to a temp file. User bash output that was truncated without a saved file now says so in the model context and the TUI ([#10585](https://github.com/earendil-works/pi/issues/10585))
+- Added a `blockedKind` option to `ctx.ui.select()`, `ctx.ui.confirm()` and `ctx.ui.input()` that sets the kind of blocked program status (OSC 7501) the dialog reports, for example `"permission"` for a select that approves an action. See [Dialogs](docs/extensions.md#program-status-kind)
+- Added the `gpt-6-luna-decisions` classifier for GitHub Copilot, callable from codemode `models.classify()` with text and images ([#12395](https://github.com/earendil-works/pi/issues/12395))
 
 ### Changed
 
@@ -25,6 +27,7 @@
 - The llama.cpp extension now connects to `http://127.0.0.1:9931` by default, the current llama-server default port, instead of port 8080 ([#12001](https://github.com/earendil-works/pi/pull/12001) by [@julien-c](https://github.com/julien-c))
 - Anthropic message threads are now on by default for any provider whose baseUrl is on api.anthropic.com, not only the `anthropic` provider ([#11987](https://github.com/earendil-works/pi/issues/11987))
 - Changed the default Mistral model from `devstral-medium-latest` to `mistral-medium-latest`, because Mistral retired Devstral and the model catalog no longer lists it
+- Changed `after_provider_response` to also fire for HTTP error responses (4xx/5xx) and for each retried attempt on OpenAI, Azure OpenAI, Anthropic, and Google models, as it already did for OpenAI Codex, Mistral, Radius, and Amazon Bedrock, so extensions can read the status and `retry-after` of rate-limited requests ([#12376](https://github.com/earendil-works/pi/issues/12376))
 
 ### Fixed
 
@@ -88,6 +91,12 @@
 - Fixed pi crashing when the bash tool or a `!` command could not write its full-output temp file, for example when `/tmp` was full, over a per-user quota or not writable; both now keep the truncated output and say why the full output could not be saved. Opening the external editor and `/share` now report such failures instead of crashing ([#10585](https://github.com/earendil-works/pi/issues/10585))
 - Fixed `/login` showing a provider as configured when its stored `auth.json` key is a `!command` that fails, while requests failed with `No API key found`. `/login` now shows `stored key did not resolve`, `getProviderAuthStatus()` returns `{ configured: false, source: "stored" }`, and entering the same `!command` again in `/login` runs it again instead of reusing the cached failure ([#12164](https://github.com/earendil-works/pi/issues/12164))
 - Fixed `pi update` run from WSL through the Windows installation of pi rebuilding that installation with Linux npm; it now stops and says that running the Windows installation from WSL is unsupported ([#12172](https://github.com/earendil-works/pi/issues/12172))
+- Fixed selecting the `xhigh` thinking level for Gemini 4 Hydrogen and Neon on the `google` and `google-vertex` providers failing with `Unsupported Google thinking level mapping ... xhigh -> xhigh` ([#12184](https://github.com/earendil-works/pi/issues/12184))
+- Fixed right-click paste inserting the clipboard twice in Tabby on Windows, which pastes on right-click itself ([#12406](https://github.com/earendil-works/pi/issues/12406))
+- Fixed dialogs shown before interactive mode starts, such as the project trust prompt, the missing session folder prompt and first-time setup, reporting no `blocked` program status (OSC 7501). Blocked messages of multi-line dialog titles are now the first line only, for example `Trust project folder?` instead of the folder path and explanation. The project trust prompt and first-time setup report `kind=permission` ([#12439](https://github.com/earendil-works/pi/issues/12439))
+- Fixed GitHub Copilot listing classifier models the account cannot use, such as `microsoft-decision-1` on accounts whose plan does not include it, where every call failed with HTTP 400. After `/login` or the next token refresh, only the decision models in the account's Copilot model catalog are listed ([#12395](https://github.com/earendil-works/pi/issues/12395))
+- Fixed the bash tool on Windows not finding Git for Windows installed outside Program Files and running commands through the WSL launcher `System32\bash.exe` instead. pi now asks the `git.exe` on `PATH` for its installation (`git var GIT_SHELL_PATH`, Git 2.47+) and uses its Git Bash before other `bash.exe` on `PATH` ([#12408](https://github.com/earendil-works/pi/issues/12408))
+- Fixed RPC mode, session loading, and llama.cpp model events rescanning an incomplete line on every chunk, which made large lines, such as messages with images, take time quadratic in their size. llama.cpp model events also accept lone CR line endings and CRLF split across chunks ([#12224](https://github.com/earendil-works/pi/issues/12224))
 
 ### Removed
 
