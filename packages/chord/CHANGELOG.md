@@ -45,6 +45,7 @@
 - The optional peer dependencies on `react`, `ws` and `esbuild` are ranges (`^19.3.0`, `^8.21.0`, `^0.28.2`), not exact versions: npm no longer refuses to install Chord in a project with another patch release of them, such as react 19.3.1 ([#12008](https://github.com/earendil-works/pi/issues/12008)).
 - Sync: a store whose outbox was turned off and on again after it committed could not upload any more (`uploadSession` failed with `OutboxUnavailableError` on every attempt): the commits between what the remote holds and the outbox's start were gone. The upload now creates an archive slot after the remote's head (the store's `export()`), so the session's history goes on from a full state, and `remoteHistory`/`pullSession` restore from the newest archive slot along the chain; a copy behind it gets `HistoryUnavailableError` and restores fresh.
 - Sync: a pull that read a remote body and then refused it (a copy behind an archive slot) left the body's file open until garbage collection, which Node 22 warns about (DEP0137) and Node 26 throws for, uncaught. `pullSession` now calls `return()` on every body it read, and a `FileSystemSyncRemote` body closes its file on `return()` also before its first read.
+- Fixed sync batches and `importStore` JSONL rescanning an incomplete line on every chunk, which made long lines take time quadratic in their length ([#12224](https://github.com/earendil-works/pi/issues/12224))
 
 ## [1.6.0] - 2026-11-06
 
