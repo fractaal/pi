@@ -10,6 +10,7 @@
 
 - Added `TUI.setSuspendSignalHandler()`, which sets a handler called when the process receives `SIGTSTP` while the TUI owns the terminal, from `start()` until `stop()`. The `SIGTSTP` listener is removed on `stop()`, so a child that owns the terminal afterwards is suspended normally ([#12283](https://github.com/earendil-works/pi/pull/12283) by [@haoqixu](https://github.com/haoqixu))
 - Added `formatProgramResume()`, `formatProgramResumeClear()`, and `takeProgramResumeToken()` for the [Program Resume Protocol (OSC 7577)](https://www.superlogical.com/rex/docs/build/program-resume), which tells the terminal how to resume a program after the terminal restarts
+- Added protected `Editor.confirmAutocomplete()` so subclasses can apply the selected autocomplete suggestion the way `tui.select.confirm` does
 
 ### Fixed
 
@@ -27,6 +28,8 @@
 - Fixed rendering a bare URL that runs into a multi-megabyte line exhausting the heap in terminals with OSC 8 hyperlinks: `hyperlink()` no longer links URLs longer than 8192 characters ([#12416](https://github.com/earendil-works/pi/issues/12416))
 - Fixed `StdinBuffer` rescanning the whole bracketed paste for its end marker on every chunk, which made large pastes take time quadratic in their size ([#12224](https://github.com/earendil-works/pi/issues/12224))
 - Fixed `SettingsList` hint hardcoding Enter and Esc instead of naming the configured `tui.select.confirm` and `tui.select.cancel` keys
+- Fixed Kitty images disappearing in Konsole in both regular and fullscreen mode: `allocateImageId()` now returns IDs that fit a signed 32-bit integer, which Konsole requires ([#12548](https://github.com/earendil-works/pi/issues/12548))
+- Fixed regular mode clearing the screen and scrollback whenever an appended Kitty image reached past the bottom of the screen ([#12548](https://github.com/earendil-works/pi/issues/12548))
 
 ## [1.6.0] - 2026-11-06
 

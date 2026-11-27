@@ -3,20 +3,27 @@
 // candidate of every write. The differential check: over random commits of 1 to 5,000 writes every read stays equal to
 // a fresh run of its statement, and an index that leaves out its bucket lookups fails it.
 
+import { DatabaseSync } from "node:sqlite";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Context } from "../../src/context/index.ts";
 import { BACKGROUND_CONTEXT } from "../../src/context/index.ts";
 import { int, str } from "../../src/contracts/index.ts";
+import { NodeSqliteDatabase } from "../../src/sqlite/node.ts";
 import { Batch } from "../../src/state/internal.ts";
+import { sqliteBackend } from "../../src/store/backend.ts";
 import { and, eq, inArray } from "../../src/store/expression.ts";
 import { OpenQuery, type OpenRead } from "../../src/store/open-query.ts";
 import { type Query, query } from "../../src/store/query.ts";
-import { identityOf, type Read, type ReadKind, type ReadRun } from "../../src/store/read.ts";
+import { identityOf, Read, type ReadKind, type ReadRun } from "../../src/store/read.ts";
 import { ReadIndex } from "../../src/store/read-index.ts";
+import { ReadPlan } from "../../src/store/read-plan.ts";
 import { ReadRefresh } from "../../src/store/reads.ts";
 import type { KeyedChange } from "../../src/store/skip.ts";
 import type { StagedWrite } from "../../src/store/step.ts";
 import type { ChordStore } from "../../src/store/store.ts";
+import { openStore } from "../../src/store/store.ts";
 import { defineTable } from "../../src/store/table.ts";
 import { TableChanges } from "../../src/store/table-changes.ts";
 import type { TableHandle } from "../../src/store/table-handle.ts";
@@ -32,6 +39,7 @@ import {
 	SessionColumns,
 	Sessions,
 	staleReads,
+	Teams,
 	type World,
 } from "./read-world.ts";
 
@@ -59,12 +67,18 @@ async function openReads(handle: TableHandle, count: number, q: (index: number) 
 	const runs: ReadRun[][] = [];
 	for (let index = 0; index < count; index++) {
 		const spec = { query: q(index), table: handle.sql.table, projection: {}, owner };
-		const opened = new OpenQuery({ store: store!, batch }, spec, what?.kind ?? "rows", () => {}, BACKGROUND_CONTEXT);
+		const opened = new OpenQuery(
+			{ store: store!, batch },
+			spec,
+			what?.kind ?? "rows",
+			{ rebound: () => {} },
+			BACKGROUND_CONTEXT,
+		);
 		const adopted: ReadRun[] = [];
 		const open = opened.read(what ?? { kind: "rows", range: { limit: 20 } }, {
 			adopt: (run) => void adopted.push(run),
 		});
-		await open.load();
+		await open.load(BACKGROUND_CONTEXT);
 		queries.push(opened);
 		opens.push(open);
 		runs.push(adopted);
@@ -139,6 +153,178 @@ describe("candidates", () => {
 		// Deleted: no row after, no lookup; the notes' read held it.
 		const deleted = (changes: TableChanges) => changes.delete({ session: "s0", id: 1 });
 		expect(await costOf(entries, batch, meter, deleted)).toEqual({ runs: 1, probes: 0, skips: 0, statements: 3 });
+	});
+
+	it("a value filed by one read or several: candidates in the order filed, a closed one gone (hot-path pass)", async () => {
+		// One read under a value is kept without a set (152 B), a second makes one: either way the step tests the reads
+		// in the order they were filed, which is the order they run and adopt in.
+		store = await memoryStore();
+		const entries = await tableIn(store, Entries);
+		const batch = new Batch(() => {}, undefined);
+		const log: number[] = [];
+		const open = async (index: number) => {
+			const spec = {
+				query: query(Entries).where((e) => eq(e.session, "s0")),
+				table: entries.sql.table,
+				projection: {},
+				owner: {},
+			};
+			const opened = new OpenQuery(
+				{ store: store!, batch },
+				spec,
+				"rows",
+				{ rebound: () => {} },
+				BACKGROUND_CONTEXT,
+			);
+			await opened
+				.read({ kind: "rows", range: { limit: 20 } }, { adopt: () => void log.push(index) })
+				.load(BACKGROUND_CONTEXT);
+			return opened;
+		};
+		const meter = await metered();
+		const put = (id: number) => (changes: TableChanges) => changes.put({ session: "s0", id, kind: "note", text: "" });
+		const first = await open(0);
+		log.length = 0;
+		await costOf(entries, batch, meter, put(1));
+		expect(log).toEqual([0]);
+		const [second, third] = [await open(1), await open(2)];
+		first.close();
+		const fourth = await open(3);
+		log.length = 0;
+		// Filed under the bucket s0 in the order 1, 2, 3; the key (s0, 1) is kept by every one of them.
+		await costOf(entries, batch, meter, (changes) => changes.update({ session: "s0", id: 1 }, { text: "x" }));
+		expect(log).toEqual([1, 2, 3]);
+		for (const each of [second, third, fourth]) each.close();
+		log.length = 0;
+		await costOf(entries, batch, meter, put(2));
+		expect(log).toEqual([]);
+	});
+
+	it("a read run again stays where it was filed under the keys it keeps again", async () => {
+		// Only the keys it no longer keeps lose it and only new ones gain it; under a key it keeps again the reads are
+		// candidates in the order they came to keep it.
+		store = await memoryStore();
+		const entries = await tableIn(store, Entries);
+		const batch = new Batch(() => {}, undefined);
+		const log: string[] = [];
+		const open = async (name: string, q: Query) => {
+			const spec = { query: q, table: entries.sql.table, projection: {}, owner: {} };
+			const opened = new OpenQuery(
+				{ store: store!, batch },
+				spec,
+				"rows",
+				{ rebound: () => {} },
+				BACKGROUND_CONTEXT,
+			);
+			await opened
+				.read({ kind: "rows", range: { limit: 20 } }, { adopt: () => void log.push(name) })
+				.load(BACKGROUND_CONTEXT);
+			return opened;
+		};
+		const meter = await metered();
+		const row = { session: "s0", id: 1, kind: "note", text: "" };
+		await costOf(entries, batch, meter, (changes) => changes.put(row));
+		const notes = await open(
+			"notes",
+			query(Entries).where((e) => eq(e.kind, "note")),
+		);
+		const session = await open(
+			"session",
+			query(Entries).where((e) => eq(e.session, "s0")),
+		);
+		const edit = (changes: TableChanges) => changes.update({ session: "s0", id: 1 }, { text: "x" });
+		log.length = 0;
+		await costOf(entries, batch, meter, edit);
+		expect(log).toEqual(["notes", "session"]);
+		// Another note: the notes' read alone runs, and stays before the session's read under (s0, 1).
+		await costOf(entries, batch, meter, (changes) => changes.put({ ...row, session: "s1" }));
+		log.length = 0;
+		await costOf(entries, batch, meter, edit);
+		expect(log).toEqual(["notes", "session"]);
+		notes.close();
+		session.close();
+	});
+
+	it("a run that keeps the keys it kept files none of them again (ERNDL-1176, step 4: issue test 8)", async () => {
+		// Two reads keep the same 500 keys: before, a read moved itself behind the other under each key it kept again, at
+		// its run and at its adoption (a removal and an insertion per key: 6,000 changes for this commit); now only keys
+		// that come or go change.
+		store = await memoryStore();
+		const entries = await tableIn(store, Entries);
+		const meter = await metered();
+		await costOf(entries, new Batch(() => {}, undefined), meter, (changes) => {
+			for (let id = 0; id < 500; id++) changes.put({ session: "s0", id, kind: "note", text: "" });
+		});
+		const { batch, runs } = await openReads(
+			entries,
+			2,
+			(index) =>
+				index === 0
+					? query(Entries).where((e) => eq(e.session, "s0"))
+					: query(Entries).where((e) => eq(e.kind, "note")),
+			{ kind: "rows", range: { limit: 1_000 } },
+		);
+		// Changes of the sets of reads filed under a key: counted while the commit runs.
+		let filedWrites = 0;
+		const { add, delete: remove, has } = Set.prototype;
+		Set.prototype.add = function (this: Set<unknown>, value: unknown) {
+			if (value instanceof Read && !has.call(this, value)) filedWrites++;
+			return add.call(this, value);
+		};
+		Set.prototype.delete = function (this: Set<unknown>, value: unknown) {
+			if (value instanceof Read && has.call(this, value)) filedWrites++;
+			return remove.call(this, value);
+		};
+		try {
+			// The text is mapped by both: both run, each keeps its 500 keys.
+			const edit = (changes: TableChanges) => changes.update({ session: "s0", id: 7 }, { text: "x" });
+			expect(await costOf(entries, batch, meter, edit)).toMatchObject({ runs: 2 });
+		} finally {
+			Set.prototype.add = add;
+			Set.prototype.delete = remove;
+		}
+		expect(runs.map((each) => each.length)).toEqual([2, 2]);
+		expect(filedWrites).toBe(0);
+	});
+
+	it("candidates under keys many reads keep cost no ordering work (ERNDL-1176, step 4 review, Opus S1)", async () => {
+		// 100 reads keep the same 500 keys; 500 keyed updates of a column none of them reads: each read is a candidate
+		// and skips without a probe. The reads are candidates in the order they came to keep a key: no copy, no sort.
+		store = await memoryStore();
+		const entries = await tableIn(store, Entries);
+		const meter = await metered();
+		await costOf(entries, new Batch(() => {}, undefined), meter, (changes) => {
+			for (let id = 0; id < 500; id++) changes.put({ session: "s0", id, kind: "note", text: "" });
+		});
+		const batch = new Batch(() => {}, undefined);
+		const queries: OpenQuery[] = [];
+		for (let index = 0; index < 100; index++) {
+			const spec = {
+				query: query(Entries).where((e) => eq(e.session, "s0")),
+				table: entries.sql.table,
+				projection: { reads: ["session", "id", "kind"] },
+				owner: {},
+			};
+			const opened = new OpenQuery({ store, batch }, spec, "rows", { rebound: () => {} }, BACKGROUND_CONTEXT);
+			await opened.read({ kind: "rows", range: { limit: 1_000 } }, { adopt: () => {} }).load(BACKGROUND_CONTEXT);
+			queries.push(opened);
+		}
+		let sorts = 0;
+		const { sort } = Array.prototype;
+		Array.prototype.sort = function <T>(this: T[], compare?: (a: T, b: T) => number) {
+			sorts++;
+			return sort.call(this, compare) as T[];
+		};
+		try {
+			const edits = (changes: TableChanges) => {
+				for (let id = 0; id < 500; id++) changes.update({ session: "s0", id }, { text: "x" });
+			};
+			expect(await costOf(entries, batch, meter, edits)).toMatchObject({ runs: 0, probes: 0, skips: 100 });
+		} finally {
+			Array.prototype.sort = sort;
+		}
+		expect(sorts).toBe(0);
+		for (const opened of queries) opened.close();
 	});
 
 	it("an `in` files a read once per value, up to 32 combinations; a column past that is left out of its bucket", async () => {
@@ -223,7 +409,7 @@ describe("candidates", () => {
 			projection: {},
 			owner: {},
 		};
-		const opened = new OpenQuery({ store, batch }, spec, "rows", () => {}, BACKGROUND_CONTEXT);
+		const opened = new OpenQuery({ store, batch }, spec, "rows", { rebound: () => {} }, BACKGROUND_CONTEXT);
 		const runs: ReadRun[] = [];
 		// Registered, not loaded: a commit of another session's row runs it.
 		opened.read({ kind: "rows", range: { limit: 5 } }, { adopt: (run) => void runs.push(run) });
@@ -363,3 +549,100 @@ describe("the differential check", () => {
 		}
 	}, 60_000);
 });
+
+describe("composite keys, compared by the base's identity (hot-path review)", () => {
+	// astra2, 59f96e2fb: keys of several columns compared as paths of maps were the base's identity no more.
+	for (const indexed of [false, true]) {
+		it(`a delete removes a composite-key row on a backend returning integers as bigints, indexed ${indexed}`, async () => {
+			const sqlite = new DatabaseSync(":memory:");
+			const prepare = sqlite.prepare.bind(sqlite);
+			sqlite.prepare = (sql: string) => {
+				const statement = prepare(sql);
+				if (sql.startsWith("SELECT ") && sql.includes('FROM "app.store:points"')) statement.setReadBigInts(true);
+				return statement;
+			};
+			const store = (await openStore(
+				sqliteBackend(new NodeSqliteDatabase(sqlite)),
+				BACKGROUND_CONTEXT,
+			)) as ChordStore;
+			const Points = defineTable("points", {
+				version: 1,
+				columns: { session: str(), id: int(), title: str() },
+				key: ["session", "id"],
+			});
+			const handle = await tableIn(store, Points);
+			const w = {
+				store,
+				handles: { points: handle },
+				reads: [],
+				batch: new Batch(() => {}, undefined),
+			} as never as World;
+			try {
+				const q = indexed ? query(Points).where((t) => eq(t.session, "room")) : query(Points);
+				const what = { kind: "rows", range: { limit: 20 } } as const;
+				const read = await openRead(w, { name: "open", query: q, table: Points, what }, BACKGROUND_CONTEXT);
+				await commit(w, BACKGROUND_CONTEXT, (changes) =>
+					changes(Points).put({ session: "room", id: 17, title: "point" }),
+				);
+				await commit(w, BACKGROUND_CONTEXT, (changes) => changes(Points).delete({ session: "room", id: 17 }));
+				const fresh = await store.read(
+					(executor) => read.open.read!.fetch(executor, BACKGROUND_CONTEXT),
+					BACKGROUND_CONTEXT,
+				);
+				expect(fresh).toMatchObject({ kind: "rows", result: { rows: [] } });
+				expect(read.latest).toMatchObject({ kind: "rows", result: { rows: [] } });
+			} finally {
+				for (const read of w.reads) read.query.close();
+				await store.close(BACKGROUND_CONTEXT);
+			}
+		});
+	}
+
+	it("a read's kept keys count its fetched keys, not their first columns", async () => {
+		const w = await opened(BACKGROUND_CONTEXT, []);
+		await commit(w, BACKGROUND_CONTEXT, (changes) => {
+			changes(Teams).put({ team: "a", session: "1" });
+			changes(Teams).put({ team: "a", session: "2" });
+		});
+		const what = { kind: "rows", range: { limit: 20 } } as const;
+		await openRead(w, { name: "teams", query: query(Teams), table: Teams, what }, BACKGROUND_CONTEXT);
+		const read = w.store.reads.on(w.handles.teams.sql.table)?.values().next().value;
+		expect(read?.kept()?.[0]?.size).toBe(2);
+	});
+
+	it("six more integer columns in a composite key do not quadruple a filed read's retained memory", () => {
+		const count = 12_000;
+		const bytes = (width: number): number => {
+			const key = Array.from({ length: width }, (_, at) => `c${at}`);
+			const columns = { ...Object.fromEntries(key.map((name) => [name, int()])), active: str() };
+			const definition = defineTable("record", { version: 1, columns, key: key as never });
+			const q = query(definition).where((t) => eq((t as never as { active: never }).active, "yes" as never));
+			const plan = new ReadPlan(q as never, "record", {}, "rows", new Map());
+			const rows = Array.from({ length: count }, (_, at) =>
+				Object.fromEntries([...key.map((name) => [name, at]), ["active", "yes"]]),
+			);
+			const measured: number[] = [];
+			for (let round = 0; round < 3; round++) {
+				const index = new ReadIndex();
+				const read = new Read(plan, { kind: "rows", range: { limit: count } }, { adopt() {} }, 0);
+				const before = heapNow();
+				index.add(read);
+				read.know(rows);
+				measured.push((heapNow() - before) / count);
+				index.delete(read);
+				read.forget();
+			}
+			return measured.sort((a, b) => a - b)[1]!;
+		};
+		expect(bytes(8) / bytes(2)).toBeLessThan(4);
+	});
+});
+
+/** The heap in use after collections, at once (no turn of the event loop: what is measured stays reachable). */
+function heapNow(): number {
+	for (let round = 0; round < 3; round++) gcNow();
+	return process.memoryUsage().heapUsed;
+}
+
+setFlagsFromString("--expose-gc");
+const gcNow = runInNewContext("gc") as () => void;

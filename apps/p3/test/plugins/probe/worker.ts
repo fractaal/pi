@@ -1,8 +1,8 @@
-// The probe on a session's worker (see `contract.ts`): a third-party plugin of the tests' own root, which reaches the
-// sessions plugin's contracts through p3's API.
+// The probe on a session's worker (see `contract.ts`): a plugin under test of the end-to-end tests (`testServer`'s
+// `plugins`), of a root of its own, so it reaches the sessions plugin's contracts through p3's API as a third party's.
 
-import { constant, contribute, defineFacet, forbidden, SessionFacts, type Writable } from "@earendil-works/p3/v1";
-import { WorkerBusy } from "@earendil-works/p3/v1/worker";
+import { admitOwner, constant, contribute, defineFacet, SessionFacts, type Writable } from "@earendil-works/p3/v1";
+import { WorkerBusy, WorkerRuntime } from "@earendil-works/p3/v1/worker";
 import { Probe } from "./contract.ts";
 
 export default defineFacet((host) => {
@@ -11,20 +11,28 @@ export default defineFacet((host) => {
 		busy = self.writable(0);
 		self.contribute(WorkerBusy, busy);
 	});
-	host.serve(Probe, (_params, principal, self) => {
-		if (principal.kind !== "owner") throw forbidden("probe: the owner's");
-		const facts = self.get(SessionFacts, {});
-		return {
-			pid: constant(process.pid),
-			report: ({ state }, ctx) => facts.report({ state }, ctx),
-			busy: async (count) => {
-				busy?.set(count);
-				return null;
-			},
-			crash: async () => {
-				setImmediate(() => process.exit(1));
-				return null;
-			},
-		};
-	});
+	host.serve(
+		Probe,
+		(_params, _principal, _admitted, self) => {
+			const facts = self.get(SessionFacts, {});
+			const runtime = self.registry(WorkerRuntime);
+			return {
+				pid: constant(process.pid),
+				report: ({ state }, ctx) => facts.report({ state }, ctx),
+				busy: async (count) => {
+					busy?.set(count);
+					return null;
+				},
+				crash: async () => {
+					setImmediate(() => process.exit(1));
+					return null;
+				},
+				outbox: async (on, ctx) => {
+					await runtime.value.store.setOutbox(on, ctx);
+					return null;
+				},
+			};
+		},
+		{ admit: admitOwner },
+	);
 });

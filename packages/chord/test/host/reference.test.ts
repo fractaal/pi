@@ -34,6 +34,7 @@ import {
 	desk,
 	EDITOR,
 	expectCollected,
+	flagLabel,
 	flushed,
 	framesOf,
 	instancesOf,
@@ -361,7 +362,7 @@ describe("remote references", () => {
 			hostAddress: () => Server(),
 			state: { n: grantable(int()), m: int() },
 			methods: { bump: grantable(method()) },
-			flags: { export: "Export" },
+			flags: { export: flagLabel("export") },
 		});
 		const Holder = local("app.holder", { version: 1, params: {}, members: { n: int() } });
 		const seen: unknown[] = [];
@@ -428,7 +429,7 @@ describe("remote reference types (slice 15 §1.4)", () => {
 		hostAddress: () => Server(),
 		state: { n: grantable(int()), m: int() },
 		methods: { bump: grantable(method()), read: method() },
-		flags: { export: "Export" },
+		flags: { export: flagLabel("export") },
 	});
 
 	it("have the plain members, the grantable ones optional, and granted", () => {
@@ -825,6 +826,37 @@ describe("a reference's grant (review round 2, Sol 1 and 4)", () => {
 		await host.close(context);
 	});
 
+	// Found by the review of the pass (first reviewer, 2026-11-26): the projection tested the names twice once one was missing.
+	it("an older consumer's grant keeps the target's order without the names it lacks; a current one's is the target's set", async () => {
+		const V1 = remote("test.versions-order", {
+			version: 1,
+			params: {},
+			hostAddress: Server,
+			methods: { a: grantable(method()), c: grantable(method()), e: grantable(method()) },
+		});
+		const V2 = evolve(V1, (e) => e.addMethod("b", grantable(method())).addMethod("d", grantable(method())));
+		const host = createHost({ address: Server(), principal: { kind: "server" }, onError: () => {} });
+		const run = async () => null;
+		const facet = defineFacet((h) =>
+			h.serve(V2, () => ({ a: run, b: run, c: run, d: run, e: run }), {
+				admit: () => constant(allow({ granted: ["e", "d", "c", "b", "a"] })),
+				accepts: { 1: {} },
+			}),
+		);
+		await host.load([{ name: "test", facet }], context);
+		const [current, other, older] = [
+			await host.get(V2, {}, context),
+			await host.get(V2, {}, context),
+			await host.get(V1, {}, context),
+		];
+		expect([[...current.granted], [...older.granted]]).toEqual([
+			["a", "b", "c", "d", "e"],
+			["a", "c", "e"],
+		]);
+		expect([current.granted === other.granted, older.granted === current.granted]).toEqual([true, false]);
+		await host.close(context);
+	});
+
 	it("keeps its last grant while a replacement provider loads; the grant it binds live with replaces it", async () => {
 		const Counter = remote("test.counter", {
 			version: 1,
@@ -877,7 +909,7 @@ describe("a reference's grant is its own binding's (review round 2, granttest F4
 		params: {},
 		hostAddress: Server,
 		state: { s0: grantable(str()) },
-		flags: { f0: "Flag" },
+		flags: { f0: flagLabel("f0") },
 	});
 	const serveFlagged = (h: FacetHost<TestPrincipal>): void =>
 		h.serve(Flagged, () => ({ s0: () => constant("s0") }), {

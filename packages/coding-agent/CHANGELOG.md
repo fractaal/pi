@@ -6,6 +6,7 @@
 
 - Extension components: `render()` now returns `readonly string[]`, and `Container` returns the same cached array while its children are unchanged. Extensions that modify render output in place, including `super.render()` in a `Container` subclass or an embedded component's output, must copy it first ([#9549](https://github.com/earendil-works/pi/issues/9549))
 - Replaced the `showCacheMissNotices` setting with one setting per transcript notice: `notices.cacheMisses`, `notices.cacheWarming`, `notices.compactionCosts`, and `notices.reasoningDrops`, configured under Notices in `/settings`. An existing `showCacheMissNotices` value is migrated to all four. `SettingsManager.getShowCacheMissNotices()` and `setShowCacheMissNotices()` are removed; use `getNotices()` and `setNotice()` instead
+- Removed telemetry reporting from pi for new installs and updates (`/api/report-install`), the `enableInstallTelemetry` setting (`SettingsManager.getEnableInstallTelemetry()` / `setEnableInstallTelemetry()`), and `PI_TELEMETRY`
 
 ### Added
 
@@ -20,6 +21,9 @@
 - Added the `gpt-6-luna-decisions` decision model for GitHub Copilot, callable from codemode `models.classify()` with text and images ([#12395](https://github.com/earendil-works/pi/issues/12395))
 - Added decision models on the Radius provider, callable from codemode `models.classify()`
 - Added `responseId` to codemode `models.classify()` results. OpenRouter's System One fills it with its generation ID, and its billed cost replaces the catalog estimate. See [codemode](docs/codemode.md)
+- Added optional `{ aspectRatio, size }` as the third argument to codemode `models.generateImages()`
+- Added `--agent-dir <dir>`, the command-line form of `PI_CODING_AGENT_DIR`. The resume command pi prints on exit and reports through OSC 7577 now includes it when the config directory is not `~/.pi/agent`. Without it, a session started with `PI_CODING_AGENT_DIR` came back with the default directory's settings and auth: a terminal resumes the command without the environment pi was started in. This is for setups that keep a separate pi profile per project, for example a shell function that sets `PI_CODING_AGENT_DIR` for one directory tree. Terminals that resume programs, such as Rex, need a rule that trusts the longer command; see [Terminal setup](docs/terminal-setup.md#program-resume)
+- The OSC 7577 resume command now repeats the restriction and resource flags pi was started with (`--tools`, `--no-extensions`, `-e`, `--skill`, `--system-prompt`, and similar), as typed, so a terminal cannot resume a session with other tools or instructions, possibly more access, than it had. The command printed on exit is unchanged. A terminal rule must trust each flag combination; see [Terminal setup](docs/terminal-setup.md#program-resume)
 
 ### Changed
 
@@ -125,6 +129,7 @@
 - Fixed Markdown after an unclosed `$` before a number, such as `+$50`, rendering as raw text for the rest of the paragraph ([#12389](https://github.com/earendil-works/pi/issues/12389) by [@wuhaoyujerry](https://github.com/wuhaoyujerry))
 - Fixed rendering a bare URL that runs into a multi-megabyte line exhausting the heap in terminals with OSC 8 hyperlinks ([#12416](https://github.com/earendil-works/pi/issues/12416))
 - Fixed MCP requests to servers that echo request IDs as strings timing out, and large MCP Streamable HTTP events blocking pi for seconds ([#12205](https://github.com/earendil-works/pi/issues/12205), [#12224](https://github.com/earendil-works/pi/issues/12224))
+- Fixed `app.message.followUp` (Alt+Enter) ignoring an open autocomplete menu and queuing the half-typed text. It now applies the selected suggestion like Enter: a completed command name is queued, and other completions are inserted without queuing
 
 ### Removed
 
