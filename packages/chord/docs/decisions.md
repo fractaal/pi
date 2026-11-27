@@ -3768,7 +3768,8 @@ From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel bec
   their old pages and workers reload once (`contract_mismatch`); (3) `NORMAL_FORM_VERSION` stays 2: documents' stored
   fingerprints carry it, and the remote node's new shape (`members`, `grantable`, `flags`) changes remote
   fingerprints by itself; (4) a declared `admission` is an `obj(...)` without a field `granted`; (5) a flag's label is
-  plain English text, not a message (it is declared by code, the access UI shows it); (6) `useLive` keeps the
+  plain English text, not a message (it is declared by code, the access UI shows it; superseded by "Flag labels are
+  messages", 2026-11-26); (6) `useLive` keeps the
   reference while it loads again after it was live, a link drop included. Superseded: "C15 stands; the UI bindings
   follow the variant" and every rule about variants (§5, §7, §22, §23, §27 of `design.md` are rewritten).
 
@@ -3790,6 +3791,43 @@ From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel bec
   column past that left out; (2) no test switch for the old path: the differential check is the oracle (every read
   equal to a fresh run after every commit) with a mutation check.
 
+- **Identical live reads share one source (owner, 2026-11-26: "fix the mechanism, never work around it in plugins";
+  ERNDL-1176; bench `test/bench/identical-reads.ts`; review rounds 1 and 2 by Opus, Astra and Fable):** the problem: 100
+  callers each with their own object reading the same named query, arguments and window made 100 `OpenQuery`s and
+  `Read`s, and every write ran, decoded and diffed it 100 times (notes 8 ms, a 500-item checklist 45 ms per write),
+  against 1.5 ms for one shared object. The rule: readers of the same provider instance's named query (its `OwnQuery`,
+  which goes with the provider's attempt and keeps its `SharedReads`) with the same arguments (their canonical JSON,
+  made once per read) and shape (`rows <first>` or `count`; the key text is made per read) share one live read
+  (`store/shared-read.ts`), reference-counted by its subscribers: one `OpenQuery`, one `Read` in the index and commit
+  index, one run, one decode and one value per write. The first reader makes it and starts its first run; a later
+  one takes its current value at once (and waits for nothing once there is one); the last one to leave closes it, and
+  a run adopted after that is decoded for nobody. What a shared read keeps (round 1): nothing of the reader that made
+  it (a site of the store and batch and a context of the adapter's metrics, one per `SharedReads`), not its first
+  run's stored rows (subscribers await one promise that carries nothing, settled by the first outcome or the first
+  run's end, whichever comes first), and each load has its own signal: an overtaken load (a rebind's next one started)
+  and a closed read's load (its last reader left, its provider retired) are aborted, so a late failure of theirs is no
+  failure of the store (round 2). Framed sources handed the same two values in one commit diff them once
+  (`Batch.diffs`, by the earlier value, emptied with the commit: a cache kept past it chained every later value to
+  an earlier one somebody held). Arguments are keys (round 1, Astra): **a query's argument schema is JSON only**
+  (a `bytes()` leaf is refused at declaration, for a contract's and a private query's, as for admissions and
+  events), and a value that is not strict JSON as `isJsonValue` (`json.ts`) has it (bytes, a function, `undefined`,
+  a number that is not finite, an object of a class, an array with more properties than its items, an accessor, a
+  symbol key, a cycle; a dictionary without a prototype is JSON) is refused `invalid/args` in the walk that makes
+  the key, also past a schema that checks nothing (rounds 2 and 3, Astra);
+  builders read arguments as canonical JSON does (key order immaterial, an order that matters is an array; `-0` is
+  `0`). Arguments that change move a reader between reads; a provider's retirement closes the
+  read for all its readers, which move to one read of the successor; a shared run is counted once (in the commit's
+  context). The owner's own window (`self.query`) is not shared. Lists come next (their pages shared while their
+  bookmarks are equal).
+
+- **The commit index files only the keys that come or go (owner, 2026-11-26; ERNDL-1176 step 4 and its review by Opus,
+  Astra and Fable):** a read's run is filed by walking only its key sets that changed (a set kept again, the same
+  object, is not walked). Under a key several reads keep, they are candidates in the order they came to keep it (the
+  filed set's own order): a read run again keeps its place, where the old filing moved it behind the others at each
+  run (two reads of 500 keys: 6,000 set changes per commit, now 0). Nothing observes the order otherwise (the oracle,
+  the list fuzz and the p3 suite pass); the one test pinning the old order states the new one. A per-filing stamp
+  that kept the old order was built and taken out: it sorted the reads of a shared key at every keyed change.
+
 - **A stall leaves no holder live and old (owner, 2026-11-24, decisions of that day item 5; spec `slice-15.md` §4,
   §8, built 2026-11-25):** reproduced across processes: a stalled host keeps its links (its late tick is no silence);
   its peers find it silent past `close` and close theirs, and their holders wait `loading` until a new link; none is
@@ -3797,6 +3835,17 @@ From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel bec
   and nothing was reported. Now every closed link is counted (`chord.links.closed { reason }`) and a heartbeat close
   is reported once (`link_closed`). Decided by the builder: a stall is sure to close nothing only when shorter than
   `close − ping` (the quiet time before it counts); `close` keeps its meaning.
+
+- **Flag labels are messages (Mario, 2026-11-26; the decisions of 2026-11-24 file, items 65 and 69; supersedes
+  slice 15's (B) "a flag's label is plain English text"):** everything that reaches the UI is a message, so it reads in
+  the viewer's language: `flags: { export: messages.message("flagExport") }`, the label a `MessageData` of the
+  plugin's `defineMessages` (`MessageData<N, K>`, the key a type error unless the catalog has it). It is plain data, so
+  a contract file holds it: a contract file may import its plugin's `messages.ts` (the rule: `plugin-authoring.md`,
+  "What a plugin may import"). Declaration refuses a label that is no message (`MessageSchema`: namespace, key, plain
+  parameters, nothing else) and checks no catalog: `messages.message(key)` checks the key against the catalog (by its
+  type); the fingerprint leaves labels out as before. The access UI renders a label with the
+  viewer's `t.render(label)` or passes it on as data. `MessageData` and `MessageSchema` are declared in the contracts
+  layer (`contracts/message.ts`, re-exported by the data layer as before), since contracts hold them.
 
 - **Refusals are static per provider and version (review of slice 15, 2026-11-26; spec `slice-15.md` §8, (B)):** a
   provider refuses an older version if that version has any refused member, whatever its caller was granted, as main
@@ -3807,6 +3856,16 @@ From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel bec
 - **A reference makes its named queries on first use (spec `slice-15.md` §5, built 2026-11-25):** bench round 2: a
   reference to a store of 23 named queries cost 8.6 KiB, all of it handles nobody read. A `queries` member is an
   object whose handles are made by their first read and kept; labels are built when asked (6.35 to 1.30 KiB).
+
+- **Values handed to Chord are never changed afterwards, and Chord compares them by identity first (owner,
+  2026-11-26; the hot-path pass, `slices.md` "Hot paths", merged as `24dc95064`):** the rule "plain data, immutable by
+  convention" (L1 review round 1, R9) is now load-bearing, not only a convention. Chord keeps what it is handed (an
+  admission's value, a reference's params, a condition, a state value, a backend's rows) without a copy and compares
+  the same object as unchanged before it looks at fields. **The footgun:** code that mutates a value it handed Chord
+  and hands the same object again (an admission's `derive` returning one kept object with `granted` pushed to; a
+  `self.writable` set to the same array after `push`) is read as "nothing changed": no rebuild, no update, holders keep the
+  old value, and nothing reports it. Make a new object for every new value. No freezing, no development mode checks
+  it (R9): the guides say it (`plugin-authoring.md` "Values you hand to Chord", p3's `chord-practices.md`).
 
 ## Still valid from `target-design.md`
 

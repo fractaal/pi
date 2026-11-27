@@ -21,6 +21,7 @@
 - Added `compat.supportsReasoningReplay` to the `bedrock-converse-stream` API. When `false`, reasoning from earlier assistant messages is not sent back
 - Added the `pi-decision` API (`POST <baseUrl>/decision`), a common protocol for decision models analogous to `pi-messages`, used by the Radius gateway provider
 - Added the `gpt-6-luna-decisions` decision model for GitHub Copilot, callable from codemode `models.classify()` with text and images ([#12395](https://github.com/earendil-works/pi/issues/12395))
+- Added `aspectRatio` and `size` to `ImagesOptions`, forwarded by `openrouter-images` to OpenRouter's `image_config`
 
 ### Changed
 
@@ -34,6 +35,7 @@
 - Qwen Token Plan Individual now lists `qwen4-max` instead of the retired `qwen4-max-preview`
 - Changed the `ant-ling` provider to load its models from models.dev (`bailing`), replacing the retired Ling 2.6 and Ring 2.6 models with Ling 3.0 Tiny, Ling 3.0 Flash, Ling 3.0 Flash VL, Ling 3.1 Flash, and Ling 3.2 Flash. Thinking is either off or high ([#11800](https://github.com/earendil-works/pi/pull/11800) by [@lvisei](https://github.com/lvisei))
 - Changed GitHub Copilot Claude and GPT-6 models to keep the prompt cache across thinking level and tool changes: Claude 5.x models that support it send effort changes and tool changes as messages in the conversation (`supportsMidConvoEffort`, `supportsMidConvoToolChanges`), GPT-6 models send effort changes as `configuration_update` items, and Claude models declare Anthropic's 5-minute and 1-hour cache lifetimes (`promptCache`), which enables cache warming for them. GPT-5.3 Codex and the MAI-Code models now receive system messages in place mid-conversation instead of folded into the system prompt, which they ignored there ([#12316](https://github.com/earendil-works/pi/issues/12316))
+- Together drops its reasoning-effort overrides for `openai/gpt-oss-20b`, `openai/gpt-oss-120b` and `deepseek-ai/DeepSeek-V4-Pro-0813`, which the upstream catalog deprecated (they were skipped already); every listed Together reasoning model takes the Together thinking toggle
 
 ### Fixed
 
@@ -78,6 +80,7 @@
 - Fixed `openai-completions` dropping OpenRouter's `native_finish_reason`, the upstream provider's own finish reason. `rawStopReason` now records it next to `finish_reason`, e.g. `stop.MALFORMED_RESPONSE`, and error messages include it, e.g. `Provider finish_reason: error (native_finish_reason: MALFORMED_FUNCTION_CALL)` ([#11931](https://github.com/earendil-works/pi/issues/11931))
 - Fixed GitHub Copilot listing decision models the account cannot use, such as `microsoft-decision-1` on accounts whose plan does not include it, where every call failed with HTTP 400. After OAuth login or the next token refresh, only the decision models in the account's Copilot model catalog are listed ([#12395](https://github.com/earendil-works/pi/issues/12395))
 - Fixed OpenRouter turns ending silently when the upstream failed after streaming only reasoning, e.g. Gemini's `MALFORMED_RESPONSE`, which OpenRouter reports as `finish_reason: "stop"`. A `stop` without text or tool calls whose `native_finish_reason` is not a clean stop is now an empty-response error and is retried ([#12407](https://github.com/earendil-works/pi/issues/12407))
+- Fixed GitHub Copilot models on the `openai-completions` API losing their reasoning state between turns: Copilot's `reasoning_opaque` is now stored on the thinking block and sent back with `reasoning_text`, including when it arrives without reasoning text ([#12418](https://github.com/earendil-works/pi/issues/12418))
 
 ### Removed
 

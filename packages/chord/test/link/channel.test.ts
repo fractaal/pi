@@ -5,7 +5,6 @@
 import { fork } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { connect } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -90,6 +89,16 @@ forEachCodec(() =>
 				`handshake: protocol ${PROTOCOL_VERSION + 1}, this host speaks ${PROTOCOL_VERSION}`,
 			]);
 		});
+
+		for (const trusted of [false, true]) {
+			it(`refuses a peer of protocol 1, before grantable members, at its hello (${trusted ? "trusted" : "untrusted"} link)`, async () => {
+				const { peer, errors } = await rawLinked(() => {}, { hello: false, trusted });
+				peer.send({ kind: "hello", protocol: 1, incarnation: RAW_PEER, ...(trusted ? {} : { calls: 256 }) });
+				await transported();
+				expect(peer.closed).toBe(true);
+				expect(problems(errors)).toEqual(["handshake: protocol 1, this host speaks 2"]);
+			});
+		}
 
 		it("closes the link on a message failing its checks", async () => {
 			const { peer, errors } = await rawLinked(() => {});
@@ -489,7 +498,8 @@ describe("a stall of the server (slice 15 §4)", () => {
 		clients: number,
 		holds: number,
 	) {
-		const directory = mkdtempSync(join(tmpdir(), "chord-stall-"));
+		// Under /tmp, not tmpdir(): a deep TMPDIR (macOS, test.sh) pushes the socket path past sun_path's 104 bytes.
+		const directory = mkdtempSync("/tmp/chord-stall-");
 		const path = join(directory, "server.sock");
 		const server = fork(
 			fileURLToPath(new URL("./fixtures/stall.ts", import.meta.url)),

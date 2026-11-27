@@ -65,6 +65,7 @@ import {
 	getAuthPath,
 	getDebugLogPath,
 	getDocsPath,
+	usesDefaultAgentDir,
 	VERSION,
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
@@ -127,7 +128,6 @@ import {
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import { getSourcePackageKey, type SourceInfo } from "../../core/source-info.ts";
-import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import { withBuiltInRenderers } from "../../core/tools/renderers/index.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
@@ -139,8 +139,7 @@ import { extensionForImageMimeType, readClipboardImage } from "../../utils/clipb
 import { flushStdout } from "../../utils/flush-stdout.ts";
 import { parseGitUrl } from "../../utils/git.ts";
 import { ensurePngTranscoder } from "../../utils/image-convert.ts";
-import { getCwdRelativePath, shortenHomePath } from "../../utils/paths.ts";
-import { getPiUserAgent } from "../../utils/pi-user-agent.ts";
+import { getCwdRelativePath, pathsEqual, resolvePath, shortenHomePath } from "../../utils/paths.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { loadAllHighlightLanguages } from "../../utils/syntax-highlight.ts";
 import { stripBom } from "../../utils/text.ts";
@@ -363,6 +362,9 @@ function getResumeArgs(sessionManager: SessionManager): string[] | undefined {
 	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
 
 	const args = [APP_NAME];
+	if (!usesDefaultAgentDir()) {
+		args.push("--agent-dir", resolvePath(getAgentDir()));
+	}
 	if (!sessionManager.usesDefaultSessionDir()) {
 		args.push("--session-dir", sessionManager.getSessionDir());
 	}
@@ -377,12 +379,21 @@ export function formatResumeCommand(sessionManager: SessionManager): string | un
 }
 
 /**
- * The command a terminal runs to bring this session back (OSC 7577). It is the command printed on exit, run in
- * the session's directory: `--session <id>` finds the session there.
+ * The command a terminal runs to bring this session back (OSC 7577): the command printed on exit plus the
+ * restriction and resource flags pi was started with, run in the session's directory. Undefined, so the terminal
+ * clears it, when there is no session file, or when flags were typed in another directory than the session's:
+ * a relative path in them would point elsewhere, and a session without its restrictions must not come back.
  */
-function getProgramResumeCommand(sessionManager: SessionManager): ProgramResumeCommand | undefined {
+export function getProgramResumeCommand(
+	sessionManager: SessionManager,
+	resumeFlags: readonly string[],
+): ProgramResumeCommand | undefined {
 	const argv = getResumeArgs(sessionManager);
-	return argv && { argv, cwd: sessionManager.getCwd() };
+	if (!argv) return undefined;
+	const cwd = sessionManager.getCwd();
+	// pi never changes its working directory, so it is still the one the flags were typed in.
+	if (resumeFlags.length > 0 && !pathsEqual(cwd, process.cwd())) return undefined;
+	return { argv: [...argv, ...resumeFlags], cwd };
 }
 
 function hasDefaultModelProvider(providerId: string): providerId is keyof typeof defaultModelPerProvider {
@@ -485,6 +496,8 @@ export interface InteractiveModeOptions {
 	 * When set, pi tells the terminal how to resume the session after the terminal restarts.
 	 */
 	programResumeToken?: string;
+	/** Restriction and resource flags as typed (`Args.resumeFlags`), repeated in the OSC 7577 resume command. */
+	programResumeFlags?: readonly string[];
 }
 
 interface ExtensionChangelogUpdate {
@@ -723,7 +736,7 @@ export class InteractiveMode {
 			this.programResume = new ProgramResumeReporter(
 				options.programResumeToken,
 				() => this.ui.terminal,
-				() => getProgramResumeCommand(this.sessionManager),
+				() => getProgramResumeCommand(this.sessionManager, options.programResumeFlags ?? []),
 			);
 		}
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
@@ -1460,9 +1473,8 @@ export class InteractiveMode {
 		const entries = parseChangelog(changelogPath);
 
 		if (!lastVersion) {
-			// Fresh install - record the version, send telemetry, don't show changelog
+			// Fresh install - record the version, don't show changelog
 			this.settingsManager.setLastChangelogVersion(VERSION);
-			this.reportInstallTelemetry(VERSION);
 			return undefined;
 		}
 
@@ -1474,7 +1486,6 @@ export class InteractiveMode {
 		}
 		if (newEntries.length > 0) {
 			this.settingsManager.setLastChangelogVersion(VERSION);
-			this.reportInstallTelemetry(VERSION);
 			return newEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
 		}
 
@@ -1546,25 +1557,6 @@ export class InteractiveMode {
 		} catch {
 			return undefined;
 		}
-	}
-
-	private reportInstallTelemetry(version: string): void {
-		if (process.env.PI_OFFLINE) {
-			return;
-		}
-
-		if (!isInstallTelemetryEnabled(this.settingsManager)) {
-			return;
-		}
-
-		void fetch(`https://pi.dev/api/report-install?version=${encodeURIComponent(version)}`, {
-			headers: {
-				"User-Agent": getPiUserAgent(version),
-			},
-			signal: AbortSignal.timeout(5000),
-		})
-			.then(() => undefined)
-			.catch(() => undefined);
 	}
 
 	private getMarkdownThemeWithSettings(): MarkdownTheme {
@@ -5274,7 +5266,6 @@ export class InteractiveMode {
 					hideThinkingBlock: this.hideThinkingBlock,
 					mermaidRenderingMode: this.settingsManager.getMermaidRenderingMode(),
 					collapseChangelog: this.settingsManager.getCollapseChangelog(),
-					enableInstallTelemetry: this.settingsManager.getEnableInstallTelemetry(),
 					doubleEscapeAction: this.settingsManager.getDoubleEscapeAction(),
 					treeFilterMode: this.settingsManager.getTreeFilterMode(),
 					showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
@@ -5384,9 +5375,6 @@ export class InteractiveMode {
 					},
 					onCollapseChangelogChange: (collapsed) => {
 						this.settingsManager.setCollapseChangelog(collapsed);
-					},
-					onEnableInstallTelemetryChange: (enabled) => {
-						this.settingsManager.setEnableInstallTelemetry(enabled);
 					},
 					onQuietStartupChange: (quiet) => {
 						this.settingsManager.setQuietStartup(quiet);

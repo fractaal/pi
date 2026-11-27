@@ -1,7 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { buildCatalog } from "../catalog/build.ts";
-import together from "../catalog/providers/together.ts";
-import type { ModelsDevV2Model } from "../catalog/sources/models-dev.ts";
 import { getModel } from "../src/compat.ts";
 import { findEnvKeys, getEnvApiKey } from "../src/env-api-keys.ts";
 
@@ -44,59 +41,13 @@ describe("Together models", () => {
 		});
 	});
 
-	it("models Together reasoning controls from the Together API surface", () => {
-		const fixture = (id: string, reasoning: ModelsDevV2Model["capabilities"]["reasoning"]): ModelsDevV2Model => ({
-			id,
-			name: id,
-			type: "chat",
-			modalities: { input: ["text"], output: ["text"] },
-			capabilities: { tools: { supported: true }, reasoning },
-			api: {},
-		});
-		const models = [
-			fixture("openai/gpt-oss-120b", { supported: true, effort: ["low", "medium", "high"] }),
-			fixture("deepseek-ai/DeepSeek-V4-Pro-0813", { supported: true, toggle: true, effort: ["high"] }),
-		];
-		// Exercise the catalog rules independently of whether models.dev still lists the example models.
-		const [gptOss, deepSeekV4] = buildCatalog(
-			[together],
-			{
-				modelsDev: { togetherai: { models: Object.fromEntries(models.map((model) => [model.id, model])) } },
-				modelsDevDecisions: {},
-				openRouter: { chat: [], images: [], classifiers: [] },
-				aiGateway: { chat: [], classifiers: [] },
-				nvidiaModelIds: new Map(),
-				radius: [],
-			},
-			true,
-		).together.chat;
-		expect(gptOss?.id).toBe("openai/gpt-oss-120b");
-		expect(deepSeekV4?.id).toBe("deepseek-ai/DeepSeek-V4-Pro-0813");
-		expect(gptOss?.thinkingLevelMap).toEqual({
-			off: null,
-			minimal: null,
-			low: "low",
-			medium: "medium",
-			high: "high",
-			max: null,
-			xhigh: null,
-		});
-		expect(gptOss?.compat).toMatchObject({
-			supportsReasoningEffort: true,
-			thinkingFormat: "openai",
-		});
-
-		expect(deepSeekV4?.thinkingLevelMap).toEqual({
-			minimal: null,
-			low: null,
-			medium: null,
-			high: "high",
-			xhigh: null,
-		});
-		expect(deepSeekV4?.compat).toMatchObject({
-			supportsReasoningEffort: true,
-			thinkingFormat: "together",
-		});
+	it("gives every Together reasoning model the Together thinking toggle", () => {
+		for (const id of ["deepseek-ai/DeepSeek-V4.1-Flash", "zai-org/GLM-5.3"] as const) {
+			const model = getModel("together", id);
+			expect(model.reasoning).toBe(true);
+			expect(model.thinkingLevelMap).toEqual({ minimal: null, low: null, medium: null });
+			expect(model.compat).toMatchObject({ supportsReasoningEffort: false, thinkingFormat: "together" });
+		}
 	});
 
 	it("resolves TOGETHER_API_KEY from the environment", () => {
