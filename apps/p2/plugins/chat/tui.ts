@@ -15,8 +15,17 @@ import {
 	truncateToWidth,
 	VStack,
 } from "@earendil-works/pi-tui";
-import type { Held, HeldIn } from "@p2/app/v1";
-import { BACKGROUND_CONTEXT, FileIndex, followRegistry, liveIn, serveKeyed, statusOf, whenLive } from "@p2/app/v1";
+import {
+	BACKGROUND_CONTEXT,
+	FileIndex,
+	followRegistry,
+	live,
+	liveWith,
+	type Ref,
+	serveKeyed,
+	statusOf,
+	whenLive,
+} from "@p2/app/v1";
 import {
 	BashExecutionComponent,
 	buildTranscript,
@@ -64,9 +73,17 @@ import {
 } from "@p2/app/v1/tui";
 import { Drafts } from "../drafts/contract.ts";
 import { MAX_ATTACHMENTS } from "../files/contract.ts";
-import { type Session, Sessions } from "../sessions/contract.ts";
+import { SESSIONS_OWNER, type Session, Sessions } from "../sessions/contract.ts";
 import { SessionTree } from "../tree/contract.ts";
-import { Chat, type EntryDisplay, SHELL_BUSY, type ShellState, TranscriptEntries } from "./contract.ts";
+import {
+	CHAT_PARTICIPANT,
+	Chat,
+	type ChatParticipant,
+	type EntryDisplay,
+	SHELL_BUSY,
+	type ShellState,
+	TranscriptEntries,
+} from "./contract.ts";
 import { CHAT_COMMANDS, formatSize, type LauncherUpload, registerLauncherAnswers } from "./tui-commands.ts";
 
 /** A message sent from here that the server does not show yet: in the transcript, or the queue while a run is busy. */
@@ -142,7 +159,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 		const agent = this.view?.docs["pi.agent"] as { cwd?: unknown } | undefined;
 		return typeof agent?.cwd === "string" ? agent.cwd : (this.rows.find((row) => row.id === this.session)?.cwd ?? "");
 	}
-	private ref: Held<typeof Chat> | undefined;
+	private ref: Ref<typeof Chat> | undefined;
 	/** Messages in flight (`send`): shown at once, the editor already cleared; a refused one comes back to the editor. */
 	private outgoing: () => readonly Outgoing[] = () => NO_OUTGOING;
 	private sending: OptimisticAdd<Outgoing> | undefined;
@@ -153,12 +170,12 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 	private compacting: () => boolean = () => false;
 	private compactNow: OptimisticAdd<boolean> | undefined;
 	/** The session catalog (`/fork`, `/clone`). */
-	private catalog: Held<typeof Sessions>;
+	private catalog: Ref<typeof Sessions>;
 	/**
 	 * The viewed session's branches (`/tree`), held from its first use until another session is viewed: a switch of
 	 * the main conversation changes the view's identity but must not release it while `navigate` is in flight.
 	 */
-	private tree: { session: string; scope: TuiScope; ref: Held<typeof SessionTree> } | undefined;
+	private tree: { session: string; scope: TuiScope; ref: Ref<typeof SessionTree> } | undefined;
 	private view: ConversationView | null | undefined;
 	/** The conversation's user shell command while it runs (`Chat.liveShell`), and its component (the transcript tail). */
 	private liveShell: ShellState = null;
@@ -321,7 +338,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 		// The session's cwd: tool paths display relative to it.
 		this.sessions = new TuiScope(runtime);
 		this.catalog = this.sessions.watch(Sessions, {}, (ref, follow) => {
-			const viewer = liveIn(ref, "owner", "guest");
+			const viewer = liveWith(ref, "sessions");
 			if (viewer)
 				follow(viewer.sessions, (rows) => {
 					this.rows = rows;
@@ -423,7 +440,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 			});
 			this.transcriptStore = store;
 			follow(pagesWatchable(store), () => {});
-			if (ref.variant === "participant") this.holdWriterParts(scope, session, conversation);
+			if (liveWith(ref, ...CHAT_PARTICIPANT)) this.holdWriterParts(scope, session, conversation);
 		});
 		// Who may write is known before the conversation is live (the role, a guest's grant): no wait for it.
 		if (runtime.role === "owner" || runtime.guestMode() === "full")
@@ -450,9 +467,9 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 	}
 
 	/** The viewed conversation's file index once live (P7b). */
-	private files: Held<typeof FileIndex> | undefined;
+	private files: Ref<typeof FileIndex> | undefined;
 	private fileSource(): FileSource | undefined {
-		const ref = liveIn(this.files, "reader");
+		const ref = live(this.files);
 		return (
 			ref && {
 				complete: (args) => ref.complete(args, BACKGROUND_CONTEXT),
@@ -502,13 +519,13 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 		return this.participant() !== undefined;
 	}
 
-	private participant(): HeldIn<typeof Chat, "participant"> | undefined {
-		return liveIn(this.ref, "participant");
+	private participant(): ChatParticipant | undefined {
+		return liveWith(this.ref, ...CHAT_PARTICIPANT);
 	}
 
-	/** Whether the reference is live in a variant that cannot write (a viewer). */
+	/** Whether the reference is live without the participant's members (a viewer). */
 	private get readOnlyView(): boolean {
-		return this.ref !== undefined && statusOf(this.ref) === "live" && this.ref.variant !== "participant";
+		return this.ref !== undefined && statusOf(this.ref) === "live" && this.participant() === undefined;
 	}
 
 	private sync(): void {
@@ -773,7 +790,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 			try {
 				// Waits through a connecting conversation; calls made while it reconnects wait for it too.
 				await whenLive(ref);
-				const writer = liveIn(ref, "participant");
+				const writer = liveWith(ref, ...CHAT_PARTICIPANT);
 				if (!writer) throw new Error("This conversation is read-only");
 				await writer.send(
 					{
@@ -830,7 +847,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 		runtime.perform(
 			(async () => {
 				await whenLive(held);
-				const owner = liveIn(held, "owner");
+				const owner = live(held);
 				if (!owner) throw new Error("Only the owner branches the session");
 				const label = draft.trim() || files.map((file) => file.name).join(", ");
 				const { conversation } = await owner.branch({ conversation: from, label }, BACKGROUND_CONTEXT);
@@ -966,7 +983,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 		runtime.perform(
 			(async () => {
 				await whenLive(held);
-				const owner = liveIn(held, "owner");
+				const owner = live(held);
 				if (!owner) throw new Error("Only the owner switches branches");
 				const tree = await owner.tree(BACKGROUND_CONTEXT);
 				const selector: TreeSelectorComponent = new TreeSelectorComponent(
@@ -1003,7 +1020,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 	}
 
 	/** The session's `SessionTree`: one reference per viewed session, which `/tree`, its actions and branching reuse. */
-	private sessionTree(session: string): Held<typeof SessionTree> {
+	private sessionTree(session: string): Ref<typeof SessionTree> {
 		if (this.tree?.session !== session) {
 			this.tree?.scope.dispose();
 			const scope = new TuiScope(this.runtime);
@@ -1041,7 +1058,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 				(id) => {
 					overlay.close();
 					const text = messages.find((message) => message.id === id)?.text ?? "";
-					const catalog = liveIn(this.catalog, "owner");
+					const catalog = liveWith(this.catalog, ...SESSIONS_OWNER);
 					if (!catalog) return;
 					// The forked message waits in the new session's editor.
 					this.openCopy(
@@ -1064,7 +1081,7 @@ export class ChatSurface implements TuiSurface, ChatSurfaceApi {
 	/** pi's `/clone`: the whole session as a new one (`Sessions.clone`), opened at once. */
 	cloneSession(): void {
 		const session = this.session;
-		const catalog = liveIn(this.catalog, "owner");
+		const catalog = liveWith(this.catalog, ...SESSIONS_OWNER);
 		if (!session || !catalog) return;
 		this.openCopy(session, (copy) => catalog.clone({ id: session, copy }, BACKGROUND_CONTEXT));
 	}

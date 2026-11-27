@@ -33,7 +33,7 @@ Work autonomously within the agreed task. Local builds, tests, checks, unpublish
 - Use only erasable TypeScript syntax (Node strip-only mode) in code checked by the root config (`packages/*/src`, `packages/*/test`, `packages/coding-agent/examples`): no parameter properties, `enum`, `namespace`/`module`, `import =`, `export =`, or other constructs needing JS emit. Use explicit fields with constructor assignments.
 - Always ask before removing functionality or code that appears intentional.
 - Do not preserve backward compatibility unless the user asks for it.
-- Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `DEFAULT_EDITOR_KEYBINDINGS` or `DEFAULT_APP_KEYBINDINGS` so they stay configurable.
+- Never hardcode key checks (e.g. `matchesKey(keyData, "ctrl+x")`). Add defaults to `TUI_KEYBINDINGS` (`packages/tui`) or `APP_KEYBINDINGS` (`packages/coding-agent`) so they stay configurable.
 - Never modify generated model files directly; update the catalog definitions in `packages/ai/catalog/` instead (see its README), then regenerate. Unlike upstream, this fork commits the generated snapshot in `packages/ai/src/providers/data/`, including its manifest, so offline builds and releases use reviewed data rather than live provider APIs. Review and commit that snapshot with model-definition changes; including generated wrappers and ordinary upstream model metadata changes is OK.
 
 ## Chord v2 Code Style

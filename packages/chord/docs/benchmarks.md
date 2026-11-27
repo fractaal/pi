@@ -1180,3 +1180,132 @@ all of §9's numbers for the built parts are met
   child in the middle of 20 loaded pages runs two pages (the one it left, the first) in 0.6 ms (one compiled plan
   per list since code review round 1; 0.9 ms with a plan per page); after 10,000 such
   touches the 1,000 loaded rows are in 26 pages (at most 2 × rows / page size, by the merge rule).
+
+## Slice 15: grantable members, the commit index, lazy named queries (2026-11-25)
+
+Before: the existing benches at the start of the build, on main (`b882d08f3`), before slice 15's code; the two new
+benches on `286d58e71` (before the commit index and lazy queries) from a temporary worktree. After: `ba0e18c89`. Same
+machine (slayer, 32 cores, Node 26.11.1), each bench run by hand from `packages/chord` as its header says.
+
+**New: the commit index** (`test/bench/commit-index.ts`; slice 15 §3). Reads tested = skips + runs.
+
+| Case | before | after |
+| --- | --- | --- |
+| one write to one session's row, 10,000 open reads of other sessions | 10,000 tested (9,999 skips, 1 run), 11.65 ms | 1 tested (1 run), 0.14 ms |
+| an import of 3,549 rows into one session, 4,020 open reads | 4,020 tested, 32,160 probes, 4,020 runs, 103 ms | 1 tested, 8 probes, 1 run, 10.3 ms |
+
+The import's before: every read probed eight of the rows (none of its session) and then ran, as the probe limit
+demanded; after, only the session's read is a candidate (its probe limit counts its own candidate rows).
+
+**New: a reference's heap** (`test/bench/reference-heap.ts`; slice 15 §5), per reference to a store of 23 named
+queries, 2,000 references to one object: none read 6.35 KiB before, 1.30 KiB after; one read 6.26 KiB before, 1.31
+KiB after.
+
+**slice-14** (the screens' mix, `test/bench/slice-14.ts`): a touch of a club session, 194 open reads: 9 runs as
+before; keyed probes 101 → 79, reads skip-tested 185 → 144 (41 reads whose bucket the touched row is not in are no
+candidates); the commit 3.70 → 3.61 ms. Ten times the mix (1,940 reads): 81 runs, probes 1,010 → 790, 31.7 → 31.2 ms.
+A touch of a session nobody shows: 109 → 65 probes. The bench's expected counts are updated to the index's. Every
+per-run number is unchanged within noise (one-sample numbers such as the archive, 6.0 to 9.2 ms over runs of either
+commit, move between runs).
+
+**Unchanged within noise** (before → after):
+
+| Bench | Case | before | after |
+| --- | --- | --- | --- |
+| live-query | one-row commit through a call, query watched (median) | 100.5 µs | 101.9 µs |
+| live-query | unwatched / no query / other table (median) | 79.5 / 9.3 / 8.3 µs | 81.5 / 9.2 / 8.2 µs |
+| store | Chord store commit (median) | 12.8 µs | 13.2 µs |
+| store | Chord host commit (median) | 17.5 µs | 16.7 µs |
+| store | query pages: 100 rows in an index's order | 134 µs | 132 µs |
+| shared-holds | first reference: get and release | 83.3 µs, 20,756 B | 85.7 µs, 19,865 B |
+| shared-holds | 1,000 references held: heap per reference | 1,498 B | 1,519 B |
+| links | notes list of 1,000 items: hold to live (two hops, binary) | 0.019 ms | 0.019 ms |
+| links | one appended item: commit to frame (median, binary) | 0.037 ms | 0.037 ms |
+| events | current, in-memory, 10 holders | 61.6 µs | 59.7 µs |
+| calls | local method call / commit through a watched derive | 1.83 / 5.52 µs | 1.86 / 5.43 µs |
+| derives | retire + recreate under a 40-derive diamond (median) | 8.7 µs | 8.6 µs |
+| state-binding | over a link: get and release | 10.57 µs | 10.84 µs |
+
+- **The commit index's own cost** is a read's re-filing by its kept keys when it runs (its rows' keys out of the
+  index, the new ones in) and, for a bucket on a column outside the key, one lookup by key per written key in the
+  commit step. Neither shows in the live-query bench (a 100-row window re-filed per commit) or the slice-14 runs.
+- **A heartbeat close** (slice 15 §4) adds one counter per closed link; nothing per message.
+
+## Hold memory (2026-11-25)
+
+What an object keeps on its host while it is held, after slice 15: the workspace bench (`p3-bench-workspaces`,
+round 2) measured 15 KiB of server heap for a held remote object with a constant admission and about 10 KiB per live
+query. Before: `23e5ad6c6` (slice 15 with its review fixes, merged). After: the hold-memory changes on top of it
+(`slices.md`, "Hold memory"), no behaviour changed: Chord's suite passes unchanged, with 28 tests added. Same
+machine (slayer, Node 26.11.1).
+
+**New: the heap per held object** (`test/bench/hold-heap.ts`: 1,000 objects per case after a warm-up of 1,000, each
+case in a server process of its own, the server's heap after collections; the client holding the remote ones is
+another process. Two runs of each tree agree to 0.01 KiB).
+
+| Case | before | after |
+| --- | --- | --- |
+| a local object with a constant member, with its reference | 6.28 KiB | 2.88 KiB |
+| the same with one derive | 7.08 KiB | 3.50 KiB |
+| the same with a reference to a store | 7.93 KiB | 4.12 KiB |
+| the same with one live query of that store | 14.80 KiB | 9.56 KiB |
+| a remote object held over a link, no admission | 6.45 KiB | 3.13 KiB |
+| the same, a constant admission granting two names | 8.76 KiB | 3.93 KiB |
+| the same, its admission a derive over one reference | 13.61 KiB | 7.55 KiB |
+
+The first version of this bench ran all cases in one process after a warm-up of 200: code and its feedback still grew
+during a case (about 0.5 KiB per object counted for it), and on `23e5ad6c6` what earlier cases left to collect was
+freed during the fifth (2.4 KiB measured where the case alone takes 6.45).
+
+Where it went, per held object with an admission over one reference (heap snapshots of 1,000 objects, by owner):
+
+- **Ten empty maps and sets** an attempt, an object, its documents and a checked implementation made up front
+  (184 B each): made by their first entry now, shared empty ones for a kind of member a contract lacks.
+- **Lists with one item and room for 17** (an empty array's first `push` reserves 16 more slots, 128 B): the
+  declarations of an attempt and of a decision, a hold's followed members, an object's admissions. Built by
+  `appended` (an exact copy while short), starting from one shared empty list.
+- **An abort signal joined with the attempt's** (`AbortSignal.any`: a set, weak references and listeners, about
+  1.7 KiB) and a pending promise with its abort listener per reference a decision follows (about 0.6 KiB): a decision
+  registers with its references directly (`Binding.followState`). What stays is one signal per decision that depends
+  on its context's, with the decision as its one listener (1.2 KiB): the follows must end at the same place of an
+  abort's dispatch as before (after the context's own listeners, ahead of the signals made from it later), and only
+  a dependent signal sits there (`slices.md`, "Carry-over").
+- **A set per source for its one dependent** (184 B; a derive over a member, a decision over its derive): `Dependents`
+  keeps none or one without a set, and tells whom a set's iteration would.
+- **Text kept as the tree of its concatenations:** an instance id (360 B for 36 characters), a decision's key, a
+  label. Built in one join, flat.
+- **An owner record of closures for the object's documents** (280 B), **a granted set per decision** (232 B; one per
+  contract version and set of names while a decision has it, held weakly), **the member order per binding** (170 B;
+  one per members now).
+- **A live query:** the plan's sides (three closures; shared for a query without a join), its statement texts' map
+  (the first text kept without one), lists with slack (order columns, parameters, decoded rows), a map of paired
+  uses and one of expected set columns nobody had.
+
+What remains is listed in `slices.md`, "Carry-over" ("memory of held objects"): the read plan per live query (about
+4 KiB of a live query's 5.5), the reference object's dictionary, the members' maps, the hold's request.
+
+**Also smaller:** a reference to a store of 23 named queries, none read (`reference-heap`): 1.37 KiB before, 1.04 KiB
+after; 1,000 references held to one object (`shared-holds`): 1,668 B before, 1,354 B after per reference; activation
+churn (`calls`: get, live, release): 44.1 KB allocated before, 37.2 KB after.
+
+**Unchanged within noise** (before → after, on `23e5ad6c6`; every bench pinned to one core, the two trees
+alternating, the quieter of two rounds):
+
+| Bench | Case | before | after |
+| --- | --- | --- | --- |
+| live-query | one-row commit through a call, query watched (median) | 99.0 µs | 99.9 µs |
+| live-query | unwatched / no query / other table (median) | 78.8 / 8.9 / 7.9 µs | 81.7 / 8.9 / 7.9 µs |
+| store | Chord store commit (median) | 12.9 µs | 12.9 µs |
+| store | Chord host commit, a watched document (median) | 16.4 µs | 16.6 µs |
+| store | query pages: 100 rows in an index's order | 167 µs | 166 µs |
+| shared-holds | first reference: get and release | 118.9 µs, 20,583 B | 114.1 µs, 14,382 B |
+| links | notes list of 1,000 items: hold to live (two hops, binary) | 0.020 ms | 0.020 ms |
+| links | one appended item: commit to frame (median, binary) | 0.037 ms | 0.037 ms |
+| events | current, in-memory, 70 holders | 441.0 µs | 444.6 µs |
+| calls | local method call / commit through a watched derive | 2.54 / 9.61 µs | 2.53 / 9.59 µs |
+| calls | activation churn | 48.7 µs | 44.2 µs |
+| derives | retire + recreate under a 40-derive diamond (median) | 8.7 µs | 8.6 µs |
+| state-binding | same host: get and release | 12.52 µs | 12.43 µs |
+| slice-14 | an ordinary commit at the mix, every re-run included | 3.48 ms | 3.48 ms |
+| slice-14 | runs, keyed probes, skips of a touch | 9, 79, 144 | 9, 79, 144 |
+| commit-index | one write, 10,000 reads of other sessions (median) | 0.24 ms | 0.23 ms |

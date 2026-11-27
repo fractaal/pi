@@ -47,6 +47,7 @@ import {
 } from "../utils/openrouter-cost.ts";
 import {
 	applyOpenRouterNativeFinishReason,
+	flagOpenRouterEmptyStop,
 	readOpenRouterNativeFinishReason,
 } from "../utils/openrouter-finish-reason.ts";
 import { getProviderEnvValue } from "../utils/provider-env.ts";
@@ -416,7 +417,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			let thinkingBlock: ThinkingContent | null = null;
 			let hasFinishReason = false;
 			const isOpenRouter = isOpenRouterModel(model);
-			// Kept across chunks so a trailing chunk that repeats finish_reason without it does not drop it.
+			// OpenRouter's native_finish_reason, only ever set for OpenRouter models, so the checks on it below
+			// are OpenRouter-only. Kept across chunks so a trailing chunk that repeats finish_reason without it
+			// does not drop it.
 			let nativeFinishReason: string | undefined;
 			const toolCallBlocksByIndex = new Map<number, ToolCall>();
 			const toolCallBlocksById = new Map<string, ToolCall>();
@@ -699,6 +702,9 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			if (!hasFinishReason && !compat.supportsFinishReason) {
 				output.stopReason = output.content.some((block) => block.type === "toolCall") ? "toolUse" : "stop";
 			}
+			if (nativeFinishReason) {
+				flagOpenRouterEmptyStop(output, nativeFinishReason);
+			}
 			if (output.stopReason === "error") {
 				throw new Error(output.errorMessage || "Provider returned an error stop reason");
 			}
@@ -950,11 +956,6 @@ function buildParams(
 			};
 		} else if (model.thinkingLevelMap?.off !== null) {
 			openRouterParams.reasoning = { effort: model.thinkingLevelMap?.off ?? "none" };
-		}
-	} else if (compat.thinkingFormat === "ant-ling" && model.reasoning && options?.reasoningEffort) {
-		const effort = model.thinkingLevelMap?.[options.reasoningEffort];
-		if (typeof effort === "string") {
-			(params as typeof params & { reasoning?: { effort: string } }).reasoning = { effort };
 		}
 	} else if (compat.thinkingFormat === "together" && model.reasoning) {
 		const togetherParams = params as Omit<typeof params, "reasoning_effort"> & {
@@ -1672,14 +1673,13 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		requiresToolsWithToolHistory: false,
 		requiresThinkingAsText: false,
 		requiresReasoningContentOnAssistantMessages: isDeepSeek,
-		thinkingFormat: isDeepSeek
-			? "deepseek"
-			: isZai
-				? "zai"
-				: isTogether
-					? "together"
-					: isAntLing
-						? "ant-ling"
+		thinkingFormat:
+			isDeepSeek || isAntLing
+				? "deepseek"
+				: isZai
+					? "zai"
+					: isTogether
+						? "together"
 						: isOpenRouter
 							? "openrouter"
 							: "openai",

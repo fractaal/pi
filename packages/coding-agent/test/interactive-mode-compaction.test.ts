@@ -8,7 +8,7 @@ import { stripAnsi } from "../src/utils/ansi.ts";
 import { createHarness } from "./suite/harness.ts";
 
 describe("InteractiveMode compaction events", () => {
-	test("uses the cache miss notice setting for compaction and branch summary costs", () => {
+	test("uses the compaction cost notice setting for compaction and branch summary costs", () => {
 		const usage: Usage = {
 			input: 10,
 			output: 20,
@@ -18,7 +18,7 @@ describe("InteractiveMode compaction events", () => {
 			cost: { input: 0.01, output: 0.02, cacheRead: 0.03, cacheWrite: 0.065, total: 0.125 },
 		};
 		const addCompactionCostNotice = Reflect.get(InteractiveMode.prototype, "addCompactionCostNotice") as (
-			this: { chatContainer: Container; settingsManager: { getShowCacheMissNotices(): boolean } },
+			this: { chatContainer: Container; settingsManager: { getNotices(): { compactionCosts: boolean } } },
 			notice: {
 				type: "compaction_cost";
 				kind: "compaction" | "branch_summary";
@@ -29,7 +29,7 @@ describe("InteractiveMode compaction events", () => {
 		initTheme("dark");
 		const enabled = {
 			chatContainer: new Container(),
-			settingsManager: { getShowCacheMissNotices: () => true },
+			settingsManager: { getNotices: () => ({ compactionCosts: true }) },
 		};
 		addCompactionCostNotice.call(enabled, { type: "compaction_cost", kind: "compaction", usage });
 		addCompactionCostNotice.call(enabled, {
@@ -43,7 +43,7 @@ describe("InteractiveMode compaction events", () => {
 
 		const disabled = {
 			chatContainer: new Container(),
-			settingsManager: { getShowCacheMissNotices: () => false },
+			settingsManager: { getNotices: () => ({ compactionCosts: false }) },
 		};
 		addCompactionCostNotice.call(disabled, { type: "compaction_cost", kind: "compaction", usage });
 		expect(disabled.chatContainer.children).toHaveLength(0);

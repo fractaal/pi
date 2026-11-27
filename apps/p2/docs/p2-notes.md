@@ -320,8 +320,9 @@ Node 26 (`~/.local/bin/node26`).
 
 - **Unit:** `testHost` in `test/p2/helpers.ts` loads facets into a bare host: the server by default, or
   `{ address: Session({ id }), kind: "worker" }`. It serves the base registries of its kind (and, for a server, the
-  `ServerNatives`, with no workers unless `server` gives some). Stubs are `[Contract, membersOrFactory]`; a factory
-  returns a flat shape (`{ variant, ...members }`), gets `self.state(initial)` for an in-memory state member (a
+  `ServerNatives`, with no workers unless `server` gives some). Stubs are `[Contract, membersOrFactory, grants?]`
+  (`grants`: what a contract with grantable members grants, a list or a function of the principal); a factory
+  returns the members, flat, gets `self.state(initial)` for an in-memory state member (a
   `Cell` with `replace`/`change` the test drives) and may return nothing from a method (`null` is sent). Natives a
   facet reads (`harnessOf`, `workerOf`, a plugin's single-native registry) come from `workerFacet({ harness, worker,
   host })` and `nativeFacet(R, value)`. `root(fn)` runs as `principal`; `client(principal)` is a memory-linked client
@@ -341,7 +342,7 @@ Node 26 (`~/.local/bin/node26`).
   Generated test plugins need a `package.json` and may not use top-level await (a facet declares synchronously).
 - **Chord in tests:** tests import Chord only through `test/p2/helpers.ts` and the plugin API (`@p2/app/v1`).
   References are held (`host.hold(T, params, TEST)`; `TEST` is the background context) and awaited with
-  `whenLive(ref)`; `holdIn(host, T, params, variant)` returns one live in `variant`; `failureOf(ref)` waits for a
+  `whenLive(ref)`; `holdWith(host, T, params, ...members)` returns one live with those grantable members; `failureOf(ref)` waits for a
   failure or end (a type nobody serves leaves a hold waiting). Every method call takes a context.
 - **Live state:** `until(watchable, predicate)` follows a state member, derive or registry value until the predicate
   holds; `settled(watchable)` returns a defined value after 25 ms without changes. `expectChord(promise, code)`
@@ -438,8 +439,13 @@ p2 runs on Chord v2 (`packages/chord`, `docs/design.md` there); the port's notes
   of what it indexed, not session data).
 - **References:** `host.hold(T, params, ctx)` gives a reference at once (loading, live, failed, ended);
   `ctx.get`/`host.get` one once live. UIs use `src/runtime/refs.ts`: `follow` (a value with its current one first),
-  `followRegistry`, `whenLive`, `statusOf`, `liveIn(ref, ...variants)` (`HeldIn`), `UI_LINGER`. A held reference's
-  variant may be `undefined` until it binds, so `inVariant`/`expectVariant` do not narrow it: use `liveIn`.
+  `followRegistry`, `whenLive`, `statusOf`, `live(ref)`, `liveWith(ref, ...members)` and `kept`/`keptWith` (types
+  `RefWith`, `With`), `withHeld`/`withGranted`, `UI_LINGER`. A reference's grantable members have two states:
+  until the reference was first live, every grantable member's handle is there (so a factory can wire a dependency's
+  members before it binds), though nothing is granted yet (`granted` is empty); once it was live, a grantable member
+  is there only while its binding granted it, else `undefined` (also while it loads again or failed: the last
+  binding's grant holds). So test `granted`, never the member's presence: `liveWith`/`keptWith` do (they return
+  `undefined` before the first binding); a worker that knows its grant uses `expectGranted`.
 - **Objects and state:** factories declare state with `defineState` (`defineTypedState` where pi-schema's optional
   fields are not JSON to TypeScript) and change it with `change(fn, ctx)`; derived members are `self.derive`; a
   `self.writable` is exposed through a derive. Natives (a Durable Harness, a database, a socket) are `self.open`
@@ -466,7 +472,41 @@ p2 runs on Chord v2 (`packages/chord`, `docs/design.md` there); the port's notes
   version as the base, verbatim, so old bundles' fingerprints match) and give the provider an `accepts` table mapping
   current state and results back (`Sessions` v3/v4, `Catalog` v2/v3, `SessionTree` v1/v2, `Envs` v1/v2;
   `test/p2/contract-versions.test.ts` binds the released declarations). Without it, old clients wait unbound
-  (`contract_mismatch`) until they reload.
+  (`contract_mismatch`) until they reload. Exception: grantable members replaced variants (Chord slice 15, commit
+  `43bb1900c`), and versions declared with variants cannot be declared any more, so every remote contract restarted
+  as a new base then (version bumped, no `accepts`); clients from before reload once. `Catalog` (local) kept its
+  history.
+
+### Plugins written before grantable members (migration)
+
+Plugins outside `apps/p2/plugins` (a user plugin root, `<P2_DATA_DIR>/plugins`) built against the variant API no
+longer load: `remote(...)` refuses a `variants` key, so the plugin is not served while the rest of p2 starts and runs
+(tried 2026-11-25: the server logged nothing about it at startup; its objects just wait, "is not served here"). No
+compatibility shim (e.g. `withHeld(ref, "owner", action)` taking the old string): the contract itself must change,
+so every such plugin is edited anyway, and a shim would only keep half-ported code alive. Replacements:
+
+| Before | After |
+| --- | --- |
+| `variants: { owner: { state, methods, events } }` (one variant) | `state`, `methods`, `events` at the top of `remote(...)`; bump `version` |
+| several variants (`owner`/`guest`, `reader`/`editor`) | one shape; the members only some callers get are `grantable(schema)` / `grantable(method(...))` |
+| factory returning `{ variant: "x", members: M }` | return `M` |
+| (several variants) factory branches per principal | serve with `{ admit: grantBy((principal, params) => [names]) }`; the factory is `(params, principal, admitted, self)`; a grantable state or event member is returned as a builder `() => watchable`; a branch returns `notGranted` (or `...ungranted([names])`) for the grantable members its principal never gets |
+| `evolve(C, (e) => e.addMethod("owner", "m", A, R))` | `evolve(C, (e) => e.addMethod("m", A, R))` (no variant argument); an `accepts` table is flat: `state: { member: map }` |
+| `liveIn(ref, "owner")` for a one-variant contract | `live(ref)` |
+| `liveIn(ref, "editor")` (a variant with more members) | `liveWith(ref, "member", ...)` (narrows to those members) |
+| `keptIn(ref, ...)` | `kept(ref)` / `keptWith(ref, "member", ...)` |
+| `withHeld(ref, "owner", action)` | `withHeld(ref, action)`; with a variant's members: `withGranted(ref, ["member"], action)` |
+| `expectVariant(ref, "worker")` | `ref` for a one-variant contract; else `expectGranted(ref, "member", ...)` |
+| `ref.variant === "owner"` | `ref.granted.has("member")` (or `liveWith`) |
+| `HeldIn<C, "v">`, `RefIn<C, "v">`, `Held<C>` | `RefWith<C, "member" \| ...>`, `Ref<C>` |
+| `useObject(T, params, { variant: "owner" })` | `liveWith(useObject(T, params), "member")` (or `live(...)`) |
+| `useVariant(ref, v)` (Chord React), `scope.variant(ref)` (Chord TUI) | `useLive(ref)`, `scope.live(ref)` with `granted` |
+| stub `[C, () => ({ variant: "x", ...members })]` (tests) | `[C, () => members, grants?]` (`grants` for a contract with grantable members) |
+
+Find the sites with `grep -rnE "variants:|variant:|liveIn|keptIn|expectVariant|inVariant|useVariant|HeldIn|RefIn|withHeld\([^,]+, \"" <root>`.
+The owner's device root (`/data/data/com.termux/files/home/.pi/p2/plugins`) has `calendar`, `context-reminder` and
+`mail` (2026-11-25); slayer has no user plugins. Migrate them after this merge reaches the device's p2, then
+`reload_plugins`.
 
 ## Radius and port forwards
 
@@ -500,6 +540,16 @@ npm start
   from the relayed requests' shell origin (`radius.json` `shellPage`; one saved in the older `/pi/brains/…` form is
   read in the current one). People a session is shared with by email get `<shell page>/s/<session>`. The shell names
   the organization by its slug once it opens; a kept link names it by ID, which a slug change leaves valid.
+- **Invites** (share links through Radius): without a tunnel host a link's own URL reaches nobody, so copying it
+  (`ShareInvite`, `Shares.invite`) asks Radius for an invite to it (`ShareInviters`, `RadiusBrain.invite`):
+  `<brain origin>/__join#<token>`, which anyone may open for as long as the owner picked when copying (15 minutes, 1
+  hour, 1 day or 7 days; `INVITE_DURATIONS`). Resetting the link withdraws its invites at Radius too
+  (`ShareInviter.withdraw`). Radius keeps only the token's hash (gateway `servers/guests.ts`). Redeeming it gives the
+  browser a guest cookie of Radius naming an admission with a 10-minute lease; the brain gets it as the guest header
+  (`RequestOrigin.relayGuest`), the join page (`/join/radius`) makes the admission ID the guest's ID (no p2 cookie),
+  and the brain renews the leases of guests whose page is open (`Shares.admissions`, every 3 minutes and on change). A
+  guest who left lapses within a lease and needs a new invite; resetting the link or removing the guest ends their
+  access at once as before. Test: `radius.test.ts` ("invites").
 - The worker's root-only `ports` tool has `list/open/close`, fixes owner/peer attribution at its calling assistant
   entry, and denies guest/unattributed turns. It lists every forward and explicitly names all public endpoints,
   asks the model to obtain confirmation before publishing. As in Pi Mobile (67cdb4ca4) it may change or close any
@@ -1323,9 +1373,10 @@ call, hold, method, relay and activation; nothing is measured or walked for it. 
 - **References**: an awaited `ctx.get`/`host.get` is live with its state; UI runtimes hold synchronously
   (`host.hold` in `useObject` and `TuiScope.watch`) and read state through `useReadable` (undefined until hydrated).
   Chord rebinds a held reference by itself (a dropped link, a restarted worker, a reload); the UI never holds one
-  again. Multi-variant references narrow with `liveIn(ref, ...variants)` or `useObject(type, params, { variant })`;
-  a TUI `watch` binds once the reference is live, so its callback narrows on `ref.variant`. Tests use
-  `holdIn(host, type, params, variant)`.
+  again. Grantable members are narrowed with `liveWith(ref, ...members)`; a TUI `watch` binds once the reference is
+  live, so its callback narrows with `liveWith(ref, ...)`. A contract with grantable members is served with
+  `admit: grantBy(principal => [...])`; a factory branch returns `notGranted` (or `...ungranted(names)`) for the
+  grantable members its principal never gets. Tests use `holdWith(host, type, params, ...members)`.
 - **Optimistic UI** (`docs/optimistic-ui.md`): actions show their effect at once (`useOptimisticCall` on the web,
   `scope.optimistic(read, reduce?)` in the terminal, Chord's `TuiScope.optimistic`), long work shows a pending state,
   refusals roll back with the error.

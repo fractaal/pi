@@ -9,6 +9,7 @@
 ### Added
 
 - Added `TUI.setSuspendSignalHandler()`, which sets a handler called when the process receives `SIGTSTP` while the TUI owns the terminal, from `start()` until `stop()`. The `SIGTSTP` listener is removed on `stop()`, so a child that owns the terminal afterwards is suspended normally ([#12283](https://github.com/earendil-works/pi/pull/12283) by [@haoqixu](https://github.com/haoqixu))
+- Added `formatProgramResume()`, `formatProgramResumeClear()`, and `takeProgramResumeToken()` for the [Program Resume Protocol (OSC 7577)](https://www.superlogical.com/rex/docs/build/program-resume), which tells the terminal how to resume a program after the terminal restarts
 
 ### Fixed
 
@@ -25,6 +26,7 @@
 - Fixed right-click paste inserting the clipboard twice in Tabby on Windows, which pastes on right-click itself ([#12406](https://github.com/earendil-works/pi/issues/12406))
 - Fixed rendering a bare URL that runs into a multi-megabyte line exhausting the heap in terminals with OSC 8 hyperlinks: `hyperlink()` no longer links URLs longer than 8192 characters ([#12416](https://github.com/earendil-works/pi/issues/12416))
 - Fixed `StdinBuffer` rescanning the whole bracketed paste for its end marker on every chunk, which made large pastes take time quadratic in their size ([#12224](https://github.com/earendil-works/pi/issues/12224))
+- Fixed `SettingsList` hint hardcoding Enter and Esc instead of naming the configured `tui.select.confirm` and `tui.select.cancel` keys
 
 ## [1.6.0] - 2026-11-06
 
