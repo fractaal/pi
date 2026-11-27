@@ -3749,6 +3749,65 @@ From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel bec
   online to clear its bookmark). Every other `not_head`, a slot taken by another device, and `behind` are errors the
   host stops on. The host's rules: `apps/p2/docs/p2-notes.md`, **Backup**.
 
+- **Grantable members and flags replace variants (owner, 2026-11-24, decisions of that day item 1; spec
+  `slice-15.md` §1, built 2026-11-25):** the problem: a remote contract listed variants, one whole shape per audience,
+  so every combination of rights needed a variant (draw × moderate: four), code tested a variant's name instead of the
+  right it needs, and a right that is no call (may this agent export?) had no place. The rule: one shape for every
+  caller; a member marked `grantable(...)` (state, event or method) exists for a caller only if its admission granted
+  it; `flags: { name: label }` are rights that are no member; a name is a member or a flag, never both. A contract
+  with grantable members or flags takes an admission: `allow({ granted: [...], ...data })`, `granted` sorted and
+  deduplicated before decisions compare, a name that is no grantable member or flag (a plain member too) breaks the
+  attempt naming it. The factory returns every member, grantable state and events as builders called right after it
+  only if granted; a member nobody was granted is never built and never sent. A reference has the plain members
+  always, the grantable ones while granted, and `granted`; `useLive`/`TuiScope.live` replace `useVariant`/
+  `TuiScope.variant`; `Held`, `RefIn`, `ref.variant` are gone; the wire's `bound` carries `granted` indexes. A call to
+  a grantable method not granted fails `forbidden`. Decided by the builder, for review: (1) until a reference was
+  first live it has every grantable member, so a factory wires a dependency that has not bound yet (its reads and
+  calls fail `forbidden` once it binds without the grant); (2) whether a member is grantable, and the flags, never
+  change across a history (a change is a new base), so contracts declared with variants continue as new bases and
+  their old pages and workers reload once (`contract_mismatch`); (3) `NORMAL_FORM_VERSION` stays 2: documents' stored
+  fingerprints carry it, and the remote node's new shape (`members`, `grantable`, `flags`) changes remote
+  fingerprints by itself; (4) a declared `admission` is an `obj(...)` without a field `granted`; (5) a flag's label is
+  plain English text, not a message (it is declared by code, the access UI shows it); (6) `useLive` keeps the
+  reference while it loads again after it was live, a link drop included. Superseded: "C15 stands; the UI bindings
+  follow the variant" and every rule about variants (§5, §7, §22, §23, §27 of `design.md` are rewritten).
+
+- **Denials with a message (owner, 2026-11-24, decisions of that day item 5; spec `slice-15.md` §2, built
+  2026-11-25):** `deny(reason, message?)`: `reason` is English for logs (the `forbidden` error's message), `message` a
+  message as data (`MessageData`) the person's client renders in their language. Decided by the builder, for review:
+  it travels as the error's `details.message` (no new field in a failure or on the wire), in the denied reference's
+  failure, a call's `forbidden` on it and the `forbidden/revoked` of the calls the denial cut; a changed message is a
+  new decision (holders see it, nothing is rebuilt); one that is no `MessageSchema` breaks the attempt.
+  `MessageData` and `MessageSchema` live in `data` (the kernel names them), re-exported by `surfaces`.
+
+- **The commit index (owner, 2026-11-24, decisions of that day item 4; spec `slice-15.md` §3, built 2026-11-25):**
+  the problem: after a commit every open read of a written table was skip-tested against every written row (bench
+  round 1: a commit of 3,549 rows with 4,020 reads blocked 4 s). The rule, a pure speedup: per table, a read whose
+  condition fixes own columns with `eq`/`inArray` is filed by those values and by the keys of its last result; a keyed
+  write's candidates are the reads holding its key, the reads whose bucket the row after the write matches, and the
+  unindexed reads; a bulk write's are every read of the table; every candidate still takes the skip test, whose probe
+  limit counts its candidate rows. Decided by the builder, for review: (1) at most 32 value combinations per bucket, a
+  column past that left out; (2) no test switch for the old path: the differential check is the oracle (every read
+  equal to a fresh run after every commit) with a mutation check.
+
+- **A stall leaves no holder live and old (owner, 2026-11-24, decisions of that day item 5; spec `slice-15.md` §4,
+  §8, built 2026-11-25):** reproduced across processes: a stalled host keeps its links (its late tick is no silence);
+  its peers find it silent past `close` and close theirs, and their holders wait `loading` until a new link; none is
+  live with an old value. Bench round 1's stale holders were such holders, on a load process that never reconnects,
+  and nothing was reported. Now every closed link is counted (`chord.links.closed { reason }`) and a heartbeat close
+  is reported once (`link_closed`). Decided by the builder: a stall is sure to close nothing only when shorter than
+  `close − ping` (the quiet time before it counts); `close` keeps its meaning.
+
+- **Refusals are static per provider and version (review of slice 15, 2026-11-26; spec `slice-15.md` §8, (B)):** a
+  provider refuses an older version if that version has any refused member, whatever its caller was granted, as main
+  had it; a consumer refused for a grantable member waits for a publication even if not granted it. Letting refusals
+  follow the grant needed holders kept per object and placed again at each decision; two designs of that kept
+  producing defects in review and were removed. For Mario's review.
+
+- **A reference makes its named queries on first use (spec `slice-15.md` §5, built 2026-11-25):** bench round 2: a
+  reference to a store of 23 named queries cost 8.6 KiB, all of it handles nobody read. A `queries` member is an
+  object whose handles are made by their first read and kept; labels are built when asked (6.35 to 1.30 KiB).
+
 ## Still valid from `target-design.md`
 
 Documents and the store (async `tx.draft`, keys, tags, eviction, Durable's transaction rule), job sandwich, routines

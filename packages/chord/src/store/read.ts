@@ -34,6 +34,9 @@ export type ReadExecutor = Pick<SqliteExecutor, "all" | "get">;
 /** Who takes a read's runs: called inside the batch of the commit that ran it. */
 export type ReadSink = { adopt(run: ReadRun): void };
 
+/** Who is told when the keys a read keeps change: the commit index it is filed in (slice 15 §3). */
+export type KeptKeysWatcher = { kept(read: Read): void };
+
 /** What a read is: the rows of a range, or the number of rows of its condition. */
 export type ReadKind = { readonly kind: "rows"; readonly range: Range } | { readonly kind: "count" };
 
@@ -49,6 +52,8 @@ export class Read {
 	#adopted: ReadRun | undefined;
 	/** A step's run not adopted yet, with the backend transaction it ran in (a rolled-back group's is stale). */
 	#tentative: { readonly transaction: SqliteExecutor; readonly run: ReadRun } | undefined;
+	/** The commit index that files it by its kept keys, if one does. */
+	#watcher: KeptKeysWatcher | undefined;
 
 	constructor(plan: ReadPlan, what: ReadKind, sink: ReadSink) {
 		this.plan = plan;
@@ -67,11 +72,29 @@ export class Read {
 			kind: "rows",
 			result: this.#result(rows, { ...range, limit: Math.max(range.limit, rows.length) }),
 		};
+		this.#watcher?.kept(this);
 	}
 
 	/** Drops its adopted result: without one it is never skipped, so the next commit over its tables runs it. */
 	forget(): void {
 		this.#adopted = undefined;
+		this.#watcher?.kept(this);
+	}
+
+	/** Tells `watcher` from now on whenever `kept` changes. */
+	watchKept(watcher: KeptKeysWatcher | undefined): void {
+		this.#watcher = watcher;
+	}
+
+	/**
+	 * The keys of the rows a skip test of this read may compare against: its adopted run's, and a group's run not
+	 * adopted yet; `undefined` while some such run is no rows (loading, failed, a count): then no write can be ruled out.
+	 */
+	kept(): readonly ReadonlySet<unknown>[] | undefined {
+		const adopted = this.#adopted;
+		const tentative = this.#tentative?.run;
+		if (adopted?.kind !== "rows" || (tentative !== undefined && tentative.kind !== "rows")) return undefined;
+		return tentative === undefined ? [adopted.result.keys] : [adopted.result.keys, tentative.result.keys];
 	}
 
 	/** The run the skip test of a step in `transaction` compares against: the group's latest, else the adopted one. */
@@ -108,12 +131,14 @@ export class Read {
 	/** A step's run, kept for the later steps of its group until it is adopted. */
 	ran(transaction: SqliteExecutor, run: ReadRun): void {
 		this.#tentative = { transaction, run };
+		this.#watcher?.kept(this);
 	}
 
 	/** Takes `run` as its state and hands it to the sink. */
 	adopt(run: ReadRun): void {
 		if (this.#tentative?.run === run) this.#tentative = undefined;
 		this.#adopted = run.kind === "failed" ? undefined : run;
+		this.#watcher?.kept(this);
 		this.sink.adopt(run);
 	}
 
@@ -128,17 +153,25 @@ export class Read {
 		const { plan } = this;
 		const keyColumns = plan.query.table.key;
 		const keys = new Set<unknown>();
-		const paired = new Map<Use, Set<unknown>>();
-		for (const use of plan.uses) if (use.role !== "own" && use.pairs !== undefined) paired.set(use, new Set());
+		// Made by the first use that pairs: a read of its own table alone (most reads) shares the empty map.
+		let paired: Map<Use, Set<unknown>> | undefined;
+		for (const use of plan.uses) {
+			if (use.role === "own" || use.pairs === undefined) continue;
+			paired ??= new Map();
+			paired.set(use, new Set());
+		}
 		for (const row of stored) {
 			keys.add(identity(keyColumns, row));
-			for (const [use, values] of paired) values.add(identity(use.pairs!, row));
+			if (paired !== undefined) for (const [use, values] of paired) values.add(identity(use.pairs!, row));
 		}
 		const more = stored.length > range.limit;
 		const past = more ? plan.order.columns.map((name) => stored[range.limit]![name]!) : undefined;
-		return { rows: more ? stored.slice(0, range.limit) : stored, more, keys, paired, past };
+		return { rows: more ? stored.slice(0, range.limit) : stored, more, keys, paired: paired ?? NOTHING_PAIRED, past };
 	}
 }
+
+/** No use pairs with another table: the shared empty map. */
+const NOTHING_PAIRED: ReadonlyMap<Use, ReadonlySet<unknown>> = new Map();
 
 /**
  * The identity of `row` in `columns`, for a set or a map of rows of one read: the value itself for one column (most
