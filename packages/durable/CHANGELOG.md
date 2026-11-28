@@ -39,6 +39,7 @@
 - Fixed task changes deep in a long ownership chain costing time proportional to the chain's depth: finding the conversations whose idleness a change can affect walked every owner task up to the conversation, so creating or ending a chain of n tasks cost O(n²). A child task lives in its owner's conversation, so the walk now starts there
 - Fixed `NodeExecutionEnv` on Windows not finding Git for Windows installed outside Program Files and running commands through the WSL launcher `System32\bash.exe` instead. It now asks the `git.exe` on `PATH` for its installation (`git var GIT_SHELL_PATH`, Git 2.47+) and uses its Git Bash before other `bash.exe` on `PATH` ([#12408](https://github.com/earendil-works/pi/issues/12408))
 - Fixed the Node environment's text line reader rescanning an incomplete line after every read, which made long lines take time quadratic in their length ([#12224](https://github.com/earendil-works/pi/issues/12224))
+- Fixed `codemode` silently returning results based on truncated text from schema-less tools. The model now sees a warning without changing the script's return value ([#12594](https://github.com/earendil-works/pi/issues/12594))
 
 ## [1.6.0] - 2026-11-06
 
