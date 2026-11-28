@@ -5,7 +5,6 @@
 ### Breaking Changes
 
 - `openai-completions` no longer sends `"tools": []` when a request has no tools but the conversation contains tool calls or tool results; the field is omitted. This fixes 400 errors (`tools must not be an empty array`) from vLLM 0.20+, also behind LiteLLM. Proxies that require `tools` once the history has tool calls, such as older LiteLLM versions in front of Anthropic, now reject these requests; set `compat.requiresToolsWithToolHistory: true` on those models to send the empty array again ([#11843](https://github.com/earendil-works/pi/issues/11843))
-- Removed the `thinkingFormat: "ant-ling"` compat value. Ant Ling ignores `reasoning.effort`, so it could not turn thinking off; use `thinkingFormat: "deepseek"`, which sends `thinking: { type }`. Ant Ling endpoints are now detected as `"deepseek"`
 
 ### Added
 
@@ -22,6 +21,11 @@
 - Added the `pi-decision` API (`POST <baseUrl>/decision`), a common protocol for decision models analogous to `pi-messages`, used by the Radius gateway provider
 - Added the `gpt-6-luna-decisions` decision model for GitHub Copilot, callable from codemode `models.classify()` with text and images ([#12395](https://github.com/earendil-works/pi/issues/12395))
 - Added `aspectRatio` and `size` to `ImagesOptions`, forwarded by `openrouter-images` to OpenRouter's `image_config`
+- Added the `pi-image` API (`POST <baseUrl>/image`), a common protocol for image models analogous to `pi-messages` and `pi-decision`
+- Added image model support to the `radius` provider: parses `images[]` from `/v1/config` into `ImageModel<"pi-image">`, persists/restores them offline, and wires `generateImages()`
+- Added Radius classifier and image models from the public `/v1/config` to the generated static catalog
+- Added `Usage.imageOutput`, the image output tokens as a subset of `output`. `openrouter-images` sets it from `completion_tokens_details.image_tokens`, and `pi-image` and `pi-decision` pass it through. It stays undefined when the provider does not report the split
+- Added `cost.imageOutput`, the image output rate of models that generate images. `calculateCost()` prices `usage.imageOutput` tokens at it and the rest of output at `cost.output`; without the provider's split, all output uses the image rate. Unset keeps pricing all output at `cost.output`
 
 ### Changed
 
@@ -36,6 +40,7 @@
 - Changed the `ant-ling` provider to load its models from models.dev (`bailing`), replacing the retired Ling 2.6 and Ring 2.6 models with Ling 3.0 Tiny, Ling 3.0 Flash, Ling 3.0 Flash VL, Ling 3.1 Flash, and Ling 3.2 Flash. Thinking is either off or high ([#11800](https://github.com/earendil-works/pi/pull/11800) by [@lvisei](https://github.com/lvisei))
 - Changed GitHub Copilot Claude and GPT-6 models to keep the prompt cache across thinking level and tool changes: Claude 5.x models that support it send effort changes and tool changes as messages in the conversation (`supportsMidConvoEffort`, `supportsMidConvoToolChanges`), GPT-6 models send effort changes as `configuration_update` items, and Claude models declare Anthropic's 5-minute and 1-hour cache lifetimes (`promptCache`), which enables cache warming for them. GPT-5.3 Codex and the MAI-Code models now receive system messages in place mid-conversation instead of folded into the system prompt, which they ignored there ([#12316](https://github.com/earendil-works/pi/issues/12316))
 - Together drops its reasoning-effort overrides for `openai/gpt-oss-20b`, `openai/gpt-oss-120b` and `deepseek-ai/DeepSeek-V4-Pro-0813`, which the upstream catalog deprecated (they were skipped already); every listed Together reasoning model takes the Together thinking toggle
+- Changed Ant Ling to send `thinking.type` so thinking can be turned off. The old `thinkingFormat: "ant-ling"` setting remains accepted as a deprecated alias for `"deepseek"`
 
 ### Fixed
 
@@ -81,6 +86,9 @@
 - Fixed GitHub Copilot listing decision models the account cannot use, such as `microsoft-decision-1` on accounts whose plan does not include it, where every call failed with HTTP 400. After OAuth login or the next token refresh, only the decision models in the account's Copilot model catalog are listed ([#12395](https://github.com/earendil-works/pi/issues/12395))
 - Fixed OpenRouter turns ending silently when the upstream failed after streaming only reasoning, e.g. Gemini's `MALFORMED_RESPONSE`, which OpenRouter reports as `finish_reason: "stop"`. A `stop` without text or tool calls whose `native_finish_reason` is not a clean stop is now an empty-response error and is retried ([#12407](https://github.com/earendil-works/pi/issues/12407))
 - Fixed GitHub Copilot models on the `openai-completions` API losing their reasoning state between turns: Copilot's `reasoning_opaque` is now stored on the thinking block and sent back with `reasoning_text`, including when it arrives without reasoning text ([#12418](https://github.com/earendil-works/pi/issues/12418))
+- Fixed `openrouter-images`, `pi-image` and `pi-decision` usage dropping reasoning tokens: `usage.reasoning` is now set from OpenRouter's `completion_tokens_details.reasoning_tokens` and from the `pi-image` and `pi-decision` backends' `usage.reasoning`, as a subset of `output`
+- Fixed OpenRouter image models pricing image tokens at the text rate: the catalog took `cost.output` from OpenRouter's `completion` price and ignored `image_output`. The catalog now sets `cost.imageOutput` from `image_output`, and `openrouter-images` prices usage with `calculateCost()`, which also applies context tiers
+- Fixed `openrouter-images` reporting success when OpenRouter returned no choices, a provider error, or an unsuccessful finish reason. Image generation now also uses OpenRouter's reported cost when available
 
 ### Removed
 
